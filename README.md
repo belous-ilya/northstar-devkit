@@ -142,7 +142,7 @@ To build from source: Rust (stable toolchain), Node.js and pnpm.
 - Questions and ideas:
   [Discussions](https://github.com/belous-ilya/northstar-devkit/discussions)
 - Security vulnerabilities: see [SECURITY.md](SECURITY.md) — please don't file a public issue
-- Anything else: [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com)
+- Anything else: [Discussions](https://github.com/belous-ilya/northstar-devkit/discussions)
 
 ## License
 

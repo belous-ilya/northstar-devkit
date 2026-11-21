@@ -14,10 +14,8 @@ security fixes; the in-app updater installs it automatically within 24 hours.
 
 **Please do not open a public issue for a security problem.**
 
-Preferred: use GitHub's private reporting —
+Use GitHub's private reporting —
 [Report a vulnerability](https://github.com/belous-ilya/northstar-devkit/security/advisories/new).
-
-Alternatively, email [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com) with `[SECURITY]` in the subject.
 
 Please include the affected version, your Windows build, reproduction steps, and the
 impact you believe it has. We will acknowledge within **3 business days**, give you an

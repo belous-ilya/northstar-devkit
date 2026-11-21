@@ -43,4 +43,4 @@ Please don't report vulnerabilities through public issues or pull requests - see
 
 ## Questions?
 
-Open a [Discussion](https://github.com/belous-ilya/northstar-devkit/discussions), or email [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com). More at [northstarcoding.com](https://www.northstarcoding.com).
+Open a [Discussion](https://github.com/belous-ilya/northstar-devkit/discussions). More at [northstarcoding.com](https://www.northstarcoding.com).
