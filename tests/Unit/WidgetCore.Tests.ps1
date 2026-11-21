@@ -668,92 +668,6 @@ Describe "Test-DevKitPathWithinRoot" {
     }
 }
 
-Describe "Get-DevKitSafeChildName" {
-
-    It "accepts ordinary names" {
-        Get-DevKitSafeChildName -Name 'index.ts' | Should -Be 'index.ts'
-        Get-DevKitSafeChildName -Name 'my folder' | Should -Be 'my folder'
-    }
-
-    It "rejects empty and whitespace names" {
-        Get-DevKitSafeChildName -Name '' | Should -BeNullOrEmpty
-        Get-DevKitSafeChildName -Name '   ' | Should -BeNullOrEmpty
-        Get-DevKitSafeChildName -Name $null | Should -BeNullOrEmpty
-    }
-
-    It "rejects invalid characters" {
-        foreach ($bad in @('a\b', 'a/b', 'a:b', 'a*b', 'a?b', 'a"b', 'a<b', 'a>b', 'a|b')) {
-            Get-DevKitSafeChildName -Name $bad | Should -BeNullOrEmpty
-        }
-    }
-
-    It "rejects dots-only names and trailing dots" {
-        Get-DevKitSafeChildName -Name '.' | Should -BeNullOrEmpty
-        Get-DevKitSafeChildName -Name '..' | Should -BeNullOrEmpty
-        Get-DevKitSafeChildName -Name 'file.' | Should -BeNullOrEmpty
-    }
-}
-
-Describe "Get-DevKitCopyName" {
-
-    It "returns the name unchanged when nothing collides" {
-        Get-DevKitCopyName -Folder $TestDrive -Name 'a.txt' | Should -Be 'a.txt'
-    }
-
-    It "appends ' - Copy' before the extension for files" {
-        New-Item -ItemType File -Path (Join-Path $TestDrive 'a.txt') | Out-Null
-        Get-DevKitCopyName -Folder $TestDrive -Name 'a.txt' | Should -Be 'a - Copy.txt'
-    }
-
-    It "counts up when the copy name also exists" {
-        New-Item -ItemType File -Path (Join-Path $TestDrive 'b.txt') | Out-Null
-        New-Item -ItemType File -Path (Join-Path $TestDrive 'b - Copy.txt') | Out-Null
-        Get-DevKitCopyName -Folder $TestDrive -Name 'b.txt' | Should -Be 'b - Copy (2).txt'
-    }
-
-    It "treats the whole name as the base for directories" {
-        New-Item -ItemType Directory -Path (Join-Path $TestDrive 'data.v2') | Out-Null
-        Get-DevKitCopyName -Folder $TestDrive -Name 'data.v2' -IsDirectory | Should -Be 'data.v2 - Copy'
-    }
-}
-
-Describe "Get-DevKitRelativePath" {
-
-    It "returns the root-relative path for nested entries" {
-        $p = Join-Path $TestDrive 'src\app\index.ts'
-        Get-DevKitRelativePath -Root $TestDrive -Path $p | Should -Be 'src\app\index.ts'
-    }
-
-    It "returns empty string for the root itself" {
-        Get-DevKitRelativePath -Root $TestDrive -Path $TestDrive | Should -Be ''
-    }
-
-    It "returns null for paths outside the root" {
-        Get-DevKitRelativePath -Root (Join-Path $TestDrive 'proj') -Path $TestDrive | Should -BeNullOrEmpty
-    }
-}
-
-Describe "Get-DevKitNoteTitle" {
-
-    It "uses the first line of the body" {
-        Get-DevKitNoteTitle -Text "first line`nsecond line" | Should -Be 'first line'
-    }
-
-    It "skips leading blank lines and trims" {
-        Get-DevKitNoteTitle -Text "`n`n  real title  `nrest" | Should -Be 'real title'
-    }
-
-    It "handles CRLF bodies" {
-        Get-DevKitNoteTitle -Text "title`r`nbody" | Should -Be 'title'
-    }
-
-    It "falls back to a placeholder for empty bodies" {
-        Get-DevKitNoteTitle -Text '' | Should -Be '(empty note)'
-        Get-DevKitNoteTitle -Text "  `n `n " | Should -Be '(empty note)'
-        Get-DevKitNoteTitle -Text $null | Should -Be '(empty note)'
-    }
-}
-
 Describe "On-Deck store (Get/Save-DevKitProjectOnDeck)" {
 
     BeforeEach {
@@ -973,99 +887,6 @@ Describe "ConvertFrom-DevKitNvidiaSmiAdapterOutput" {
     }
 }
 
-
-Describe "Get-DevKitFileIconInfo" {
-
-    It "maps folders to the folder key" {
-        $r = Get-DevKitFileIconInfo -Name 'src' -IsFolder
-        $r.Key | Should -Be 'folder'
-        $r.Color | Should -Be '#E5C07B'
-    }
-
-    It "maps common extensions to their Material-style keys" {
-        (Get-DevKitFileIconInfo -Name 'app.js').Key | Should -Be 'js'
-        (Get-DevKitFileIconInfo -Name 'App.jsx').Key | Should -Be 'jsx'
-        (Get-DevKitFileIconInfo -Name 'main.ts').Key | Should -Be 'ts'
-        (Get-DevKitFileIconInfo -Name 'App.tsx').Key | Should -Be 'tsx'
-        (Get-DevKitFileIconInfo -Name 'data.json').Key | Should -Be 'json'
-        (Get-DevKitFileIconInfo -Name 'README.md').Key | Should -Be 'md'
-        (Get-DevKitFileIconInfo -Name 'Build.ps1').Key | Should -Be 'ps1'
-        (Get-DevKitFileIconInfo -Name 'module.psm1').Key | Should -Be 'ps1'
-        (Get-DevKitFileIconInfo -Name 'run.bat').Key | Should -Be 'bat'
-        (Get-DevKitFileIconInfo -Name 'index.html').Key | Should -Be 'html'
-        (Get-DevKitFileIconInfo -Name 'site.css').Key | Should -Be 'css'
-        (Get-DevKitFileIconInfo -Name 'theme.scss').Key | Should -Be 'scss'
-        (Get-DevKitFileIconInfo -Name 'App.vue').Key | Should -Be 'vue'
-        (Get-DevKitFileIconInfo -Name 'App.svelte').Key | Should -Be 'svelte'
-        (Get-DevKitFileIconInfo -Name 'script.py').Key | Should -Be 'py'
-        (Get-DevKitFileIconInfo -Name 'Program.cs').Key | Should -Be 'cs'
-        (Get-DevKitFileIconInfo -Name 'main.c').Key | Should -Be 'c'
-        (Get-DevKitFileIconInfo -Name 'main.cpp').Key | Should -Be 'cpp'
-        (Get-DevKitFileIconInfo -Name 'Main.java').Key | Should -Be 'java'
-        (Get-DevKitFileIconInfo -Name 'main.go').Key | Should -Be 'go'
-        (Get-DevKitFileIconInfo -Name 'lib.rs').Key | Should -Be 'rs'
-        (Get-DevKitFileIconInfo -Name 'index.php').Key | Should -Be 'php'
-        (Get-DevKitFileIconInfo -Name 'app.rb').Key | Should -Be 'rb'
-        (Get-DevKitFileIconInfo -Name 'data.xml').Key | Should -Be 'xml'
-        (Get-DevKitFileIconInfo -Name 'ci.yml').Key | Should -Be 'yml'
-        (Get-DevKitFileIconInfo -Name 'Cargo.toml').Key | Should -Be 'toml'
-        (Get-DevKitFileIconInfo -Name 'schema.sql').Key | Should -Be 'sql'
-        (Get-DevKitFileIconInfo -Name 'notes.txt').Key | Should -Be 'txt'
-        (Get-DevKitFileIconInfo -Name 'app.log').Key | Should -Be 'txt'
-        (Get-DevKitFileIconInfo -Name 'doc.pdf').Key | Should -Be 'pdf'
-        (Get-DevKitFileIconInfo -Name 'setup.exe').Key | Should -Be 'exe'
-        (Get-DevKitFileIconInfo -Name 'app.ini').Key | Should -Be 'config'
-    }
-
-    It "matches extension and special names case-insensitively" {
-        (Get-DevKitFileIconInfo -Name 'PHOTO.PNG').Key | Should -Be 'image'
-        (Get-DevKitFileIconInfo -Name 'DockerFile').Key | Should -Be 'docker'
-        (Get-DevKitFileIconInfo -Name '.GITIGNORE').Key | Should -Be 'git'
-        (Get-DevKitFileIconInfo -Name 'Yarn.Lock').Key | Should -Be 'lock'
-    }
-
-    It "maps special filenames before their extension" {
-        (Get-DevKitFileIconInfo -Name 'Dockerfile').Key | Should -Be 'docker'
-        (Get-DevKitFileIconInfo -Name 'docker-compose.yml').Key | Should -Be 'docker'
-        (Get-DevKitFileIconInfo -Name '.gitignore').Key | Should -Be 'git'
-        (Get-DevKitFileIconInfo -Name '.gitattributes').Key | Should -Be 'git'
-        (Get-DevKitFileIconInfo -Name '.gitmodules').Key | Should -Be 'git'
-        (Get-DevKitFileIconInfo -Name 'package-lock.json').Key | Should -Be 'lock'
-        (Get-DevKitFileIconInfo -Name 'pnpm-lock.yaml').Key | Should -Be 'lock'
-        (Get-DevKitFileIconInfo -Name 'bun.lockb').Key | Should -Be 'lock'
-        (Get-DevKitFileIconInfo -Name '.env').Key | Should -Be 'env'
-        (Get-DevKitFileIconInfo -Name '.env.local').Key | Should -Be 'env'
-        (Get-DevKitFileIconInfo -Name '.editorconfig').Key | Should -Be 'config'
-    }
-
-    It "maps image, archive and generic lock extensions" {
-        (Get-DevKitFileIconInfo -Name 'logo.svg').Key | Should -Be 'image'
-        (Get-DevKitFileIconInfo -Name 'favicon.ico').Key | Should -Be 'image'
-        (Get-DevKitFileIconInfo -Name 'photo.webp').Key | Should -Be 'image'
-        (Get-DevKitFileIconInfo -Name 'bundle.zip').Key | Should -Be 'archive'
-        (Get-DevKitFileIconInfo -Name 'backup.tar.gz').Key | Should -Be 'archive'
-        (Get-DevKitFileIconInfo -Name 'release.7z').Key | Should -Be 'archive'
-        (Get-DevKitFileIconInfo -Name 'Gemfile.lock').Key | Should -Be 'lock'
-    }
-
-    It "falls back to the generic file key for unknown extensions" {
-        (Get-DevKitFileIconInfo -Name 'mystery.xyz').Key | Should -Be 'file'
-        (Get-DevKitFileIconInfo -Name 'noextension').Key | Should -Be 'file'
-        (Get-DevKitFileIconInfo -Name '.unknown').Key | Should -Be 'file'
-    }
-
-    It "returns a color for every key the mapper can produce" {
-        foreach ($name in @('a.js', 'a.ts', 'a.json', 'a.md', 'a.ps1', 'a.bat', 'a.html',
-                'a.css', 'a.scss', 'a.vue', 'a.svelte', 'a.py', 'a.cs', 'a.c', 'a.cpp',
-                'a.java', 'a.go', 'a.rs', 'a.php', 'a.rb', 'a.xml', 'a.yml', 'a.toml',
-                '.env', 'a.png', 'a.zip', '.gitignore', 'Dockerfile', 'a.sql', 'a.txt',
-                'a.pdf', 'a.exe', 'a.ini', 'a.lock', 'a.unknown')) {
-            $r = Get-DevKitFileIconInfo -Name $name
-            $r.Color | Should -Match '^#[0-9A-Fa-f]{6}$'
-        }
-    }
-}
-
 Describe "background git calls do not run programs named in the project's git config" {
 
     # The installed app is admin-only, so its polls run elevated inside the
@@ -1209,5 +1030,137 @@ Describe "background git calls do not run programs named in the project's git co
             $null = & $script:GitExe.Source -C $script:HookClone fetch -q origin 2>&1
             Test-Path -LiteralPath $script:HookRan | Should -BeTrue
         }
+    }
+}
+
+Describe "Get-DevKitCliVersionCached" {
+
+    # The MCP report asked 'claude --version' and 'kimi --version' on every
+    # poll: two process starts to read back strings that only change when
+    # the tool is updated.
+
+    BeforeEach {
+        $script:CliVersionCache = @{}
+        # A stand-in CLI that counts how often it was started.
+        $script:FakeCli = Join-Path $TestDrive 'fakecli.cmd'
+        $script:CallLog = Join-Path $TestDrive 'calls.log'
+        if (Test-Path -LiteralPath $script:CallLog) { Remove-Item -LiteralPath $script:CallLog -Force }
+        Set-Content -LiteralPath $script:FakeCli -Encoding Ascii -Value @(
+            '@echo off',
+            "echo called>>`"$($script:CallLog)`"",
+            'echo 2.1.5 (Fake CLI)',
+            'echo a second line that is not the version'
+        )
+        $script:FakeCommand = [PSCustomObject]@{ Source = $script:FakeCli }
+        function script:Get-FakeCliCalls {
+            if (Test-Path -LiteralPath $script:CallLog) { return @(Get-Content -LiteralPath $script:CallLog).Count }
+            return 0
+        }
+    }
+
+    It "returns the first line of the tool's version output" {
+        Get-DevKitCliVersionCached -Command $script:FakeCommand | Should -Be '2.1.5 (Fake CLI)'
+    }
+
+    It "starts the tool once for any number of asks" {
+        1..5 | ForEach-Object { $null = Get-DevKitCliVersionCached -Command $script:FakeCommand }
+        Get-FakeCliCalls | Should -Be 1
+    }
+
+    It "asks again after the tool's file changes (an update)" {
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand
+        (Get-Item -LiteralPath $script:FakeCli).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand
+        Get-FakeCliCalls | Should -Be 2
+    }
+
+    It "asks again once the kept answer is older than the limit" {
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand -MaxAgeMinutes 30
+        foreach ($key in @($script:CliVersionCache.Keys)) { $script:CliVersionCache[$key].At = (Get-Date).AddMinutes(-31) }
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand -MaxAgeMinutes 30
+        Get-FakeCliCalls | Should -Be 2
+    }
+
+    It "does not keep a failed read, so the next ask tries again" {
+        $missing = [PSCustomObject]@{ Source = (Join-Path $TestDrive 'not-installed.cmd') }
+        Get-DevKitCliVersionCached -Command $missing | Should -BeNullOrEmpty
+        $script:CliVersionCache.Count | Should -Be 0
+    }
+}
+
+Describe "Get-DevKitCpuTempReading" {
+
+    # The thermal-zone read used to go through Get-Counter, which waits a
+    # full sample interval per call (1.2 s measured) - on the metrics lane,
+    # so the gauges stalled each time the cached value expired.
+
+    BeforeEach {
+        $script:CpuTempCache = $null
+        $script:ZoneReads = 0
+    }
+
+    It "converts the thermal zone's Kelvin reading to Celsius" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return 320.15 }
+        Mock Get-CimInstance { throw 'the WMI fallback must not run when the counter answered' }
+        Get-DevKitCpuTempReading | Should -Be 47
+    }
+
+    It "reads the zone once for many asks inside the cache window" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return 320.15 }
+        1..10 | ForEach-Object { $null = Get-DevKitCpuTempReading }
+        $script:ZoneReads | Should -Be 1
+    }
+
+    It "reads again once the kept value is older than the window" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return 320.15 }
+        $null = Get-DevKitCpuTempReading
+        $script:CpuTempCache.At = (Get-Date).AddSeconds(-16)
+        $null = Get-DevKitCpuTempReading
+        $script:ZoneReads | Should -Be 2
+    }
+
+    It "falls back to the ACPI WMI class (tenths of Kelvin) when there is no counter" {
+        Mock Get-DevKitThermalZoneKelvin { return $null }
+        Mock Get-CimInstance { return [PSCustomObject]@{ CurrentTemperature = 3231.5 } }
+        Get-DevKitCpuTempReading | Should -Be 50
+    }
+
+    It "answers nothing rather than a made-up number when neither source has a plausible value" {
+        # 30 is not Kelvin for anything a computer survives; 0 is what a
+        # zone with no sensor behind it reports.
+        Mock Get-DevKitThermalZoneKelvin { return 30 }
+        Mock Get-CimInstance { return [PSCustomObject]@{ CurrentTemperature = 0 } }
+        Get-DevKitCpuTempReading | Should -BeNullOrEmpty
+    }
+
+    It "keeps a 'nothing available' answer for the window too, instead of asking every cycle" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return $null }
+        Mock Get-CimInstance { throw 'access denied' }
+        1..5 | ForEach-Object { Get-DevKitCpuTempReading | Should -BeNullOrEmpty }
+        $script:ZoneReads | Should -Be 1
+    }
+}
+
+Describe "Get-DevKitThermalZoneKelvin" {
+
+    It "answers nothing or a plausible Kelvin value on whatever machine runs this, without throwing" {
+        $script:ThermalZoneCounters = $null
+        $value = Get-DevKitThermalZoneKelvin
+        if ($null -ne $value) {
+            $value | Should -BeGreaterThan 200
+            $value | Should -BeLessThan 500
+        }
+        # Whatever the answer, the lookup is not repeated: the counters are
+        # either built or known to be absent.
+        $null -ne $script:ThermalZoneCounters | Should -BeTrue
+    }
+
+    It "answers a second read from the same counter objects, quickly" {
+        $null = Get-DevKitThermalZoneKelvin
+        $before = $script:ThermalZoneCounters
+        $elapsed = Measure-Command { 1..20 | ForEach-Object { $null = Get-DevKitThermalZoneKelvin } }
+        [object]::ReferenceEquals($before, $script:ThermalZoneCounters) | Should -BeTrue
+        # Twenty reads. The old way took over a second for ONE.
+        $elapsed.TotalMilliseconds | Should -BeLessThan 1000
     }
 }

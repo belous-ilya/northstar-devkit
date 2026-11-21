@@ -27,7 +27,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -46,7 +46,7 @@ Write-DevKitHeader "Delete node_modules"
 Write-DevKitInfo "Path: $targetPath"
 
 $nmPath = Join-Path $targetPath "node_modules"
-if (-not (Test-Path $nmPath)) {
+if (-not (Test-Path -LiteralPath $nmPath)) {
     if ($Reinstall) {
         # Nothing to delete (e.g. a fresh clone), but the caller explicitly
         # asked to reinstall - skip the delete step and fall through instead
@@ -64,7 +64,7 @@ if (-not (Test-Path $nmPath)) {
     # understate the reported size - flag the number as an estimate when
     # that happens rather than reporting it as exact.
     $sizeErrors = $null
-    $size = (Get-ChildItem $nmPath -Recurse -ErrorAction SilentlyContinue -ErrorVariable sizeErrors |
+    $size = (Get-ChildItem -LiteralPath $nmPath -Recurse -ErrorAction SilentlyContinue -ErrorVariable sizeErrors |
         Measure-Object -Property Length -Sum).Sum
     $sizeMB = [math]::Round($size / 1MB, 2)
 

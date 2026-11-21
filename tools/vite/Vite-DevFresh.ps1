@@ -37,7 +37,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -61,7 +61,7 @@ Write-DevKitInfo "Package manager: $($manager.Command)"
 try {
     Invoke-DevKitInDirectory -Path $targetPath -ScriptBlock {
         # Check if this is a Vite project
-        if (-not (Test-Path "package.json")) {
+        if (-not (Test-Path -LiteralPath "package.json")) {
             Write-DevKitError "No package.json found. Not a Node.js project?"
             exit 1
         }
@@ -149,6 +149,15 @@ try {
         Write-Host "  ===================================`n" -ForegroundColor Cyan
 
         & $manager.Command @devArgs
+        # A dev server runs until something stops it. If it comes back by
+        # itself with an error (no "dev" script, the config does not load,
+        # the port is refused), the start FAILED - and this script used to
+        # end with exit code 0 regardless, so the app showed a green
+        # "exit 0" for a server that never came up.
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-DevKitError "The dev server exited with code $LASTEXITCODE."
+            exit $LASTEXITCODE
+        }
     }
 } catch {
     Write-DevKitError $_

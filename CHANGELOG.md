@@ -2,6 +2,85 @@
 
 All notable changes to Northstar DevKit are documented here.
 
+## [Unreleased]
+
+The rest of the 4.8.0 sweep: the lower-severity findings, again with the
+rule that nothing may make the app heavier.
+
+### Changed
+
+- **The Control Center window is created the first time it is opened**,
+  not at every start. It is a second webview with its own renderer
+  process, and most sessions only ever use the Control Center as a tray
+  inside the widget. Measured in a development build: 278 MB of webview
+  memory with only the widget, 521 MB once the window exists.
+- **The sidecar starts four of its six lanes on first use.** Only the two
+  every start needs (metrics, work) come up at boot; the MCP, tool, Git and
+  Error Center lanes start with their first request. At rest after a
+  normal widget start: 106 MB instead of 121 MB, 34 threads instead of 39.
+- **The MCP Servers report runs one server check instead of two.** Each
+  check makes Claude Code connect to every configured server, which starts
+  every local server as a process. The second check only ever supplied the
+  list of user-scope server names, which is now kept for up to ten minutes
+  and refreshed when the project's servers change. `claude --version` and
+  `kimi --version` are asked once per installed copy, not on every poll.
+- **Reading the CPU temperature no longer stalls the gauges.** The read
+  took 1.2 seconds each time the cached value expired; it now costs about
+  0.6 seconds once, then under a millisecond, and the value refreshes every
+  15 seconds instead of 45.
+- GitHub issues refresh every 60 seconds instead of every 20. Pull
+  requests keep 20: their branch tips are drawn into the graph.
+- **Find Stale node_modules shows how long the project has been idle**
+  (last commit or checkout, install, or `package.json` change), not the
+  age of the `node_modules` folder, which only changes when a dependency
+  does - an actively developed project could be listed as months old.
+
+### Fixed
+
+- **A tool that printed fast could freeze its own console**, and if the
+  app could not keep up the run never ended on screen: the dialog stayed
+  "running" and the widget's action buttons stayed disabled until restart.
+  Output is now shown and recorded in batches, a notice says when lines
+  were dropped, and the run's outcome is taken from the tool's own answer
+  when the "finished" event is lost.
+- The tool consoles no longer jump to the bottom while you are reading
+  further up.
+- **A sidecar that crashed while a tool it had started was still running
+  went unnoticed**: every call waited out its full timeout (hours, for a
+  tool run) and nothing restarted. The host now watches the process
+  itself, not only its output.
+- Two console windows no longer flash up when DevKit is started from a
+  shortcut.
+- One press of Escape closes one dialog. It used to close the Error Center
+  from under its own "Clear list?" confirm, and Settings together with a
+  dialog it had been opened over.
+- Folder rows in the Files tray can be reached and opened with the
+  keyboard; the note fields have labels.
+- A project whose folder was moved or deleted says so in the Git tray
+  instead of "Not a git repository".
+- Run history no longer offers "Run again" for a tool that was removed.
+- **Next.js and Vite "Dev Server (Fresh)" reported success when the server
+  failed to start.** They now end with the server's own exit code.
+- Test Dev Endpoint no longer sends HTTP requests to database ports
+  (PostgreSQL, MySQL, Redis, MongoDB); it lists them as listening.
+- **Every DevKit Doctor check has a deadline.** One tool that never
+  answered (`docker info` with Docker Desktop half started) used to hold
+  the whole run.
+- **Project folders with square brackets in their name work.** Every
+  project tool answered "Path not found" for a folder such as
+  `my-app [v2]`.
+- A setup marker written by Windows PowerShell 5.1 is read correctly, so a
+  scheduled task left over from another copy of DevKit is no longer
+  trusted.
+
+### Removed
+
+- Code nothing called, left from the WPF app and the old terminal menu:
+  the terminal animation library (`tools/lib/DevKit-UI.ps1`, which every
+  tool run still loaded), the terminal-launch helpers, and the old
+  widget's file-icon and note helpers. Installs that update lose the file
+  too.
+
 ## [4.8.1] - 2026-11-21
 
 ### Fixed

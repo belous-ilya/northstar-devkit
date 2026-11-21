@@ -20,7 +20,7 @@ param(
 
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) { . $CommonModule }
+if (Test-Path -LiteralPath $CommonModule) { . $CommonModule }
 
 
 function Write-Check {
@@ -48,17 +48,92 @@ function Write-Check {
     }
 }
 
+function Invoke-DevKitDoctorProbe {
+    <#
+    .SYNOPSIS
+        Runs one command-line tool with a deadline and returns what it said.
+    .DESCRIPTION
+        Every check here used to call its tool directly and wait for as long
+        as the tool took. A tool that never answers - `docker info` while
+        Docker Desktop is half started, a package manager waiting on a
+        prompt nobody can see - then held the whole Doctor, and with it the
+        app's single tool lane, until someone noticed. Each tool now gets a
+        deadline; past it, the tool and everything it started are stopped
+        and the check reports that it did not answer.
+
+        The tool's input is closed, so one that asks a question gets "end
+        of input" instead of waiting for an answer.
+    .OUTPUTS
+        PSCustomObject: Started [bool], TimedOut [bool], ExitCode [int or
+        $null], Lines [string[]] (stdout then stderr, never $null).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string[]]$ArgumentList = @(),
+        [int]$TimeoutSeconds = 10
+    )
+
+    $result = [PSCustomObject]@{ Started = $false; TimedOut = $false; ExitCode = $null; Lines = @() }
+    $process = $null
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $Path
+        # One string, quoted by hand: Windows PowerShell 5.1's
+        # ProcessStartInfo has no ArgumentList.
+        $psi.Arguments = (@($ArgumentList) | ForEach-Object {
+                if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+            }) -join ' '
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $process = [System.Diagnostics.Process]::Start($psi)
+        $result.Started = $true
+        try { $process.StandardInput.Close() } catch { }
+        # Read while it runs: a tool that fills its output pipe would
+        # otherwise stall itself and look like one that never answers.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+
+        if ($process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.WaitForExit()   # lets .NET finish wiring ExitCode
+            $result.ExitCode = $process.ExitCode
+        } else {
+            $result.TimedOut = $true
+            [void](& "$env:SystemRoot\System32\taskkill.exe" /T /F /PID $process.Id 2>&1)
+        }
+        # Bounded: something the tool started can outlive it holding the
+        # pipe open, and an unbounded read would wait for THAT instead.
+        $text = ''
+        foreach ($read in $stdout, $stderr) {
+            try { if ($read.Wait(2000)) { $text += $read.Result + "`n" } } catch { }
+        }
+        $result.Lines = @($text -split "`r?`n" | Where-Object { $_ -ne '' })
+    } catch {
+        # Could not be started at all (a corrupted or non-executable file).
+    } finally {
+        if ($process) { try { $process.Dispose() } catch { } }
+    }
+    return $result
+}
+
 function Get-DevKitToolVersion {
     <#
     .SYNOPSIS
         Safely invokes `<Path> <ArgumentList>` (e.g. --version) and validates
         the result instead of assuming success just because the binary resolved.
     .DESCRIPTION
-        Wraps the native call in try/catch (a corrupted/non-executable binary
-        throws rather than crashing the caller) and only reports Responding =
-        $true when the process exits cleanly AND its output matches Pattern.
-        This lets callers distinguish "installed and healthy" from "resolves
-        via Get-Command but is a dangling/broken shim".
+        Only reports Responding = $true when the tool exits cleanly, within
+        its deadline, AND its output matches Pattern. This lets callers
+        distinguish "installed and healthy" from "resolves via Get-Command
+        but is a dangling/broken shim" - and from "installed but hangs",
+        which reports TimedOut.
+
+        Get-Command hands back a .ps1 shim for npm-installed tools (npm,
+        yarn, pnpm), which cannot be started as a process. The .cmd or .exe
+        that sits beside it is the same tool, so that is what gets run; only
+        a tool with no such sibling is called in-process, without a deadline.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -67,19 +142,38 @@ function Get-DevKitToolVersion {
         [string[]]$ArgumentList = @('--version'),
 
         [Parameter(Mandatory = $true)]
-        [string]$Pattern
+        [string]$Pattern,
+
+        [int]$TimeoutSeconds = 10
     )
 
     $result = [PSCustomObject]@{
         Responding = $false
         ExitOk     = $false
+        TimedOut   = $false
         Output     = $null
         Version    = $null
     }
 
+    $launch = $Path
+    if ($launch -notmatch '\.(exe|cmd|bat|com)$') {
+        foreach ($extension in '.exe', '.cmd', '.bat') {
+            $sibling = [System.IO.Path]::ChangeExtension($launch, $extension)
+            if (Test-Path -LiteralPath $sibling -PathType Leaf) { $launch = $sibling; break }
+        }
+    }
+
     try {
-        $rawOutput = & $Path @ArgumentList 2>&1
-        $exitCode = $LASTEXITCODE
+        if ($launch -match '\.(exe|cmd|bat|com)$') {
+            $probe = Invoke-DevKitDoctorProbe -Path $launch -ArgumentList $ArgumentList -TimeoutSeconds $TimeoutSeconds
+            $result.TimedOut = $probe.TimedOut
+            $rawOutput = $probe.Lines
+            # A tool that could not be started or was stopped has no clean exit.
+            $exitCode = if ($probe.Started -and -not $probe.TimedOut) { $probe.ExitCode } else { -1 }
+        } else {
+            $rawOutput = & $launch @ArgumentList 2>&1
+            $exitCode = $LASTEXITCODE
+        }
         $firstLine = $rawOutput | Select-Object -First 1
         if ($null -ne $firstLine) { $result.Output = "$firstLine" }
 
@@ -250,17 +344,20 @@ if ($dockerCmd) {
         $warningsFound++
     }
 
-    # Check if daemon is running
-    $null = & docker info 2>$null
-    $dockerRunning = $LASTEXITCODE -eq 0
-    Write-Check "Docker Daemon" $dockerRunning "" "Start Docker Desktop"
+    # Check if daemon is running. `docker info` is the one call here known
+    # to hang outright: with Docker Desktop half started it waits on the
+    # engine's pipe for minutes.
+    $daemonProbe = Invoke-DevKitDoctorProbe -Path $dockerCmd.Source -ArgumentList @('info') -TimeoutSeconds 15
+    $dockerRunning = $daemonProbe.Started -and -not $daemonProbe.TimedOut -and $daemonProbe.ExitCode -eq 0
+    $daemonMessage = if ($daemonProbe.TimedOut) { "No answer within 15s" } else { "" }
+    Write-Check "Docker Daemon" $dockerRunning $daemonMessage "Start Docker Desktop"
     if (-not $dockerRunning) { $warningsFound++ }
 
     # Check docker compose
     $composeCmd = Get-Command docker-compose -ErrorAction SilentlyContinue
     if (-not $composeCmd) {
-        $null = & docker compose version 2>$null
-        if ($LASTEXITCODE -eq 0) { $composeCmd = $true }
+        $composeProbe = Invoke-DevKitDoctorProbe -Path $dockerCmd.Source -ArgumentList @('compose', 'version') -TimeoutSeconds 10
+        if ($composeProbe.Started -and -not $composeProbe.TimedOut -and $composeProbe.ExitCode -eq 0) { $composeCmd = $true }
     }
     if ($composeCmd) {
         Write-Check "Docker Compose" $true "Installed"
@@ -296,12 +393,12 @@ $ghCmd = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue |
     Where-Object { $_.Source -match '\.(exe|cmd|bat|com)$' } | 
     Select-Object -First 1
 if ($ghCmd) {
-    try {
-        $ghOutput = & $ghCmd.Source --version 2>$null
-        $ghVersion = $ghOutput | Select-Object -First 1
+    $ghProbe = Invoke-DevKitDoctorProbe -Path $ghCmd.Source -ArgumentList @('--version') -TimeoutSeconds 10
+    $ghVersion = $ghProbe.Lines | Select-Object -First 1
+    if ($ghProbe.Started -and -not $ghProbe.TimedOut -and $ghVersion) {
         Write-Check "GitHub CLI" $true ($ghVersion -replace '^gh version ','')
-    } catch {
-        Write-Check "GitHub CLI" $false "" "Optional - Install from https://cli.github.com"
+    } else {
+        Write-Check "GitHub CLI" $false "Found but not responding" "Optional - Reinstall from https://cli.github.com"
     }
 } else {
     Write-Check "GitHub CLI" $false "" "Optional - Install from https://cli.github.com"

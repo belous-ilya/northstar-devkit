@@ -32,7 +32,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -60,7 +60,7 @@ if (-not (Test-DevKitCommand $manager.Command)) {
 # move the cache, and a Yarn 2+ project pins its own yarn binary - from any
 # other folder these would describe a different cache than the project uses.
 $cachePath = $null
-Push-Location $targetPath
+Push-Location -LiteralPath $targetPath
 try {
     switch ($manager.Command) {
         "npm" { $cachePath = (npm config get cache 2>$null | Select-Object -Last 1) }

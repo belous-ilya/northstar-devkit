@@ -4,11 +4,9 @@
     Pure-logic core for the DevKit desktop GUI - Northstar DevKit
 .DESCRIPTION
     Dot-sourceable, UI-free functions backing gui/DevKit-GUI.ps1: loading the
-    tool-category manifests (one per tools/ folder) as one catalog, searching it, turning a
+    tool-category manifests (one per tools/ folder) as one catalog, searching it, and turning a
     manifest item plus resolved dialog values into a script argument table
-    (the same rules the CLI applies in cli/src/catalog.rs), and building the
-    terminal command line used to launch a tool in Windows Terminal or a
-    classic console window.
+    (the same rules the CLI applies in cli/src/catalog.rs).
 
     Everything here is deliberately free of WPF/console side effects so it
     can be covered by Pester (tests/Unit/GuiCore.Tests.ps1), matching the
@@ -196,119 +194,4 @@ function ConvertTo-DevKitToolArguments {
     }
 
     return $callArgs
-}
-
-# ==================== TERMINAL LAUNCH ====================
-
-function Format-DevKitShellArgument {
-    <#
-    .SYNOPSIS
-        Quotes one value for a PowerShell command line built as a single
-        string: wraps in double quotes when it contains whitespace or quotes,
-        backslash-escaping embedded quotes.
-    #>
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    if ($Value -notmatch '[\s"]') { return $Value }
-    return '"' + ($Value -replace '"', '\"') + '"'
-}
-
-function ConvertTo-DevKitArgumentString {
-    <#
-    .SYNOPSIS
-        Renders an argument hashtable as a PowerShell parameter string:
-        $true becomes a bare -Switch, $false/$null are omitted, numbers are
-        bare, strings are quoted when needed. Accepts any IDictionary -
-        passing an [ordered] one keeps a deterministic argument order.
-    #>
-    param([System.Collections.IDictionary]$Arguments = @{})
-
-    $parts = @()
-    foreach ($key in $Arguments.Keys) {
-        $value = $Arguments[$key]
-        # Branch on type FIRST: in PowerShell [int]1 -eq $true and 0 -eq
-        # $false, so testing "-eq $true/$false" before the type check would
-        # render 1 as a bare "-Key" switch and drop 0 entirely.
-        if ($value -is [bool]) {
-            if ($value) { $parts += "-$key" }
-            continue
-        }
-        if ($null -eq $value) { continue }
-        if ($value -is [int] -or $value -is [long] -or $value -is [double]) {
-            $parts += "-$key $value"
-        } else {
-            $parts += "-$key $(Format-DevKitShellArgument -Value ([string]$value))"
-        }
-    }
-    return ($parts -join ' ')
-}
-
-function Get-DevKitTerminalCommand {
-    <#
-    .SYNOPSIS
-        Builds the process launch spec that runs a tool script in a real
-        terminal window - Windows Terminal when available (so the gradient
-        banner/spinner engine keeps its full VT capabilities), classic
-        conhost otherwise. Prefers pwsh, falls back to Windows PowerShell,
-        matching every batch wrapper in the repo.
-    .PARAMETER ScriptPath
-        Full path to the tool's .ps1.
-    .PARAMETER Arguments
-        The resolved argument hashtable from ConvertTo-DevKitToolArguments
-        (any IDictionary; [ordered] keeps the command line deterministic).
-    .PARAMETER WorkingDirectory
-        Starting directory for the terminal (the DevKit root, matching the
-        TUI menu's semantics - scripts receive -Path explicitly).
-    .PARAMETER Title
-        Window/tab title, e.g. the tool's label.
-    .PARAMETER NoWindowsTerminal
-        Force the classic console host (used by tests and as a manual
-        fallback if wt.exe misbehaves).
-    .OUTPUTS
-        @{ FilePath; Arguments; WorkingDirectory; Terminal; Shell }
-        suitable for Start-Process. $null FilePath means "no shell found".
-    .NOTES
-        The shell is launched with -NoExit so the window stays open after a
-        quick tool finishes - otherwise its output would vanish before the
-        user can read it. Long-running tools (dev servers, log tails) are
-        unaffected; the user simply closes the window when done.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$ScriptPath,
-        [System.Collections.IDictionary]$Arguments = @{},
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [string]$Title = "Northstar DevKit",
-        [switch]$NoWindowsTerminal
-    )
-
-    $shell = $null
-    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-        $shell = 'pwsh'
-    } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
-        $shell = 'powershell'
-    }
-    if ($null -eq $shell) { return @{ FilePath = $null } }
-
-    $argString = ConvertTo-DevKitArgumentString -Arguments $Arguments
-    $shellArgs = "-NoProfile -ExecutionPolicy Bypass -NoExit -File $(Format-DevKitShellArgument -Value $ScriptPath)"
-    if (-not [string]::IsNullOrWhiteSpace($argString)) { $shellArgs += " $argString" }
-
-    $useWindowsTerminal = -not $NoWindowsTerminal -and (Get-Command wt -ErrorAction SilentlyContinue)
-    if ($useWindowsTerminal) {
-        return @{
-            FilePath         = 'wt.exe'
-            Arguments        = "--title $(Format-DevKitShellArgument -Value $Title) -d $(Format-DevKitShellArgument -Value $WorkingDirectory) $shell $shellArgs"
-            WorkingDirectory = $WorkingDirectory
-            Terminal         = 'WindowsTerminal'
-            Shell            = $shell
-        }
-    }
-
-    return @{
-        FilePath         = "$shell.exe"
-        Arguments        = $shellArgs
-        WorkingDirectory = $WorkingDirectory
-        Terminal         = 'ConsoleHost'
-        Shell            = $shell
-    }
 }

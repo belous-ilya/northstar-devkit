@@ -23,7 +23,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -41,7 +41,7 @@ try {
 Write-DevKitHeader "Clear Next.js Cache"
 
 $nextPath = Join-Path $targetPath ".next"
-if (-not (Test-Path $nextPath)) {
+if (-not (Test-Path -LiteralPath $nextPath)) {
     Write-DevKitInfo ".next folder not found."
     exit 0
 }
@@ -55,12 +55,12 @@ if (-not $Force) {
 
 Write-DevKitStep "Deleting .next folder"
 try {
-    Remove-Item -Path $nextPath -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $nextPath -Recurse -Force -ErrorAction Stop
 } catch {
     # Fall through to the Test-Path check below to decide success.
 }
 
-if (-not (Test-Path $nextPath)) {
+if (-not (Test-Path -LiteralPath $nextPath)) {
     Write-DevKitDone
 } else {
     Write-DevKitError "Could not fully delete .next folder. Stop the dev server and try again."

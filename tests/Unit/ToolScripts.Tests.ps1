@@ -584,3 +584,172 @@ Describe "the elevation task's settings" {
         $hook.Contains('"system.repairElevationTask"') | Should -BeTrue
     }
 }
+
+Describe "dev-server tools report a failed start" {
+
+    # Next-DevFresh and Vite-DevFresh end by running the project's dev
+    # server. Neither looked at how that ended, so a server that never came
+    # up (no "dev" script, a config that does not load) finished as exit 0
+    # and the app showed it as a success. These scripts start servers and
+    # cannot be executed here; the property is read from the parsed script.
+
+    BeforeDiscovery {
+        $script:DevServerTools = @(
+            @{ Script = 'tools\nextjs\Next-DevFresh.ps1' },
+            @{ Script = 'tools\vite\Vite-DevFresh.ps1' }
+        )
+    }
+
+    It "<Script> exits with the dev server's own code when it comes back with an error" -ForEach $script:DevServerTools {
+        $ast = Get-ScriptAst $Script
+        $launch = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] -and
+                    $n.InvocationOperator -eq 'Ampersand' -and
+                    $n.Extent.Text -match '^& \$manager\.Command @devArgs' }, $true))
+        $launch.Count | Should -Be 1
+
+        # The first statement after the launch, in the same block.
+        $block = $launch[0].Parent
+        while ($block -and $block -isnot [System.Management.Automation.Language.StatementBlockAst] -and
+            $block -isnot [System.Management.Automation.Language.NamedBlockAst]) { $block = $block.Parent }
+        $after = @($block.Statements | Where-Object { $_.Extent.StartOffset -gt $launch[0].Extent.EndOffset }) | Select-Object -First 1
+        $after | Should -Not -BeNullOrEmpty
+        $after | Should -BeOfType ([System.Management.Automation.Language.IfStatementAst])
+        $after.Extent.Text | Should -Match '\$LASTEXITCODE -ne 0'
+        $after.Extent.Text | Should -Match 'exit \$LASTEXITCODE'
+    }
+
+    It "Next-DevFresh.ps1 does not end as a success when the start throws" {
+        $ast = Get-ScriptAst 'tools\nextjs\Next-DevFresh.ps1'
+        $catches = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true) |
+                Where-Object { $_.Parent.Body.Extent.Text -match '& \$manager\.Command @devArgs' })
+        $catches.Count | Should -Be 1
+        $catches[0].Body.Extent.Text | Should -Match 'exit 1'
+    }
+}
+
+Describe "Find-StaleNodeModules.ps1 measures how long the PROJECT has been idle" {
+
+    # It used to show the age of the node_modules folder itself. That
+    # timestamp only moves when a dependency is added or removed, so a
+    # project worked on every day with unchanged dependencies was listed as
+    # months old - in a tool whose next question is "delete these?".
+
+    BeforeAll {
+        $ast = Get-ScriptAst 'tools\node\Find-StaleNodeModules.ps1'
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-DevKitProjectLastActivity' }, $true)
+        . ([scriptblock]::Create($fn.Extent.Text))
+
+        function New-AgedProject {
+            param([string]$Name, [hashtable]$DaysAgo)
+            $project = Join-Path $TestDrive $Name
+            $modules = Join-Path $project 'node_modules'
+            $null = New-Item -ItemType Directory -Path $modules -Force
+            # Create everything first, date it afterwards: creating a file
+            # moves its folder's own timestamp to now.
+            foreach ($relative in $DaysAgo.Keys) {
+                if ($relative -eq 'node_modules') { continue }
+                $full = Join-Path $project $relative
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force
+                [System.IO.File]::WriteAllText($full, 'x')
+            }
+            foreach ($relative in $DaysAgo.Keys) {
+                $full = if ($relative -eq 'node_modules') { $modules } else { Join-Path $project $relative }
+                (Get-Item -LiteralPath $full -Force).LastWriteTime = (Get-Date).AddDays(-$DaysAgo[$relative])
+            }
+            return $modules
+        }
+        function Get-IdleDays { param([string]$Modules) [int][math]::Round(((Get-Date) - (Get-DevKitProjectLastActivity -NodeModulesPath $Modules)).TotalDays) }
+    }
+
+    It "calls a project idle for 0 days when it was committed to today, however old its node_modules is" {
+        $modules = New-AgedProject 'active' @{ 'node_modules' = 200; 'package.json' = 200; '.git\logs\HEAD' = 0 }
+        Get-IdleDays $modules | Should -Be 0
+    }
+
+    It "counts a recent install, by each package manager's own marker file" {
+        Get-IdleDays (New-AgedProject 'npm' @{ 'node_modules' = 90; 'node_modules\.package-lock.json' = 3 }) | Should -Be 3
+        Get-IdleDays (New-AgedProject 'pnpm' @{ 'node_modules' = 90; 'node_modules\.modules.yaml' = 4 }) | Should -Be 4
+        Get-IdleDays (New-AgedProject 'yarn' @{ 'node_modules' = 90; 'node_modules\.yarn-integrity' = 5 }) | Should -Be 5
+    }
+
+    It "counts a package.json or lock file change" {
+        Get-IdleDays (New-AgedProject 'pkg' @{ 'node_modules' = 90; 'package.json' = 7 }) | Should -Be 7
+        Get-IdleDays (New-AgedProject 'lock' @{ 'node_modules' = 90; 'package.json' = 80; 'pnpm-lock.yaml' = 6 }) | Should -Be 6
+    }
+
+    It "still calls a project stale when nothing in it has moved" {
+        $modules = New-AgedProject 'stale' @{ 'node_modules' = 150; 'package.json' = 160; 'package-lock.json' = 150; '.git\logs\HEAD' = 170; '.git\HEAD' = 170 }
+        Get-IdleDays $modules | Should -Be 150
+    }
+
+    It "does not treat a refreshed .git\index as activity (git status rewrites it)" {
+        $modules = New-AgedProject 'polled' @{ 'node_modules' = 120; '.git\index' = 0; '.git\logs\HEAD' = 120 }
+        Get-IdleDays $modules | Should -Be 120
+    }
+
+    It "counts work in the repository a nested package belongs to (a monorepo)" {
+        $modules = New-AgedProject 'mono\packages\web' @{ 'node_modules' = 100; 'package.json' = 100 }
+        $repoLog = Join-Path $TestDrive 'mono\.git\logs\HEAD'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $repoLog) -Force
+        [System.IO.File]::WriteAllText($repoLog, 'x')
+        (Get-Item -LiteralPath $repoLog).LastWriteTime = (Get-Date).AddDays(-1)
+        Get-IdleDays $modules | Should -Be 1
+    }
+
+    It "works for a project folder with brackets in its name" {
+        Get-IdleDays (New-AgedProject 'app [v2]' @{ 'node_modules' = 60; 'package.json' = 2 }) | Should -Be 2
+    }
+
+    It "is what the report's age column is computed from" {
+        $text = (Get-ScriptAst 'tools\node\Find-StaleNodeModules.ps1').Extent.Text
+        $text | Should -Match 'Get-DevKitProjectLastActivity -NodeModulesPath \$dir\.FullName'
+        $text | Should -Match 'AgeDays\s+= \[int\]\[math\]::Round\(\(\(Get-Date\) - \$lastActivity\)\.TotalDays\)'
+    }
+}
+
+Describe "Test-DevEndpoint.ps1 does not send HTTP to database ports" {
+
+    # With no URL it probes every common dev port that is listening - and
+    # that list includes PostgreSQL, MySQL, Redis and MongoDB. An HTTP
+    # request to one of those is logged by the server as a broken or hostile
+    # client, and the probe waits out its whole timeout for nothing.
+
+    BeforeAll {
+        $ast = Get-ScriptAst 'tools\ports\Test-DevEndpoint.ps1'
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-DevKitEndpointProbePlan' }, $true)
+        . ([scriptblock]::Create($fn.Extent.Text))
+        # The script's own table of database ports, evaluated on its own.
+        $assignment = $ast.Find({ param($n)
+                $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$NonHttpPorts' }, $true)
+        $script:NonHttpPorts = & ([scriptblock]::Create($assignment.Right.Extent.Text))
+        $script:Plan = @(Get-DevKitEndpointProbePlan -Ports @(3000, 5432, 5173, 6379, 3306, 27017, 8080) -NonHttp $script:NonHttpPorts)
+    }
+
+    It "probes web ports and only reports database ports" {
+        @($script:Plan | Where-Object Probe | ForEach-Object Port) | Should -Be @(3000, 5173, 8080)
+        @($script:Plan | Where-Object { -not $_.Probe } | ForEach-Object Port) | Should -Be @(5432, 6379, 3306, 27017)
+    }
+
+    It "names the database, so the row says why it was not probed" {
+        ($script:Plan | Where-Object Port -EQ 5432).Service | Should -Be 'PostgreSQL'
+        ($script:Plan | Where-Object Port -EQ 6379).Service | Should -Be 'Redis'
+        ($script:Plan | Where-Object Port -EQ 3306).Service | Should -Be 'MySQL'
+        ($script:Plan | Where-Object Port -EQ 27017).Service | Should -Be 'MongoDB'
+    }
+
+    It "keeps the ports in the order given and answers nothing for no ports" {
+        @($script:Plan | ForEach-Object Port) | Should -Be @(3000, 5432, 5173, 6379, 3306, 27017, 8080)
+        @(Get-DevKitEndpointProbePlan -Ports @() -NonHttp $script:NonHttpPorts).Count | Should -Be 0
+    }
+
+    It "is what the scan loop goes through before it sends anything" {
+        $text = $ast.Extent.Text
+        $loop = $text.IndexOf('Get-DevKitEndpointProbePlan -Ports $activePorts -NonHttp $NonHttpPorts')
+        $probe = $text.IndexOf('Invoke-DevKitEndpointProbe -TargetUrl "http://localhost:$p"')
+        $loop | Should -BeGreaterThan -1
+        $probe | Should -BeGreaterThan $loop
+        # Nothing else in the script probes a port by number.
+        @([regex]::Matches($text, 'Invoke-DevKitEndpointProbe -TargetUrl "http://localhost')).Count | Should -Be 1
+    }
+}

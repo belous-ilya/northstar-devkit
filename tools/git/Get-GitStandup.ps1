@@ -35,7 +35,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -78,7 +78,7 @@ if ($Path -eq '.') {
     $linked = @(Get-DevKitLinkedProjects | Where-Object { -not $_.Missing })
     $seen = @{}
     foreach ($p in $linked) {
-        if (-not (Test-Path (Join-Path $p.path ".git"))) { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path $p.path ".git"))) { continue }
         $key = $p.path.TrimEnd('\').ToLower()
         if ($seen.ContainsKey($key)) { continue }
         $seen[$key] = $true
@@ -104,8 +104,8 @@ if ($Path -eq '.') {
     $scanDepth = 2
     $excludedDirNames = @('node_modules', 'dist', '.next', '.turbo', 'bin', 'obj')
     $gitRepos = @()
-    if (Test-Path (Join-Path $targetPath ".git")) {
-        $gitRepos += Get-Item -Path $targetPath
+    if (Test-Path -LiteralPath (Join-Path $targetPath ".git")) {
+        $gitRepos += Get-Item -LiteralPath $targetPath
     }
     $gitRepos += Get-ChildItem -Path $targetPath -Directory -Recurse -Depth $scanDepth -Exclude $excludedDirNames -ErrorAction SilentlyContinue |
         Where-Object {
@@ -113,7 +113,7 @@ if ($Path -eq '.') {
             $segments = $relative -split '[\\/]'
             -not ($segments | Where-Object { $excludedDirNames -contains $_ })
         } |
-        Where-Object { Test-Path (Join-Path $_.FullName ".git") }
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName ".git") }
 
     foreach ($r in $gitRepos) {
         $relPath = $r.FullName.Substring($targetPath.Length).TrimStart('\', '/')

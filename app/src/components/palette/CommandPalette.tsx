@@ -15,6 +15,7 @@ import { highlightSegments, scoreCandidate } from "./fuzzy";
 import {
   PALETTE_DANCE_EVENT,
   PALETTE_TOOL_EVENT,
+  stashToolRequest,
   usePaletteStore,
   type PaletteToolRequest,
 } from "./paletteStore";
@@ -189,10 +190,13 @@ export function CommandPalette() {
         return;
       }
       // Cross-window: surface the Control Center, then hand it the pick.
-      // Both windows are created at startup (tauri.conf.json), so its
-      // listener is already live; the delayed second emit is belt-and-braces
-      // for a webview that hasn't finished booting, and is free because
-      // usePaletteStore.requestTool de-dupes on `id`.
+      // That window is created the first time it is opened, so on a first
+      // open nothing in it is listening yet when the events below go out.
+      // The request is therefore also left where the window looks when it
+      // mounts (stashToolRequest). When the window already exists the event
+      // gets there first and clears the stash; usePaletteStore.requestTool
+      // de-dupes on `id`, so whichever arrives second is ignored.
+      stashToolRequest(request);
       await showWindow("control-center");
       await emitTo("control-center", PALETTE_TOOL_EVENT, request);
       window.setTimeout(() => {

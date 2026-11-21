@@ -4,8 +4,14 @@
     Find Stale node_modules - Northstar DevKit
 .DESCRIPTION
     Scans a folder tree for node_modules directories and reports how much
-    disk space each one holds and how long it has been sitting untouched,
-    so you can reclaim space across many projects at once.
+    disk space each one holds and how long its project has been idle, so
+    you can reclaim space across many projects at once.
+
+    "Idle" is the time since the project was last worked on: the newest of
+    its last commit or checkout, its package.json and lock file, and its
+    last install. The node_modules folder's own timestamp is not used alone
+    - it only moves when a dependency is added or removed, so a project
+    worked on every day with unchanged dependencies looked months stale.
 
     Report-only by default: after the report you'll be asked whether to
     delete the listed folders right away (or pass -Apply to go straight
@@ -39,7 +45,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -62,6 +68,60 @@ if ($Depth -lt 0) {
 
 Write-DevKitHeader "Find Stale node_modules"
 Write-DevKitInfo "Scanning: $targetPath (depth $Depth)"
+
+function Get-DevKitProjectLastActivity {
+    <#
+    .SYNOPSIS
+        When the project that owns a node_modules folder was last worked on:
+        the newest timestamp among the things that move when someone uses
+        the project. Reads timestamps only.
+    .DESCRIPTION
+        Looked at, where present:
+          - .git\logs\HEAD and .git\HEAD  (a commit, checkout, pull, merge)
+          - package.json and the lock files (a dependency or script change)
+          - node_modules itself and the marker file each package manager
+            rewrites on install
+        .git\index is deliberately not one of them: plain `git status`
+        refreshes it, and anything that polls the repository (an editor,
+        this app's own Git tray) would make every project look active.
+
+        The repository is the nearest folder at or above the project that
+        has a .git: a package inside a monorepo has none of its own, and
+        work anywhere in that repository counts for it. That errs toward
+        calling a project active, which is the safe way to be wrong here.
+    .PARAMETER NodeModulesPath
+        Full path of the node_modules folder.
+    #>
+    param([Parameter(Mandatory = $true)][string]$NodeModulesPath)
+
+    $project = Split-Path -Parent $NodeModulesPath
+    $repository = $project
+    while ($repository -and -not (Test-Path -LiteralPath (Join-Path $repository '.git'))) {
+        $parent = Split-Path -Parent $repository
+        $repository = if ($parent -and $parent -ne $repository) { $parent } else { $null }
+    }
+    if (-not $repository) { $repository = $project }
+    $candidates = @(
+        $NodeModulesPath
+        (Join-Path $NodeModulesPath '.package-lock.json')   # npm
+        (Join-Path $NodeModulesPath '.modules.yaml')        # pnpm
+        (Join-Path $NodeModulesPath '.yarn-integrity')      # yarn 1
+        (Join-Path $project 'package.json')
+        (Join-Path $project 'package-lock.json')
+        (Join-Path $project 'pnpm-lock.yaml')
+        (Join-Path $project 'yarn.lock')
+        (Join-Path $project 'bun.lock')
+        (Join-Path $project 'bun.lockb')
+        (Join-Path $repository '.git\logs\HEAD')
+        (Join-Path $repository '.git\HEAD')
+    )
+    $newest = $null
+    foreach ($candidate in $candidates) {
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        if ($item -and ($null -eq $newest -or $item.LastWriteTime -gt $newest)) { $newest = $item.LastWriteTime }
+    }
+    return $newest
+}
 
 function Format-DevKitByteSize {
     param([Parameter(Mandatory = $true)][double]$Bytes)
@@ -117,19 +177,21 @@ try {
         $isEstimate = $false
         if ($null -eq $size) {
             $sizeErrors = $null
-            $size = (Get-ChildItem $dir.FullName -Recurse -ErrorAction SilentlyContinue -ErrorVariable sizeErrors |
+            $size = (Get-ChildItem -LiteralPath $dir.FullName -Recurse -ErrorAction SilentlyContinue -ErrorVariable sizeErrors |
                 Measure-Object -Property Length -Sum).Sum
             if ($null -eq $size) { $size = 0 }
             $isEstimate = ($sizeErrors -and $sizeErrors.Count -gt 0)
         }
         Write-DevKitDone
 
+        $lastActivity = Get-DevKitProjectLastActivity -NodeModulesPath $dir.FullName
+        if ($null -eq $lastActivity) { $lastActivity = $dir.LastWriteTime }
         $results += [PSCustomObject]@{
             Path          = $dir.FullName
             SizeBytes     = [double]$size
             IsEstimate    = $isEstimate
-            LastWriteTime = $dir.LastWriteTime
-            AgeDays       = [int][math]::Round(((Get-Date) - $dir.LastWriteTime).TotalDays)
+            LastWriteTime = $lastActivity
+            AgeDays       = [int][math]::Round(((Get-Date) - $lastActivity).TotalDays)
         }
     }
 
@@ -142,10 +204,11 @@ try {
     foreach ($r in $results) {
         $sizeText = Format-DevKitByteSize $r.SizeBytes
         if ($r.IsEstimate) { $sizeText = "~$sizeText (est.)" }
-        Write-Host ("    {0,-14} {1,5} days old  {2}" -f $sizeText, $r.AgeDays, $r.Path) -ForegroundColor Gray
+        Write-Host ("    {0,-14} idle {1,4} days  {2}" -f $sizeText, $r.AgeDays, $r.Path) -ForegroundColor Gray
     }
     Write-Host ""
     Write-Host ("  TOTAL reclaimable (est.): {0} across {1} folder(s)" -f (Format-DevKitByteSize $totalBytes), $results.Count) -ForegroundColor Green
+    Write-DevKitInfo "Idle = days since the project's last commit, checkout, install or package.json change."
 
     if (-not $Apply) {
         Write-Host ""

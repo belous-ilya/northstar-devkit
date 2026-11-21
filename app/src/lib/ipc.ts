@@ -93,6 +93,47 @@ export interface DevKitRpcEvent {
   [key: string]: unknown;
 }
 
+/**
+ * What a `tool.run` call answers with once the tool has exited. The same
+ * outcome also arrives as the `tool.finished` event, which is what the run
+ * surfaces normally act on; this copy is the one that cannot be dropped
+ * (see `droppedEventCount`).
+ */
+export interface ToolRunResult {
+  runId: string;
+  exitCode: number;
+  cancelled: boolean;
+}
+
+/**
+ * How long a run surface waits for `tool.finished` after the `tool.run`
+ * call itself has answered, before it takes the outcome from that answer.
+ * The event and the answer travel separately and either can arrive first;
+ * the event is preferred because the last lines of output come with it.
+ */
+export const TOOL_RESULT_GRACE_MS = 1500;
+
+/**
+ * The number of events the app's forwarder had to drop, when `evt` is that
+ * notice (`host.lagged`, emitted by app/src-tauri/src/lib.rs when a tool
+ * produces output faster than it can be passed on), else null. The dropped
+ * events are gone: output lines for certain, and possibly a run's
+ * `tool.finished` - which is why a run surface also takes the outcome from
+ * the `tool.run` answer (TOOL_RESULT_GRACE_MS).
+ */
+export function droppedEventCount(evt: DevKitRpcEvent): number | null {
+  if (evt.event !== "host.lagged") return null;
+  const data = evt.data as { dropped?: unknown } | null | undefined;
+  const dropped = Number(data?.dropped);
+  return Number.isFinite(dropped) && dropped > 0 ? Math.floor(dropped) : 0;
+}
+
+/** The line a run's console shows for dropped events. */
+export function droppedEventsNote(dropped: number): string {
+  const count = dropped > 0 ? `${dropped.toLocaleString("en-US")} ` : "";
+  return `-- ${count}output event${dropped === 1 ? " was" : "s were"} dropped: the tool wrote faster than DevKit could show it. Some lines are missing here. --`;
+}
+
 /** Subscribes to every sidecar event (tool.started/output/finished, etc.). Call the returned fn to unsubscribe. */
 export async function onDevKitEvent(handler: (evt: DevKitRpcEvent) => void): Promise<UnlistenFn> {
   return listen<DevKitRpcEvent>("devkit://event", (e) => handler(e.payload));
@@ -107,9 +148,16 @@ export function onToolRun(
     onOutput?: (stream: "stdout" | "stderr", line: string) => void;
     /** `cancelled` is the sidecar's own flag (tool.finished flattens `{exitCode, cancelled}`) - true when the run ended via tool.stop. */
     onFinished?: (exitCode: number, cancelled: boolean) => void;
+    /** Events were dropped on the way here (see `droppedEventCount`). Not tied to a run: any of them may have been this run's. */
+    onLagged?: (dropped: number) => void;
   },
 ): Promise<UnlistenFn> {
   return onDevKitEvent((evt) => {
+    const dropped = droppedEventCount(evt);
+    if (dropped !== null) {
+      handlers.onLagged?.(dropped);
+      return;
+    }
     if (evt.runId !== runId) return;
     if (evt.event === "tool.started") {
       handlers.onStarted?.(Number(evt.pid ?? 0));

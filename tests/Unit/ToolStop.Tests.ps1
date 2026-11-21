@@ -480,6 +480,12 @@ Describe "Get-DevKitRpcLaneForMethod (lifted from Invoke-DevKitRpc.ps1)" {
         Get-DevKitRpcLaneForMethod -Method 'tool.stop' | Should -Not -Be 'tool'
     }
 
+    It "keeps catalog.toolExists off the tool lane too" {
+        # Run history asks it while a tool may be running, and the tool lane
+        # is not even started until the first run.
+        Get-DevKitRpcLaneForMethod -Method 'catalog.toolExists' | Should -Be 'work'
+    }
+
     It "still routes every other tool.* method to the tool lane" {
         Get-DevKitRpcLaneForMethod -Method 'tool.run' | Should -Be 'tool'
         Get-DevKitRpcLaneForMethod -Method 'tool.somethingNew' | Should -Be 'tool'

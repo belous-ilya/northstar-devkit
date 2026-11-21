@@ -14,6 +14,8 @@ import { Button } from "../../components/primitives/Button";
 import { ConfirmDialogHost } from "../../components/ConfirmDialogHost";
 import {
   PALETTE_TOOL_EVENT,
+  clearStashedToolRequest,
+  takeStashedToolRequest,
   usePaletteStore,
   type PaletteToolRequest,
 } from "../../components/palette/paletteStore";
@@ -117,6 +119,10 @@ export function ControlCenterApp({ embedded = false }: { embedded?: boolean }) {
    * rather than dropping the user in the catalog to find the tool again.
    * usePaletteStore.requestTool de-dupes on the request id, which is what
    * makes the palette's deliberate double-emit safe.
+   *
+   * This window is created on first use, so the pick that CAUSED it to be
+   * created was emitted before this listener existed. The palette leaves
+   * that request in localStorage as well; it is collected here on mount.
    */
   useEffect(() => {
     // The standalone window stays the command palette's tool-run target.
@@ -125,7 +131,14 @@ export function ControlCenterApp({ embedded = false }: { embedded?: boolean }) {
     if (embedded) return;
     let unlisten: UnlistenFn | undefined;
     let cancelled = false;
-    listen<PaletteToolRequest>(PALETTE_TOOL_EVENT, (e) => requestTool(e.payload))
+    const waiting = takeStashedToolRequest();
+    if (waiting) requestTool(waiting);
+    listen<PaletteToolRequest>(PALETTE_TOOL_EVENT, (e) => {
+      // Delivered live: the copy left for a window that was not up yet is
+      // no longer needed, and must not open the dialog again on a reload.
+      clearStashedToolRequest();
+      requestTool(e.payload);
+    })
       .then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;

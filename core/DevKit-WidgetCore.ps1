@@ -102,6 +102,54 @@ function Get-DevKitGpuReading {
 }
 
 $script:CpuTempCache = $null
+# The thermal-zone counter objects, built once per runspace:
+# $null = not tried yet, an empty array = this machine has none.
+$script:ThermalZoneCounters = $null
+
+function Get-DevKitThermalZoneKelvin {
+    <#
+    .SYNOPSIS
+        The hottest ACPI thermal zone, in Kelvin, or $null when Windows
+        exposes none. Reads the 'Thermal Zone Information' performance
+        counters through .NET rather than Get-Counter.
+    .DESCRIPTION
+        Get-Counter waits out a full sample interval on every call, even for
+        a counter that is a plain current value: measured at 1.2 s per read.
+        That read ran on the metrics lane, so every time the cached
+        temperature expired the gauges stalled for over a second. The .NET
+        counter objects cost about 0.6 s to build, once, and then answer in
+        under a millisecond. They also take the counter's English name on
+        every Windows language, where Get-Counter needs the translated one.
+    #>
+    if ($null -eq $script:ThermalZoneCounters) {
+        $script:ThermalZoneCounters = @()
+        try {
+            $category = [System.Diagnostics.PerformanceCounterCategory]::new('Thermal Zone Information')
+            $script:ThermalZoneCounters = @($category.GetInstanceNames() | ForEach-Object {
+                    [System.Diagnostics.PerformanceCounter]::new('Thermal Zone Information', 'Temperature', $_, $true)
+                })
+        } catch {
+            # No such counter set on this machine (most virtual machines):
+            # remembered as "none", so the cost of finding out is paid once.
+            $script:ThermalZoneCounters = @()
+        }
+    }
+    if ($script:ThermalZoneCounters.Count -eq 0) { return $null }
+    try {
+        $max = $null
+        foreach ($counter in $script:ThermalZoneCounters) {
+            $value = $counter.NextValue()
+            if ($null -eq $max -or $value -gt $max) { $max = $value }
+        }
+        return $max
+    } catch {
+        # A zone that went away mid-session: drop the objects and build them
+        # again on the next read instead of failing for ever.
+        foreach ($counter in $script:ThermalZoneCounters) { try { $counter.Dispose() } catch { } }
+        $script:ThermalZoneCounters = $null
+        return $null
+    }
+}
 
 function Get-DevKitCpuTempReading {
     <#
@@ -110,21 +158,19 @@ function Get-DevKitCpuTempReading {
         performance counter first (works unelevated on most Win10/11 boxes),
         then the MSAcpi WMI class (usually admin-only). $null when Windows
         exposes nothing - the UI shows "n/a" rather than inventing a number.
-        Cached per runspace for 45 seconds: the thermal counter always waits
-        out a full ~1s PDH sample interval, and a temperature that moves over
-        tens of seconds doesn't need that spent every 2s cycle.
+        Cached per runspace for 15 seconds: the counter read is cheap now
+        (see Get-DevKitThermalZoneKelvin), but the WMI fallback is not, and a
+        temperature that moves over tens of seconds does not need asking for
+        on every 2s cycle.
     #>
-    if ($null -ne $script:CpuTempCache -and ((Get-Date) - $script:CpuTempCache.At).TotalSeconds -lt 45) {
+    if ($null -ne $script:CpuTempCache -and ((Get-Date) - $script:CpuTempCache.At).TotalSeconds -lt 15) {
         return $script:CpuTempCache.Value
     }
     $reading = $null
-    try {
-        $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
-        $max = ($samples | Measure-Object -Property CookedValue -Maximum).Maximum
-        if ($null -ne $max -and $max -gt 200) {   # sanity: values arrive in Kelvin
-            $reading = [math]::Round($max - 273.15, 1)
-        }
-    } catch { }
+    $kelvin = Get-DevKitThermalZoneKelvin
+    if ($null -ne $kelvin -and $kelvin -gt 200) {   # sanity: values arrive in Kelvin
+        $reading = [math]::Round($kelvin - 273.15, 1)
+    }
     if ($null -eq $reading) {
         try {
             $zones = Get-CimInstance -Namespace 'root/wmi' -Class 'MSAcpi_ThermalZoneTemperature' -ErrorAction Stop
@@ -1462,6 +1508,48 @@ function ConvertFrom-DevKitClaudeMcpLine {
     return @{ Name = $name; Status = $status; Target = $target }
 }
 
+$script:CliVersionCache = @{}
+
+function Get-DevKitCliVersionCached {
+    <#
+    .SYNOPSIS
+        A command-line tool's `--version` line, asked once per installed
+        copy instead of on every MCP report. Each ask starts the tool as a
+        process (for a Node-based CLI, a whole Node start-up) to read back a
+        string that only changes when the tool is updated - and an update
+        rewrites the file, which changes the key this is kept under.
+        A read that fails is not kept, so it is tried again next time.
+    .PARAMETER Command
+        The CommandInfo from Get-DevKitWindowsExecutable.
+    .PARAMETER MaxAgeMinutes
+        Asked again after this long even if the file looks unchanged, for
+        installs whose launcher file is not what an update rewrites.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Command,
+        [int]$MaxAgeMinutes = 30
+    )
+
+    $source = [string]$Command.Source
+    $stamp = 0
+    try { $stamp = (Get-Item -LiteralPath $source -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { }
+    $key = "$source|$stamp"
+    $kept = $script:CliVersionCache[$key]
+    if ($kept -and ((Get-Date) - $kept.At).TotalMinutes -lt $MaxAgeMinutes) { return $kept.Version }
+
+    $version = $null
+    try {
+        $versionOut = (& $source '--version' 2>$null | Out-String).Trim()
+        if ($versionOut) { $version = ($versionOut -split "`n")[0].Trim() }
+    } catch { }
+    if ($version) { $script:CliVersionCache[$key] = @{ Version = $version; At = Get-Date } }
+    return $version
+}
+
+# How long the widget's MCP report reuses the neutral-directory listing (see
+# Get-DevKitMcpScopeDiff -NeutralMaxAgeSeconds in tools/lib/DevKit-McpList.ps1).
+$script:McpNeutralListingMaxAgeSeconds = 600
+
 function Get-DevKitClaudeMcpStatus {
     <#
     .SYNOPSIS
@@ -1482,10 +1570,7 @@ function Get-DevKitClaudeMcpStatus {
     $claude = Get-DevKitWindowsExecutable -Name 'claude'
     if (-not $claude) { return $result }
     $result.CliInstalled = $true
-    try {
-        $versionOut = (& $claude.Source '--version' 2>$null | Out-String).Trim()
-        if ($versionOut) { $result.Version = ($versionOut -split "`n")[0].Trim() }
-    } catch { }
+    $result.Version = Get-DevKitCliVersionCached -Command $claude
 
     if ([string]::IsNullOrWhiteSpace($ProjectPath) -or -not (Test-Path -LiteralPath $ProjectPath)) {
         $list = Invoke-DevKitMcpList -Path $env:TEMP
@@ -1499,7 +1584,7 @@ function Get-DevKitClaudeMcpStatus {
         return $result
     }
 
-    $diff = Get-DevKitMcpScopeDiff -ProjectPath $ProjectPath
+    $diff = Get-DevKitMcpScopeDiff -ProjectPath $ProjectPath -NeutralMaxAgeSeconds $script:McpNeutralListingMaxAgeSeconds
     if (-not $diff.Success) { $result.ErrorMessage = $diff.ErrorMessage; return $result }
     foreach ($name in $diff.UserScope.Keys) {
         $parsed = ConvertFrom-DevKitClaudeMcpLine -Line $diff.UserScope[$name]
@@ -1617,10 +1702,7 @@ function Get-DevKitKimiMcpStatus {
     $kimi = Get-DevKitWindowsExecutable -Name 'kimi'
     if (-not $kimi) { return $result }
     $result.CliInstalled = $true
-    try {
-        $versionOut = (& $kimi.Source '--version' 2>$null | Out-String).Trim()
-        if ($versionOut) { $result.Version = ($versionOut -split "`n")[0].Trim() }
-    } catch { }
+    $result.Version = Get-DevKitCliVersionCached -Command $kimi
 
     $userRows = @()
     $kimiHome = if ($env:KIMI_CODE_HOME) { $env:KIMI_CODE_HOME } else { Join-Path $HOME '.kimi-code' }
@@ -2900,27 +2982,6 @@ function Save-DevKitProjectNotes {
     Write-DevKitProjectStore -Path $NotesFile -Projects $projects
 }
 
-function Get-DevKitNoteTitle {
-    <#
-    .SYNOPSIS
-        Derives a note's one-line title for the widget's collapsed note card:
-        the first non-empty line of the body, trimmed. Notes have no title
-        field on disk (the notes.json schema stays exactly what older widget
-        versions read and write) - the title is always derived at render
-        time, so an existing store needs no migration and no data can be
-        lost. Empty/whitespace bodies get a placeholder instead of a blank
-        card.
-    #>
-    param([string]$Text)
-    if (-not [string]::IsNullOrWhiteSpace($Text)) {
-        foreach ($line in ($Text -split "`r?`n")) {
-            $t = $line.Trim()
-            if ($t.Length -gt 0) { return $t }
-        }
-    }
-    return '(empty note)'
-}
-
 # ==================== PER-PROJECT ON-DECK LIST (TO-DO) ====================
 # Backing store for the widget's On-Deck flyout: one JSON file holding every
 # project's to-do items, keyed by the same canonical project-path key the
@@ -3177,224 +3238,4 @@ function Test-DevKitPathWithinRoot {
     if ($p.Equals($r, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     # The separator in the prefix stops 'C:\proj' from matching 'C:\proj2'.
     return $p.StartsWith($r + '\', [StringComparison]::OrdinalIgnoreCase)
-}
-
-function Get-DevKitSafeChildName {
-    <#
-    .SYNOPSIS
-        Validates a proposed file/folder name for the Files flyout's
-        New/Rename operations. Returns the (trimmed) name when usable,
-        $null when not: empty/whitespace, any of \/:*?"<>| (via
-        GetInvalidFileNameChars), a bare '.'/'..', or a trailing dot/space
-        (which Windows silently strips, producing a file that does not
-        match what the user typed).
-    #>
-    param([string]$Name)
-    if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
-    $n = $Name.Trim()
-    if ($n -eq '.' -or $n -eq '..') { return $null }
-    if ($n.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) { return $null }
-    if ($n.EndsWith('.') -or $n.EndsWith(' ')) { return $null }
-    return $n
-}
-
-function Get-DevKitCopyName {
-    <#
-    .SYNOPSIS
-        Explorer-style collision renaming for Paste inside the Files flyout:
-        'name' -> 'name - Copy' -> 'name - Copy (2)' -> ... - files keep
-        their extension last ('a - Copy.txt'). Returns $Name unchanged when
-        nothing collides. Pure check against the target folder on disk.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$Folder,
-        [Parameter(Mandatory = $true)][string]$Name,
-        [switch]$IsDirectory
-    )
-    if (-not (Test-Path -LiteralPath (Join-Path $Folder $Name))) { return $Name }
-    $base = $Name
-    $ext = ''
-    if (-not $IsDirectory) {
-        $ext = [IO.Path]::GetExtension($Name)
-        $base = [IO.Path]::GetFileNameWithoutExtension($Name)
-    }
-    $candidate = "$base - Copy$ext"
-    $i = 2
-    while (Test-Path -LiteralPath (Join-Path $Folder $candidate)) {
-        $candidate = "$base - Copy ($i)$ext"
-        $i++
-    }
-    return $candidate
-}
-
-function Get-DevKitRelativePath {
-    <#
-    .SYNOPSIS
-        Root-relative path ('src\app\index.ts') for the Files flyout's
-        expansion-state keys and Copy Relative Path. Returns '' for the root
-        itself and $null when $Path is outside the root. .NET Framework 4.x
-        (PS 5.1) has no [IO.Path]::GetRelativePath, hence the manual form.
-    #>
-    param([string]$Root, [Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-DevKitPathWithinRoot -Root $Root -Path $Path)) { return $null }
-    $r = [IO.Path]::GetFullPath($Root).TrimEnd('\')
-    $p = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    if ($p.Equals($r, [StringComparison]::OrdinalIgnoreCase)) { return '' }
-    return $p.Substring($r.Length + 1)
-}
-
-# ==================== FILE ICON MAPPING (FILES FLYOUT / GIT GRAPH) ====================
-# Pure name -> icon-key + Material-palette color mapping behind the widget's
-# built-in vector icon set. No WPF here: gui/DevKit-WidgetIcons.ps1 owns the
-# frozen drawings and consumes the Key/Color this returns (every Key below has
-# a catalog entry there).
-
-# Special names checked BEFORE the extension table (a name like
-# 'package-lock.json' must win over '.json', 'docker-compose.yml' over '.yml').
-# Matched case-insensitively against the exact file name.
-$script:DevKitIconNameMap = @{
-    'dockerfile'           = 'docker'
-    '.dockerignore'        = 'docker'
-    'docker-compose.yml'   = 'docker'
-    'docker-compose.yaml'  = 'docker'
-    '.gitignore'           = 'git'
-    '.gitattributes'       = 'git'
-    '.gitmodules'          = 'git'
-    'package-lock.json'    = 'lock'
-    'npm-shrinkwrap.json'  = 'lock'
-    'yarn.lock'            = 'lock'
-    'pnpm-lock.yaml'       = 'lock'
-    'bun.lock'             = 'lock'
-    'bun.lockb'            = 'lock'
-    'composer.lock'        = 'lock'
-    'cargo.lock'           = 'lock'
-}
-
-# Extension (no dot, lowercase) -> icon key. Anything missing falls back to
-# the generic 'file' key.
-$script:DevKitIconExtensionMap = @{
-    'js' = 'js';  'mjs' = 'js';  'cjs' = 'js'
-    'jsx' = 'jsx'
-    'ts' = 'ts';  'mts' = 'ts';  'cts' = 'ts'
-    'tsx' = 'tsx'
-    'json' = 'json'; 'jsonc' = 'json'; 'json5' = 'json'; 'map' = 'json'
-    'md' = 'md'; 'markdown' = 'md'; 'mdx' = 'md'
-    'ps1' = 'ps1'; 'psm1' = 'ps1'; 'psd1' = 'ps1'
-    'bat' = 'bat'; 'cmd' = 'bat'
-    'html' = 'html'; 'htm' = 'html'
-    'css' = 'css'
-    'scss' = 'scss'; 'sass' = 'scss'; 'less' = 'scss'
-    'vue' = 'vue'
-    'svelte' = 'svelte'
-    'py' = 'py'; 'pyw' = 'py'
-    'cs' = 'cs'; 'csproj' = 'cs'
-    'c' = 'c'; 'h' = 'c'
-    'cpp' = 'cpp'; 'cc' = 'cpp'; 'cxx' = 'cpp'; 'hpp' = 'cpp'
-    'java' = 'java'; 'class' = 'java'; 'jar' = 'java'
-    'go' = 'go'
-    'rs' = 'rs'
-    'php' = 'php'
-    'rb' = 'rb'
-    'xml' = 'xml'; 'xaml' = 'xml'; 'svg+xml' = 'xml'
-    'yml' = 'yml'; 'yaml' = 'yml'
-    'toml' = 'toml'
-    'lock' = 'lock'
-    'ini' = 'config'; 'cfg' = 'config'; 'conf' = 'config'; 'config' = 'config'; 'editorconfig' = 'config'; 'props' = 'config'; 'targets' = 'config'
-    'png' = 'image'; 'jpg' = 'image'; 'jpeg' = 'image'; 'gif' = 'image'; 'svg' = 'image'; 'ico' = 'image'; 'webp' = 'image'; 'bmp' = 'image'
-    'zip' = 'archive'; 'tar' = 'archive'; 'gz' = 'archive'; 'tgz' = 'archive'; '7z' = 'archive'; 'rar' = 'archive'; 'bz2' = 'archive'
-    'sql' = 'sql'
-    'txt' = 'txt'; 'log' = 'txt'
-    'pdf' = 'pdf'
-    'exe' = 'exe'; 'dll' = 'exe'; 'msi' = 'exe'; 'sys' = 'exe'
-}
-
-# Canonical Material-ish color per icon key. Kept here (not in the icons file)
-# so the color is part of the tested contract.
-$script:DevKitIconColors = @{
-    'folder'      = '#E5C07B'  # amber (matches the widget's old folder glyph)
-    'folder-open' = '#E5C07B'
-    'file'        = '#8A93A6'  # muted steel
-    'js'          = '#F7DF1E'  # JS yellow
-    'jsx'         = '#61DAFB'  # React cyan
-    'ts'          = '#3178C6'  # TS blue
-    'tsx'         = '#61DAFB'  # React cyan
-    'json'        = '#FBC02D'  # amber
-    'md'          = '#78909C'  # slate
-    'ps1'         = '#5391FE'  # sapphire
-    'bat'         = '#9AA0A6'  # console gray
-    'html'        = '#E44D26'  # HTML5 orange
-    'css'         = '#42A5F5'  # CSS blue
-    'scss'        = '#CD6799'  # Sass pink
-    'vue'         = '#41B883'  # Vue green
-    'svelte'      = '#FF3E00'  # Svelte orange
-    'py'          = '#4B8BBE'  # Python blue
-    'cs'          = '#68217A'  # .NET purple
-    'c'           = '#5C6BC0'  # indigo
-    'cpp'         = '#649AD2'  # C++ blue
-    'java'        = '#E76F00'  # Java orange
-    'go'          = '#00ADD8'  # Go cyan
-    'rs'          = '#DEA584'  # Rust
-    'php'         = '#777BB3'  # PHP periwinkle
-    'rb'          = '#CC342D'  # Ruby red
-    'xml'         = '#E37933'  # XML orange
-    'yml'         = '#F0524F'  # YAML red
-    'toml'        = '#9C6570'  # TOML mauve
-    'env'         = '#ECD53F'  # dotenv yellow
-    'lock'        = '#E8B339'  # padlock gold
-    'image'       = '#26A69A'  # teal
-    'archive'     = '#C0CA33'  # lime
-    'git'         = '#F05033'  # git orange-red
-    'docker'      = '#0DB7ED'  # Docker blue
-    'sql'         = '#FFCA28'  # database amber
-    'txt'         = '#9AA0A6'  # gray
-    'pdf'         = '#E53935'  # PDF red
-    'exe'         = '#7986CB'  # binary indigo
-    'config'      = '#6D8086'  # settings slate
-    'git-branch'  = '#C8D3E0'  # bright steel (reads on translucent pills)
-    'git-tag'     = '#FFB020'  # matches the tag pill's amber
-    'git-head'    = '#0A0D12'  # dark glyph on the HEAD pill's bright fill
-}
-
-function Get-DevKitFileIconInfo {
-    <#
-    .SYNOPSIS
-        Maps a file/folder name to an icon key + Material-palette color hex
-        for the widget's built-in icon set (gui/DevKit-WidgetIcons.ps1).
-    .DESCRIPTION
-        Pure mapping (no WPF) so it stays Pester-testable. Folders always map
-        to the 'folder' key - the open/closed swap is a UI concern (the tree
-        swaps the image source between the 'folder' and 'folder-open' frozen
-        drawings in its expand/collapse handlers). Files check the special-
-        name table first (Dockerfile, .gitignore, package-lock.json, any
-        '.env*' name), then the extension table, then fall back to 'file'.
-        All matching is case-insensitive.
-    .OUTPUTS
-        @{ Key = <string>; Color = '#RRGGBB' } - Key is always a valid
-        Get-DevKitIconDrawing key.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name,
-        [switch]$IsFolder
-    )
-    if ($IsFolder) {
-        return @{ Key = 'folder'; Color = $script:DevKitIconColors['folder'] }
-    }
-    $key = $null
-    $lower = $Name.ToLowerInvariant()
-    if ($script:DevKitIconNameMap.ContainsKey($lower)) {
-        $key = $script:DevKitIconNameMap[$lower]
-    } elseif ($lower -eq '.env' -or $lower.StartsWith('.env.')) {
-        $key = 'env'
-    } else {
-        $ext = ''
-        # Leading-dot names ('.editorconfig') treat the dotless name as the
-        # "extension" so they can map too ('.env' was already caught above).
-        $dot = $lower.LastIndexOf('.')
-        if ($dot -ge 0 -and $dot -lt $lower.Length - 1) { $ext = $lower.Substring($dot + 1) }
-        if ($ext -and $script:DevKitIconExtensionMap.ContainsKey($ext)) {
-            $key = $script:DevKitIconExtensionMap[$ext]
-        }
-    }
-    if (-not $key) { $key = 'file' }
-    return @{ Key = $key; Color = $script:DevKitIconColors[$key] }
 }

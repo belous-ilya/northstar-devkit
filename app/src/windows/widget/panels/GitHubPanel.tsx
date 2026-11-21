@@ -32,6 +32,16 @@ import "./GitHubPanel.css";
 const GITHUB_POLL_MS = 20000;
 
 /**
+ * Issues are asked for a third as often as pull requests. Both lists are
+ * fetched whichever tab is showing (so the count badges stay true), and
+ * each fetch starts a `gh` process and makes a network round trip. Pull
+ * requests earn the 20s: their branch tips are drawn into the commit graph.
+ * Issues feed one list and one badge, and nothing about them changes on a
+ * 20-second timescale.
+ */
+const GITHUB_ISSUES_POLL_MS = 60000;
+
+/**
  * Unlike every other panel, these two poll through `gh` to a remote API that
  * rate-limits. Retrying a failing call every 20s for as long as the flyout is
  * open is exactly what keeps you limited, so consecutive failures back off
@@ -68,7 +78,7 @@ export function useGitHubLists(path: string | null, live: boolean): GitHubLists 
     "github.prs", params, GITHUB_POLL_MS, enabled, undefined, GITHUB_MAX_BACKOFF_MS,
   );
   const issues = usePolledRpc<GitHubListResult<GitHubIssueRow>>(
-    "github.issues", params, GITHUB_POLL_MS, enabled, undefined, GITHUB_MAX_BACKOFF_MS,
+    "github.issues", params, GITHUB_ISSUES_POLL_MS, enabled, undefined, GITHUB_MAX_BACKOFF_MS,
   );
   // Memoised because asArray allocates: the PR rows feed buildPrLanes, whose
   // whole point is to run only when the data actually changed. react-query's

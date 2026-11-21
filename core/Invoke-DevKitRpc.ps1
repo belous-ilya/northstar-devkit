@@ -19,8 +19,10 @@
         single BlockingCollection[string] ($script:OutQueue) and is the
         only code in the whole process that calls WriteLine/Flush.
       - SIX dedicated LANE runspaces (metrics / slow / work / errors /
-        mcp / tool),
-        each owning a persistent PowerShell runspace with DevKit.Core
+        mcp / tool). 'metrics' and 'work' start at boot; the other four
+        start the first time a request is routed to them (see BOOT), so a
+        session that never uses one never pays for it. Once started,
+        each owns a persistent PowerShell runspace with DevKit.Core
         imported once (imports serialized across lanes - see $ImportLock),
         each draining its own BlockingCollection[object] of requests,
         processing one at a time, pushing its JSON response line onto
@@ -481,16 +483,24 @@ function Request-DevKitToolLaneSlot {
 Write-DevKitRpcDiag "booting - repo root: $script:RepoRoot"
 
 $writer = Start-DevKitRpcWriter
-$lanes = @{
-    metrics = Start-DevKitRpcLane -LaneName 'metrics'
-    slow    = Start-DevKitRpcLane -LaneName 'slow'
-    work    = Start-DevKitRpcLane -LaneName 'work'
-    mcp     = Start-DevKitRpcLane -LaneName 'mcp'
-    tool    = Start-DevKitRpcLane -LaneName 'tool'
-    errors  = Start-DevKitRpcLane -LaneName 'errors'
-}
 
-Write-DevKitRpcDiag "lanes started, entering read loop"
+# Only the two lanes every start uses are started here: 'metrics' (the
+# gauges poll it from the first second) and 'work' (settings and the project
+# list are the first things any window asks for). The other four start the
+# first time a request is routed to them - see the main loop. Each lane is a
+# runspace with all of DevKit.Core imported, and a session that never opens
+# the MCP box, runs a tool, opens the Git tray or the Error Center was
+# paying for all four of those from boot for nothing. A lane started late
+# costs its first request the import (a few hundred ms, once); its queue
+# exists from the start, so nothing is lost while it comes up.
+#
+# $lanes is read and written by THIS thread only, so starting one on demand
+# needs no lock. The queues, which the lanes share, are all created above.
+$script:BootLanes = @('metrics', 'work')
+$lanes = @{}
+foreach ($laneName in $script:BootLanes) { $lanes[$laneName] = Start-DevKitRpcLane -LaneName $laneName }
+
+Write-DevKitRpcDiag "lanes started ($($script:BootLanes -join ', ')), entering read loop"
 
 # ==================== MAIN READ LOOP ====================
 
@@ -688,7 +698,25 @@ while (-not $shuttingDown) {
                 $script:OutQueue.Add((ConvertTo-DevKitRpcLine $refusal))
             } else {
                 $lane = Get-DevKitRpcLaneForMethod -Method $request.method
+                # Queue first, then start the lane if this is its first
+                # request: the lane finds the request waiting once its import
+                # is done. Start-DevKitRpcLane returns as soon as the
+                # runspace is running, so this thread is back reading stdin
+                # at once.
                 $script:LaneQueues[$lane].Add($request)
+                if (-not $lanes.ContainsKey($lane)) {
+                    Write-DevKitRpcDiag "starting lane '$lane' for its first request ($($request.method))"
+                    try {
+                        $lanes[$lane] = Start-DevKitRpcLane -LaneName $lane
+                    } catch {
+                        # The request is queued with nothing to read it. Same
+                        # answer as a lane that died: leave, so the host
+                        # starts a sidecar that works and fails the call now
+                        # instead of at its timeout.
+                        Write-DevKitRpcDiag "lane '$lane' could not be started ($($_.Exception.Message)); exiting non-zero so the host respawns a healthy sidecar"
+                        exit 1
+                    }
+                }
             }
         }
     }
@@ -707,6 +735,11 @@ while (-not $shuttingDown) {
 # here is what lets the tool lane unwind and the drain finish promptly. The
 # stop routine lives in RpcMethods.ps1, which this thread has had no reason
 # to load until now; it is dot-sourced only when there is something to stop.
+# Marked before anything else: a tool.run still in the tool lane's queue
+# (waiting out that lane's start-up, now that lanes start on first use) reads
+# this and refuses to start, instead of starting after the sweep below has
+# already looked.
+$script:ToolLaneGate['shutdown'] = '1'
 if ($script:RunRegistry.Count -gt 0) {
     try {
         . $script:MethodsScriptPath
@@ -718,7 +751,9 @@ if ($script:RunRegistry.Count -gt 0) {
 }
 
 Write-DevKitRpcDiag "draining lanes"
-foreach ($lane in $lanes.Values) { $script:LaneQueues[$lane.Name].CompleteAdding() }
+# Every queue, including those of lanes that were never started: nothing
+# reads them, but a queue left open is a queue something could still add to.
+foreach ($queue in $script:LaneQueues.Values) { $queue.CompleteAdding() }
 
 $deadline = (Get-Date).AddSeconds(5)
 foreach ($lane in $lanes.Values) {

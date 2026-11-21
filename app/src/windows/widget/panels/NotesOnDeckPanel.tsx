@@ -187,10 +187,20 @@ export function NotesOnDeckPanel() {
   return (
     <GlassPanel>
       <div ref={rootRef} className="panel-tabs">
-        <button type="button" className={clsx("panel-tab", tab === "notes" && "panel-tab--active")} onClick={() => setTab("notes")}>
+        <button
+          type="button"
+          className={clsx("panel-tab", tab === "notes" && "panel-tab--active")}
+          aria-pressed={tab === "notes"}
+          onClick={() => setTab("notes")}
+        >
           Notes <Badge tone={tab === "notes" ? "accent" : "neutral"}>{noteList.length}</Badge>
         </button>
-        <button type="button" className={clsx("panel-tab", tab === "ondeck" && "panel-tab--active")} onClick={() => setTab("ondeck")}>
+        <button
+          type="button"
+          className={clsx("panel-tab", tab === "ondeck" && "panel-tab--active")}
+          aria-pressed={tab === "ondeck"}
+          onClick={() => setTab("ondeck")}
+        >
           On Deck <Badge tone={tab === "ondeck" ? "accent" : "neutral"}>{itemList.length}</Badge>
         </button>
       </div>
@@ -205,6 +215,7 @@ export function NotesOnDeckPanel() {
               onChange={(e) => setNoteDraft(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addNote()}
               placeholder="New note..."
+              aria-label="New note"
               className="notes-panel__input"
             />
             <Button
@@ -257,6 +268,7 @@ export function NotesOnDeckPanel() {
               onChange={(e) => setItemDraft(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addOnDeck()}
               placeholder="New item..."
+              aria-label="New On Deck item"
               className="notes-panel__input"
             />
             <Button size="sm" variant="primary" onClick={addOnDeck} disabled={!itemDraft.trim()}>

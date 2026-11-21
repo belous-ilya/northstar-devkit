@@ -219,6 +219,49 @@ function ConvertTo-DevKitMcpEntryMap {
     return $map
 }
 
+# The neutral-directory listing kept for reuse (see Get-DevKitMcpScopeDiff's
+# -NeutralMaxAgeSeconds). Script scope, so one per runspace - which in the
+# sidecar means one for the mcp lane, the only caller.
+$script:DevKitMcpNeutralCache = $null
+
+function Test-DevKitMcpNeutralListingReusable {
+    <#
+    .SYNOPSIS
+        Decides whether a kept neutral-directory listing can stand in for a
+        fresh one. Pure: no process is started and nothing is changed.
+    .DESCRIPTION
+        The neutral listing answers one question only - WHICH servers are
+        user scope. Their status always comes from the project listing, which
+        is fresh every time. So a kept one is good while it is recent AND
+        nothing suggests the set of servers has changed: the same project
+        showing the same server names as the last time it was looked at.
+        A project not seen before says nothing either way (its names are its
+        own), so only age decides.
+    .PARAMETER Cache
+        The kept listing: @{ At = [datetime]; Result; ProjectNames = @{} },
+        or $null when nothing is kept.
+    .PARAMETER ProjectNames
+        The server names in the project listing just taken, joined into one
+        string (see Get-DevKitMcpScopeDiff).
+    #>
+    param(
+        $Cache,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [int]$MaxAgeSeconds,
+        [string]$ProjectPath,
+        [string]$ProjectNames
+    )
+
+    if ($MaxAgeSeconds -le 0 -or $null -eq $Cache) { return $false }
+    $age = ($Now - $Cache.At).TotalSeconds
+    if ($age -lt 0 -or $age -ge $MaxAgeSeconds) { return $false }
+    $key = ([string]$ProjectPath).ToLowerInvariant()
+    if ($Cache.ProjectNames.ContainsKey($key) -and $Cache.ProjectNames[$key] -cne $ProjectNames) {
+        return $false
+    }
+    return $true
+}
+
 function Get-DevKitMcpScopeDiff {
     <#
     .SYNOPSIS
@@ -233,6 +276,24 @@ function Get-DevKitMcpScopeDiff {
         only in the project-directory listing are project/local scope.
     .PARAMETER ProjectPath
         The project directory to compare against the neutral baseline.
+    .PARAMETER NeutralMaxAgeSeconds
+        Reuse the neutral-directory listing for up to this many seconds
+        instead of taking a new one on every call. 0 (the default) never
+        reuses. Each listing makes Claude Code connect to every configured
+        server, which starts every stdio server as a real process, and this
+        function used to do that twice per call. The neutral listing is only
+        ever used for its server NAMES (statuses come from the project
+        listing), and those change when someone edits their configuration,
+        not from minute to minute. With reuse on, the project listing is
+        taken first and a new neutral one only when the kept one is too old
+        or the project's server names have changed since it was taken.
+
+        What reuse cannot see, until the kept listing ages out: a server
+        moved between user and project scope under the same name, and a
+        user-scope server added just before switching to a project not
+        looked at since. Either shows under the wrong scope heading for at
+        most this many seconds. Its status is right throughout - that
+        always comes from the fresh project listing.
     .OUTPUTS
         PSCustomObject:
           Success        [bool]
@@ -245,25 +306,56 @@ function Get-DevKitMcpScopeDiff {
                          project-directory listing
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$ProjectPath)
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectPath,
+        [int]$NeutralMaxAgeSeconds = 0
+    )
 
-    $neutralResult = Invoke-DevKitMcpList -Path $env:TEMP
+    $neutralResult = $null
+    $projectResult = $null
+    $projectMap = $null
+
+    if ($NeutralMaxAgeSeconds -gt 0) {
+        # Project first: it is needed every time, and its server names are
+        # what tells a still-valid kept neutral listing from a stale one.
+        $projectResult = Invoke-DevKitMcpList -Path $ProjectPath
+        if (-not $projectResult.Success) {
+            return [PSCustomObject]@{
+                Success       = $false
+                ErrorMessage  = "Project-directory listing failed: $($projectResult.ErrorMessage)"
+                NeutralResult = $null
+                ProjectResult = $projectResult
+                UserScope     = [ordered]@{}
+                ProjectScope  = [ordered]@{}
+            }
+        }
+        $projectMap = ConvertTo-DevKitMcpEntryMap -Output $projectResult.Output
+        $projectNames = (@($projectMap.Keys) | Sort-Object) -join "`n"
+        $now = Get-Date
+        if (Test-DevKitMcpNeutralListingReusable -Cache $script:DevKitMcpNeutralCache -Now $now `
+                -MaxAgeSeconds $NeutralMaxAgeSeconds -ProjectPath $ProjectPath -ProjectNames $projectNames) {
+            $neutralResult = $script:DevKitMcpNeutralCache.Result
+        } else {
+            $neutralResult = Invoke-DevKitMcpList -Path $env:TEMP
+            if ($neutralResult.Success) {
+                $script:DevKitMcpNeutralCache = @{ At = $now; Result = $neutralResult; ProjectNames = @{} }
+            } else {
+                # A failed listing is not kept, and neither is the one it
+                # was meant to replace: the next call asks again.
+                $script:DevKitMcpNeutralCache = $null
+            }
+        }
+        if ($script:DevKitMcpNeutralCache) {
+            $script:DevKitMcpNeutralCache.ProjectNames[([string]$ProjectPath).ToLowerInvariant()] = $projectNames
+        }
+    } else {
+        $neutralResult = Invoke-DevKitMcpList -Path $env:TEMP
+    }
+
     if (-not $neutralResult.Success) {
         return [PSCustomObject]@{
             Success       = $false
             ErrorMessage  = "Neutral-directory listing failed: $($neutralResult.ErrorMessage)"
-            NeutralResult = $neutralResult
-            ProjectResult = $null
-            UserScope     = [ordered]@{}
-            ProjectScope  = [ordered]@{}
-        }
-    }
-
-    $projectResult = Invoke-DevKitMcpList -Path $ProjectPath
-    if (-not $projectResult.Success) {
-        return [PSCustomObject]@{
-            Success       = $false
-            ErrorMessage  = "Project-directory listing failed: $($projectResult.ErrorMessage)"
             NeutralResult = $neutralResult
             ProjectResult = $projectResult
             UserScope     = [ordered]@{}
@@ -271,8 +363,22 @@ function Get-DevKitMcpScopeDiff {
         }
     }
 
+    if ($null -eq $projectResult) {
+        $projectResult = Invoke-DevKitMcpList -Path $ProjectPath
+        if (-not $projectResult.Success) {
+            return [PSCustomObject]@{
+                Success       = $false
+                ErrorMessage  = "Project-directory listing failed: $($projectResult.ErrorMessage)"
+                NeutralResult = $neutralResult
+                ProjectResult = $projectResult
+                UserScope     = [ordered]@{}
+                ProjectScope  = [ordered]@{}
+            }
+        }
+        $projectMap = ConvertTo-DevKitMcpEntryMap -Output $projectResult.Output
+    }
+
     $neutralMap = ConvertTo-DevKitMcpEntryMap -Output $neutralResult.Output
-    $projectMap = ConvertTo-DevKitMcpEntryMap -Output $projectResult.Output
 
     $userScope = [ordered]@{}
     $projectScope = [ordered]@{}

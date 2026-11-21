@@ -952,6 +952,22 @@ function Invoke-DevKitRpcMethod {
         'catalog.get' {
             return Get-DevKitCatalogPayload -RootPath $RepoRoot
         }
+        'catalog.toolExists' {
+            # Whether folder/script names a tool this install can run - the
+            # same resolution tool.run does, without running anything. Run
+            # history asks before offering "Run again" for a row that may
+            # have been recorded by an earlier release. The catalog cannot
+            # answer this: Doctor and Close-Out are tools with no catalog
+            # entry (their folders have no manifest).
+            $folder = [string](Get-DevKitRpcParam $Params 'folder' '')
+            $scriptName = [string](Get-DevKitRpcParam $Params 'script' '')
+            $exists = $false
+            try {
+                $null = Resolve-DevKitToolScriptPath -ToolsRoot (Join-Path $RepoRoot 'tools') -Folder $folder -ScriptName $scriptName
+                $exists = $true
+            } catch { }
+            return [ordered]@{ exists = $exists }
+        }
         'settings.get' {
             return Get-DevKitSettings
         }
@@ -1196,6 +1212,15 @@ function Invoke-DevKitRpcMethod {
             # outside the sidecar - un-gated, like $RunRegistry).
             $gateToken = [string](Get-DevKitRpcParam $Params '__toolLaneToken' '')
             try {
+                # Shutdown has begun (the main thread marks the gate before it
+                # drains the lanes). A run that was still waiting in this
+                # lane's queue - most likely behind the lane's own start-up -
+                # must not begin now: the shutdown sweep has already looked
+                # for running tools and would never see this one, so it would
+                # outlive the sidecar holding its port.
+                if ($null -ne $ToolLaneGate -and $ToolLaneGate.ContainsKey('shutdown')) {
+                    throw 'DevKit is shutting down; the tool was not started.'
+                }
                 $folder = [string](Get-DevKitRpcParam $Params 'folder' '')
                 $script = [string](Get-DevKitRpcParam $Params 'script' '')
                 $toolArgs = @(Get-DevKitRpcParam $Params 'args' @())
@@ -1246,8 +1271,8 @@ function Invoke-DevKitRpcMethod {
                 # environment (no TERM/NO_COLOR hint) pwsh defaults $PSStyle to
                 # ANSI rendering and every error arrives wrapped in raw
                 # "^[[31;1m" escape codes. NO_COLOR is honored by pwsh 7.2+;
-                # PS 5.1 and the DevKit-UI gradient engine never emit ANSI into
-                # a redirected stream in the first place.
+                # PS 5.1 never emits ANSI into a redirected stream in the
+                # first place.
                 $psi.EnvironmentVariables['NO_COLOR'] = '1'
 
                 $proc = [System.Diagnostics.Process]::new()

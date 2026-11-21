@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useRunHistoryStore, type RunHistoryEntry } from "../../stores/useRunHistoryStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
 import { rpcCall } from "../../lib/ipc";
-import type { ToolStopResult } from "../../lib/types";
+import type { ToolExistsResult, ToolStopResult } from "../../lib/types";
 import { Badge } from "../primitives/Badge";
 import { Button } from "../primitives/Button";
 import { ToolConsole } from "../ToolConsole";
@@ -139,6 +140,23 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
   const confirmDestructive = useConfirmDestructive();
   const removeRun = useRunHistoryStore((s) => s.removeRun);
 
+  // History outlives the tools it recorded: 4.8.0 removed about half of
+  // them, and their rows still offered "Run again", which could only answer
+  // "Tool script not found". The sidecar is asked whether this row's script
+  // exists - the same lookup tool.run does - once a row with a "Run again"
+  // button has been opened. Not the catalog: Doctor and Close-Out are tools
+  // with no catalog entry. The answer cannot change while the app runs, so
+  // it is kept; and anything short of a clear "no" (not asked yet, the
+  // sidecar not answering) leaves the button where it was.
+  const { data: toolCheck } = useQuery({
+    queryKey: ["catalog.toolExists", entry.folder, entry.script],
+    queryFn: () => rpcCall<ToolExistsResult>("catalog.toolExists", { folder: entry.folder, script: entry.script }),
+    staleTime: Infinity,
+    retry: false,
+    enabled: everOpened && !!onRunAgain,
+  });
+  const stillShips = toolCheck?.exists !== false;
+
   function toggle() {
     setOpen((v) => {
       if (!v) setEverOpened(true);
@@ -259,11 +277,16 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
                 <div className="run-history__empty">No output was captured for this run.</div>
               )}
 
-              {onRunAgain && (
+              {onRunAgain && stillShips && (
                 <div className="run-history__actions">
                   <Button size="sm" variant={entry.caution ? "danger" : "subtle"} disabled={busy} onClick={runAgain}>
                     Run again
                   </Button>
+                </div>
+              )}
+              {onRunAgain && !stillShips && (
+                <div className="run-history__empty">
+                  This tool is no longer part of DevKit, so it cannot be run again.
                 </div>
               )}
             </div>

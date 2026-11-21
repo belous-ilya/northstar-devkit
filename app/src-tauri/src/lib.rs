@@ -286,9 +286,11 @@ fn run_app() {
             terminal::start_idle_reaper(handle.clone());
 
             // The widget is DevKit's main face (since 4.0) - show it once
-            // setup completes. Windows are created hidden (see
-            // tauri.conf.json) so window-state restore + the tray/menu
-            // wiring above are ready before first paint. Goes through
+            // setup completes. It is created hidden (see tauri.conf.json)
+            // so window-state restore + the tray/menu wiring above are
+            // ready before first paint. The Control Center window is not
+            // created here at all: commands::window_or_create builds it the
+            // first time it is opened. Goes through
             // `set_window_visible` (not a raw `.show()`) so the initial
             // `devkit://visibility` event fires - see that function's doc
             // comment for why `document.hidden` alone can't be trusted here.

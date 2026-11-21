@@ -150,8 +150,8 @@ DevKit/
 │   │                          # real implementation (both the CLI and the
 │   │                          # Control Center run these same scripts - see
 │   │                          # "App Architecture" below)
-│   ├── lib/                        # DevKit-Common.ps1, DevKit-UI.ps1,
-│   │                              # DevKit-McpList.ps1
+│   ├── lib/                        # DevKit-Common.ps1, DevKit-McpList.ps1,
+│   │                              # DevKit-WiFi.ps1
 │   ├── ports/ node/ nextjs/ vite/ git/ docker/ wifi/   # the 7 catalog
 │   │                              # categories - each: script+.bat pairs
 │   │                              # plus one _module.psd1 manifest
@@ -523,6 +523,10 @@ ever writes a line" true by construction:
   lane is exactly one worker.) This mirrors the old WPF widget's
   `MetricsRunspace`/`McpRunspace`/`WorkRunspace` split, for the same
   reason: a slow `gh pr list` call must never stall a metrics poll.
+  Only `metrics` and `work` are started at boot; the other four start the
+  first time the main thread routes a request to them (their queues exist
+  from the start, so that request waits for the import and is answered).
+  `tests/Unit/SidecarLanes.Tests.ps1` drives a real sidecar through this.
 - The **main thread** routes each request to a lane by method-name
   prefix: `metrics.*` (plus the polled read-only collectors
   `process.topCpu`/`process.topMemory`/`files.children`) -> metrics
@@ -636,7 +640,15 @@ lane-drain deadline plus a 2s writer-drain deadline) before force-killing.
 Two windows, both created hidden and shown via `set_window_visible` (see
 `commands.rs` for why - `WebviewWindow::hide()`/`show()` alone don't
 reliably drive `document.visibilityState`, which the frontend's
-`useVisibility` hook needs to be able to trust):
+`useVisibility` hook needs to be able to trust). Only the widget is created
+at startup. The Control Center window is declared with `"create": false` in
+`tauri.conf.json` and built by `commands::window_or_create` the first time
+something shows it - it is a whole second webview, and most sessions use the
+Control Center only as a tray inside the widget. Two consequences: never
+create it from the main thread (a tray or menu handler; it deadlocks on
+Windows), and never assume it is listening - anything sent to it before it
+has mounted needs a handoff like the command palette's
+(`stashToolRequest` in `components/palette/paletteStore.ts`):
 
 - **`widget`** (`app/src/windows/widget/WidgetApp.tsx`) - the always-on
   companion, DevKit's main face. Panels top to bottom: Gauges

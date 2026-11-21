@@ -12,6 +12,7 @@ import { updateRowView } from "./updateStatus";
 import { THEMES, getThemePreset, type ThemePreset } from "../../lib/themes";
 import { previewUiScale, useAnimationsEnabled } from "../../hooks/useApplyAppearance";
 import { clampUiScale } from "../../lib/appearance";
+import { claimEscape } from "../../lib/escapeKey";
 import { playSound } from "../../lib/sounds";
 import type { DevKitPreferences } from "../../lib/types";
 import { Button } from "../primitives/Button";
@@ -131,9 +132,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const animationsEnabled = useAnimationsEnabled();
   const [section, setSection] = useState<SectionId>("appearance");
 
+  // One Escape closes one thing (see lib/escapeKey.ts): Settings is drawn
+  // above the other dialogs, and marks the key handled so the one it was
+  // opened over stays open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (claimEscape(e, "settings")) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

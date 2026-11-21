@@ -30,7 +30,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -49,13 +49,13 @@ Write-DevKitHeader "Run Package Script"
 Write-DevKitInfo "Path: $targetPath"
 
 $packageJsonPath = Join-Path $targetPath "package.json"
-if (-not (Test-Path $packageJsonPath)) {
+if (-not (Test-Path -LiteralPath $packageJsonPath)) {
     Write-DevKitError "No package.json found in '$targetPath'."
     exit 1
 }
 
 try {
-    $packageJson = Get-Content $packageJsonPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
 } catch {
     Write-DevKitError "Could not parse package.json: $_"
     exit 1

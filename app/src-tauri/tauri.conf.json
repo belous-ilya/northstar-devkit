@@ -29,6 +29,7 @@
       },
       {
         "label": "control-center",
+        "create": false,
         "title": "DevKit Control Center",
         "url": "index.html?window=control-center",
         "width": 1280,

@@ -232,6 +232,12 @@ export interface Catalog {
   loadErrors: string[];
 }
 
+// ---------- catalog.toolExists ----------
+/** Whether a folder/script pair names a tool script this install can run (core/RpcMethods.ps1). */
+export interface ToolExistsResult {
+  exists: boolean;
+}
+
 // ---------- projects.* ----------
 export interface LinkedProject {
   id: string;

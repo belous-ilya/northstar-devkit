@@ -3,6 +3,7 @@ import {
   applyTombstones,
   mergeEntries,
   preferLocalCopy,
+  useRunHistoryStore,
   type RunHistoryEntry,
   type Tombstones,
 } from "./useRunHistoryStore";
@@ -107,5 +108,74 @@ describe("applyTombstones", () => {
 
   it("ignores an unparseable clearedAt instead of dropping everything", () => {
     expect(applyTombstones([entry()], { clearedAt: "not a date", ids: [] })).toHaveLength(1);
+  });
+});
+
+/**
+ * A tool's output reaches the store in batches (see lib/lineBatcher.ts):
+ * one update per batch, where each line used to be its own.
+ */
+describe("appendLines", () => {
+  const spec = { folder: "ports", script: "Scan-Ports.ps1", label: "Scan", args: [] };
+  const output = (id: string) => useRunHistoryStore.getState().entries.find((e) => e.id === id)?.output ?? [];
+
+  it("adds a whole batch, in order, as ONE store update", () => {
+    const store = useRunHistoryStore.getState();
+    store.startRun("batch-1", spec);
+    let updates = 0;
+    const unsubscribe = useRunHistoryStore.subscribe(() => {
+      updates += 1;
+    });
+    store.appendLines("batch-1", lines(250));
+    unsubscribe();
+    expect(updates).toBe(1);
+    expect(output("batch-1")).toHaveLength(250);
+    expect(output("batch-1")[0].line).toBe("line 0");
+    expect(output("batch-1")[249].line).toBe("line 249");
+  });
+
+  it("keeps the newest lines and counts what fell off, across batches", () => {
+    const store = useRunHistoryStore.getState();
+    store.startRun("batch-2", spec);
+    store.appendLines("batch-2", lines(250));
+    store.appendLines("batch-2", lines(250));
+    const entry = useRunHistoryStore.getState().entries.find((e) => e.id === "batch-2");
+    expect(entry?.output).toHaveLength(300);
+    expect(entry?.droppedLines).toBe(200);
+    // The tail of the second batch is the end of the transcript.
+    expect(entry?.output[299].line).toBe("line 249");
+  });
+
+  it("treats anything that is not stderr as stdout and shortens an absurd line", () => {
+    const store = useRunHistoryStore.getState();
+    store.startRun("batch-3", spec);
+    store.appendLines("batch-3", [
+      { stream: "stderr", line: "bad" },
+      { stream: "something-else", line: "fine" },
+      { stream: "stdout", line: "x".repeat(5000) },
+    ]);
+    const out = output("batch-3");
+    expect(out.map((l) => l.stream)).toEqual(["stderr", "stdout", "stdout"]);
+    expect(out[2].line.length).toBeLessThan(1100);
+    expect(out[2].line.endsWith("[line truncated]")).toBe(true);
+  });
+
+  it("does nothing, and notifies nobody, for an empty batch or an unknown run", () => {
+    const store = useRunHistoryStore.getState();
+    let updates = 0;
+    const unsubscribe = useRunHistoryStore.subscribe(() => {
+      updates += 1;
+    });
+    store.appendLines("batch-1", []);
+    store.appendLines("no-such-run", lines(3));
+    unsubscribe();
+    expect(updates).toBe(0);
+  });
+
+  it("appendLine is the same thing with one line", () => {
+    const store = useRunHistoryStore.getState();
+    store.startRun("batch-4", spec);
+    store.appendLine("batch-4", "stderr", "only");
+    expect(output("batch-4")).toEqual([{ stream: "stderr", line: "only" }]);
   });
 });
