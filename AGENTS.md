@@ -419,19 +419,49 @@ try {
   space and memory. Read-only.
 
 ### WiFi Tools (`tools/wifi/`)
-- Uses `netsh` commands for network operations
-- Uses `Get-NetAdapter` and `Set-DnsClientServerAddress` for DNS management
-- Cloudflare DNS (1.1.1.1 / 2606:4700:4700::1111) and Google DNS (8.8.8.8 / 2001:4860:4860::8888) testing
-- Speed test via Cloudflare's speed endpoint
-- Requires administrator privileges; warns about required reboot after TCP/IP reset
+- **Measure first, fix only what the measurements call for, then measure
+  again.** `WiFi-Optimize.ps1` takes a read-only snapshot (signal and link
+  rate, router and internet latency/loss/jitter, a sign-in-page probe, and
+  the median answer time of the DNS in use against Cloudflare, Google, Quad9
+  and OpenDNS - real lookups via `Resolve-DnsName -Server`, not pings),
+  turns it into findings plus an ordered action plan, applies the plan
+  behind one confirmation, re-measures, prints before/after, and rolls a DNS
+  switch back by itself if lookups got worse. A healthy connection gets no
+  changes; findings no setting can repair (weak signal, crowded channel,
+  outage past the router) carry no action on purpose.
+- All of the deciding is PURE and lives in `tools/lib/DevKit-WiFi.ps1`,
+  covered by `tests/Unit/WiFiCore.Tests.ps1`: the two netsh parsers (they
+  classify lines by the shape of the value - `87%`, `802.11ax`, `5 GHz` -
+  so per-access-point data survives a non-English Windows),
+  `Get-DevKitWifiChannelLoad`, `Get-DevKitWifiScanAdvice`,
+  `Get-DevKitWifiDiagnosis` (the planner), `Compare-DevKitWifiSnapshot`,
+  `Test-DevKitDnsBackupNeeded` and `Get-DevKitDnsRestorePlan`. The scripts
+  only print, ask and apply. A WiFi panel should call these same functions
+  rather than re-deriving anything from script output.
+- Action codes, in application order: `FlushDns`, `SwitchDns`, `RenewLease`
+  (scoped to the WiFi adapter by name), `RestartAdapter`, `ResetStack`
+  (Winsock + TCP/IP; only ever added by `-Deep`, never chosen by the
+  diagnosis, and the only step that needs a restart).
+- DNS undo has two invariants, both with tests: the undo file
+  (`%LOCALAPPDATA%\NorthstarDevKit\DevKit-WiFi-DnsBackup.json`) holds the
+  settings from BEFORE DevKit's first change and is not overwritten by a
+  later run while DevKit's own servers are in place; and automatic DNS is
+  restored as automatic - a family's saved addresses are re-applied only
+  when the registry says it was set by hand (`IPv4Static`/`IPv6Static`).
+- `-DiagnoseOnly` / `-DryRun` change nothing and need no elevation; they are
+  the only invocations to use when testing. Applying fixes, and
+  `-RestoreDns`, need administrator rights.
+- `WiFi-Scan.ps1` asks for a fresh scan through the Native WiFi API
+  (`WlanScan`, P/Invoke in `Invoke-DevKitWlanRescan`) because netsh only
+  prints Windows' cache and has no scan verb. A refusal (error 5) falls back
+  to the cached list with a warning.
 - Every interactive prompt (the y/n confirmation and each trailing "Press
   Enter to exit") is guarded by `[Console]::IsInputRedirected` - so a
-  headless Control Center run ends
-  cleanly instead of throwing on `Read-Host` with stdin closed. The y/n
-  confirmation is additionally skipped by `-Force`, which the caution confirm
-  flow injects automatically. WiFi-Optimize ends with an explicit `exit 0`
-  because WiFi-FastMode forwards `$LASTEXITCODE` (which would otherwise be
-  whatever the last native netsh/ipconfig call returned)
+  headless Control Center run ends cleanly instead of throwing on
+  `Read-Host` with stdin closed. The confirmation is skipped by `-Force`,
+  which the caution confirm flow injects automatically. WiFi-Optimize always
+  ends with an explicit exit code because WiFi-FastMode forwards
+  `$LASTEXITCODE`.
 
 ### App Architecture (`core/`, `crates/devkit-host`, `app/`, `cli/`)
 

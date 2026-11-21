@@ -78,7 +78,7 @@ cargo build --release -p devkit-cli
 | Vite | Fresh dev server, preview builds |
 | Git | Cleanup, status across all repos, sync forks, standup log |
 | Docker | Nuke containers and images, cleanup, tail logs |
-| WiFi | Optimize DNS, scan networks, speed test |
+| WiFi | Measure and diagnose a connection, fix only what is wrong, scan networks, speed test |
 
 Two more live on the widget itself rather than in the catalog: **Doctor** (an environment health
 check) and **Close-Out** (the end-of-day cleanup, with a dry-run **Preview** beside it).
@@ -105,8 +105,9 @@ mostly support `-DryRun` — preview first.
 - **Network access**, in full: the updater checks GitHub Releases (throttled to once per 24h, plus
   a manual **Check for Updates** button) and, when an update exists, downloads it, verifies its
   minisign signature, installs and relaunches in place; the widget's GitHub panel shells out to
-  your own authenticated `gh` CLI to list pull requests and issues; the WiFi optimizer pings
-  public DNS servers and downloads from Cloudflare's speed-test endpoint when you run it; the
+  your own authenticated `gh` CLI to list pull requests and issues; the WiFi tools, when you run
+  them, ping your router and 1.1.1.1, time lookups against public DNS servers, fetch Microsoft's
+  connectivity probe, and run a speed test against Cloudflare; the
   installer fetches the Microsoft WebView2 runtime if it is absent. No telemetry is collected.
 - **DevKit always runs as Administrator** — there is no un-elevated mode. A startup
   gate redirects every launch through a `NorthstarDevKit-Admin` scheduled task (the same
