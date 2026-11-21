@@ -178,10 +178,10 @@ install root (`%LOCALAPPDATA%\DevKit\`, since `installMode` is
 `app/src-tauri/bin/devkit.exe` on every tag, but `tauri.conf.json` neither
 runs that staging in `beforeBuildCommand` nor lists `bin/devkit.exe` as a
 resource, so the staged exe is ignored and an installed app has no
-`<installroot>\devkit.exe`. `tools\system\Install-ShellIntegration.ps1`
-and `Register-DevKitTerminalProfile.ps1` both probe that exact path first
-and hard-exit when it is missing, so shell/terminal integration works only
-from a source checkout for now.
+`<installroot>\devkit.exe`. The shell-integration and Windows Terminal
+profile scripts that probed that exact path (and hard-exited when it was
+missing) were deleted on 2026-11-21 for that reason; restore them from git
+history as part of landing the bundling.
 
 ### When the CLI bundling lands
 
@@ -231,8 +231,9 @@ an NSIS `installerHooks` file exposing `NSIS_HOOK_POSTINSTALL` /
   upgrade flow also invokes the old uninstaller in some paths, so a
   careless implementation removes the entry immediately after adding it.
 
-None of that is worth it, especially since the two shipped integrations
-never rely on `PATH` - they both embed the absolute path to `devkit.exe`:
+None of that is worth it, especially since the two integrations (deleted
+on 2026-11-21 until the CLI is bundled; in git history) never relied on
+`PATH` - they both embedded the absolute path to `devkit.exe`:
 
 - **`Install-ShellIntegration.ps1`** - "Open Northstar DevKit Here" on the
   Explorer folder-background right-click menu.

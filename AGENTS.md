@@ -151,8 +151,8 @@ DevKit/
 │   │                              # by Module")
 │   └── system/ workflow/ diagnostics/   # NOT catalog categories (no
 │                                  # manifest): scripts the app itself calls -
-│                                  # admin setup + shell/terminal integration,
-│                                  # Close-OutSession, DevKit-Doctor
+│                                  # admin setup, Close-OutSession,
+│                                  # DevKit-Doctor
 │
 ├── tests/
 │   └── Unit/                   # Pester tests - unchanged coverage; two files'
@@ -357,9 +357,11 @@ try {
 ### System (`tools/system/`)
 - Not a catalog category - there is no `_module.psd1` here and nothing in
   this folder appears in the Control Center or the CLI menu. It holds the
-  scripts the app shell calls: `Set-DevKitAdminMode.ps1` (below) and the
-  shell-integration / Windows Terminal profile install and uninstall
-  scripts.
+  one script the app shell calls, `Set-DevKitAdminMode.ps1` (below). The
+  shell-integration and Windows Terminal profile scripts that used to sit
+  beside it were deleted on 2026-11-21: nothing called them, and they
+  hard-exited on every installed copy because the installer does not ship
+  `devkit.exe`. They return from git history if the CLI is ever bundled.
 - **Always-elevated app** (mandatory Admin Mode - there is no un-elevated
   mode): a startup gate (`app/src-tauri/src/elevation.rs`, release builds
   only - debug builds and `DEVKIT_ALLOW_UNELEVATED=1` skip it) runs at the
@@ -879,10 +881,10 @@ cargo build --release -p devkit-cli
   by design.
 - **Never execute a destructive/mutating script's real path to "test" it
   - only its documented read-only/`-DryRun`/`-WhatIf` invocation.** Every
-  script under `tools/maintenance/` and `tools/agents/` that mutates the
-  system (deletes files, renames system folders, stops/starts services,
-  writes the registry, runs SFC/DISM, mutates external CLI config)
-  supports a safe, non-mutating invocation - use that one, whether you're
+  script under `tools/` that mutates the system (changes network settings,
+  kills processes, deletes files, prunes Docker, rewrites git state)
+  supports a safe, non-mutating invocation (wording updated 2026-11-21,
+  when `tools/maintenance/` and `tools/agents/` were deleted) - use that one, whether you're
   invoking it directly, through the CLI, or through the Control Center's
   Run dialog (its prompt form fields include the same `-DryRun`/`-WhatIf`
   switches). This applies to a human tester and an AI agent equally: a
