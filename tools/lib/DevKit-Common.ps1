@@ -61,6 +61,47 @@ if (Test-Path $devKitUtilityManifestPath) {
 
 # ==================== SETTINGS ====================
 
+function Read-DevKitStoreFile {
+    <#
+    .SYNOPSIS
+        The text of one of DevKit's JSON stores (settings.json,
+        projects.json), or $null when the file does not exist. THROWS when
+        the file exists but cannot be read, after a few short retries.
+    .DESCRIPTION
+        "Could not read it" and "it is corrupt" are different facts, and the
+        store code used to treat them as one: any exception while loading -
+        including a sharing violation from another DevKit process replacing
+        the file at that instant, or antivirus holding it - sent the file to
+        quarantine as "corrupted" and reset every preference (or the whole
+        linked-projects list) to defaults. And a save that could not read
+        the file first wrote back only what the caller had passed, which for
+        the app is a one-key patch.
+
+        Callers now get the distinction: this throws for "unreadable right
+        now" (leave the file alone; fail the save), and they keep quarantine
+        for text that was read and would not parse.
+
+        ReadAllText rather than Get-Content: it decodes BOM-less UTF-8 the
+        same way under Windows PowerShell 5.1 and PowerShell 7 (5.1's
+        Get-Content reads it as ANSI, mangling any non-ASCII project path).
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $lastError = $null
+    foreach ($attempt in 1..4) {
+        try {
+            return [System.IO.File]::ReadAllText($Path)
+        } catch [System.IO.FileNotFoundException] {
+            return $null
+        } catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds 60
+        }
+    }
+    throw "Could not read ${Path}: $($lastError.Exception.Message)"
+}
+
 function Get-DevKitSettingsFile {
     $dir = Join-Path $env:LOCALAPPDATA "NorthstarDevKit"
     if (-not (Test-Path $dir)) {
@@ -129,8 +170,12 @@ function Get-DevKitSettings {
     $path = Get-DevKitSettingsFile
     if (-not (Test-Path $path)) { return $defaults }
 
+    # Unreadable right now is NOT corrupt: answer this one call with the
+    # defaults and leave the file exactly where it is (Read-DevKitStoreFile).
+    $raw = $null
+    try { $raw = Read-DevKitStoreFile -Path $path } catch { return $defaults }
+
     try {
-        $raw = Get-Content -Path $path -Raw -ErrorAction Stop
         if ([string]::IsNullOrWhiteSpace($raw)) { return $defaults }
         $data = $raw | ConvertFrom-Json -ErrorAction Stop
         if (-not $data.preferences) { return $defaults }
@@ -168,9 +213,13 @@ function Set-DevKitSettings {
         # written by a newer build) are preserved. Best-effort: any
         # read/parse failure falls back to the caller's copy as-is.
         $toSave = $Settings
+        # Read OUTSIDE the forgiving try below, so a file that exists but
+        # cannot be read fails the save. Carrying on would write the
+        # caller's object as the whole file - and the app's caller sends a
+        # one-key patch, so every other preference would silently revert.
+        $raw = Read-DevKitStoreFile -Path $path
         try {
-            if (Test-Path $path) {
-                $raw = Get-Content -Path $path -Raw -ErrorAction Stop
+            if ($null -ne $raw) {
                 if (-not [string]::IsNullOrWhiteSpace($raw)) {
                     $onDisk = $raw | ConvertFrom-Json -ErrorAction Stop
                     if ($onDisk.preferences -and $Settings.preferences) {
@@ -1560,11 +1609,13 @@ function Save-DevKitProjectRegistry {
         # on-disk project this process never read (absent from the
         # Get-DevKitProjectRegistry baseline, i.e. a concurrent add) is kept;
         # one the caller read and deliberately dropped (e.g.
-        # Remove-DevKitLinkedProject) stays dropped. Best-effort: any
-        # read/parse failure falls back to the caller's copy as-is.
+        # Remove-DevKitLinkedProject) stays dropped. A PARSE failure falls
+        # back to the caller's copy as-is; a file that cannot be READ fails
+        # the save instead (Read-DevKitStoreFile) - writing the caller's
+        # copy over projects it could not see would drop them.
+        $raw = Read-DevKitStoreFile -Path $path
         try {
-            if (Test-Path $path) {
-                $raw = Get-Content -Path $path -Raw -ErrorAction Stop
+            if ($null -ne $raw) {
                 if (-not [string]::IsNullOrWhiteSpace($raw)) {
                     $onDisk = $raw | ConvertFrom-Json -ErrorAction Stop
                     if ($null -ne $onDisk.projects) {
@@ -1605,8 +1656,14 @@ function Get-DevKitProjectRegistry {
 
     if (-not (Test-Path $path)) { return $empty }
 
+    # Unreadable right now is NOT corrupt: answer this call with an empty
+    # registry and leave the file alone. The empty read-ids baseline set
+    # above means a save made off this answer still keeps every project on
+    # disk (Save-DevKitProjectRegistry's merge), so nothing is lost.
+    $raw = $null
+    try { $raw = Read-DevKitStoreFile -Path $path } catch { return $empty }
+
     try {
-        $raw = Get-Content -Path $path -Raw -ErrorAction Stop
         if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
         $data = $raw | ConvertFrom-Json -ErrorAction Stop
         # ConvertFrom-Json returns a bare PSCustomObject (not a 1-item array)
