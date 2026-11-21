@@ -2,6 +2,19 @@
 
 All notable changes to Northstar DevKit are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **An update found from the Control Center's Settings could not be
+  installed.** Settings showed "v4.8.0 available" and offered nothing to
+  click: only the widget draws the install dialog, and each window keeps
+  its own update state. Settings now has an "Install & Restart" button
+  beside that message in either window, shows download progress, and
+  offers a retry after a failed install.
+- A re-check that failed while an earlier update was still known was
+  reported as a failed install.
+
 ## [4.8.0] - 2026-11-21
 
 The lightening pass: the tool catalog is cut to what gets used, the WiFi
