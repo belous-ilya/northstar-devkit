@@ -1211,3 +1211,58 @@ Describe "background git calls do not run programs named in the project's git co
         }
     }
 }
+
+Describe "Get-DevKitCliVersionCached" {
+
+    # The MCP report asked 'claude --version' and 'kimi --version' on every
+    # poll: two process starts to read back strings that only change when
+    # the tool is updated.
+
+    BeforeEach {
+        $script:CliVersionCache = @{}
+        # A stand-in CLI that counts how often it was started.
+        $script:FakeCli = Join-Path $TestDrive 'fakecli.cmd'
+        $script:CallLog = Join-Path $TestDrive 'calls.log'
+        if (Test-Path -LiteralPath $script:CallLog) { Remove-Item -LiteralPath $script:CallLog -Force }
+        Set-Content -LiteralPath $script:FakeCli -Encoding Ascii -Value @(
+            '@echo off',
+            "echo called>>`"$($script:CallLog)`"",
+            'echo 2.1.5 (Fake CLI)',
+            'echo a second line that is not the version'
+        )
+        $script:FakeCommand = [PSCustomObject]@{ Source = $script:FakeCli }
+        function script:Get-FakeCliCalls {
+            if (Test-Path -LiteralPath $script:CallLog) { return @(Get-Content -LiteralPath $script:CallLog).Count }
+            return 0
+        }
+    }
+
+    It "returns the first line of the tool's version output" {
+        Get-DevKitCliVersionCached -Command $script:FakeCommand | Should -Be '2.1.5 (Fake CLI)'
+    }
+
+    It "starts the tool once for any number of asks" {
+        1..5 | ForEach-Object { $null = Get-DevKitCliVersionCached -Command $script:FakeCommand }
+        Get-FakeCliCalls | Should -Be 1
+    }
+
+    It "asks again after the tool's file changes (an update)" {
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand
+        (Get-Item -LiteralPath $script:FakeCli).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand
+        Get-FakeCliCalls | Should -Be 2
+    }
+
+    It "asks again once the kept answer is older than the limit" {
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand -MaxAgeMinutes 30
+        foreach ($key in @($script:CliVersionCache.Keys)) { $script:CliVersionCache[$key].At = (Get-Date).AddMinutes(-31) }
+        $null = Get-DevKitCliVersionCached -Command $script:FakeCommand -MaxAgeMinutes 30
+        Get-FakeCliCalls | Should -Be 2
+    }
+
+    It "does not keep a failed read, so the next ask tries again" {
+        $missing = [PSCustomObject]@{ Source = (Join-Path $TestDrive 'not-installed.cmd') }
+        Get-DevKitCliVersionCached -Command $missing | Should -BeNullOrEmpty
+        $script:CliVersionCache.Count | Should -Be 0
+    }
+}

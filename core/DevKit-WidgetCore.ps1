@@ -1462,6 +1462,48 @@ function ConvertFrom-DevKitClaudeMcpLine {
     return @{ Name = $name; Status = $status; Target = $target }
 }
 
+$script:CliVersionCache = @{}
+
+function Get-DevKitCliVersionCached {
+    <#
+    .SYNOPSIS
+        A command-line tool's `--version` line, asked once per installed
+        copy instead of on every MCP report. Each ask starts the tool as a
+        process (for a Node-based CLI, a whole Node start-up) to read back a
+        string that only changes when the tool is updated - and an update
+        rewrites the file, which changes the key this is kept under.
+        A read that fails is not kept, so it is tried again next time.
+    .PARAMETER Command
+        The CommandInfo from Get-DevKitWindowsExecutable.
+    .PARAMETER MaxAgeMinutes
+        Asked again after this long even if the file looks unchanged, for
+        installs whose launcher file is not what an update rewrites.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Command,
+        [int]$MaxAgeMinutes = 30
+    )
+
+    $source = [string]$Command.Source
+    $stamp = 0
+    try { $stamp = (Get-Item -LiteralPath $source -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { }
+    $key = "$source|$stamp"
+    $kept = $script:CliVersionCache[$key]
+    if ($kept -and ((Get-Date) - $kept.At).TotalMinutes -lt $MaxAgeMinutes) { return $kept.Version }
+
+    $version = $null
+    try {
+        $versionOut = (& $source '--version' 2>$null | Out-String).Trim()
+        if ($versionOut) { $version = ($versionOut -split "`n")[0].Trim() }
+    } catch { }
+    if ($version) { $script:CliVersionCache[$key] = @{ Version = $version; At = Get-Date } }
+    return $version
+}
+
+# How long the widget's MCP report reuses the neutral-directory listing (see
+# Get-DevKitMcpScopeDiff -NeutralMaxAgeSeconds in tools/lib/DevKit-McpList.ps1).
+$script:McpNeutralListingMaxAgeSeconds = 600
+
 function Get-DevKitClaudeMcpStatus {
     <#
     .SYNOPSIS
@@ -1482,10 +1524,7 @@ function Get-DevKitClaudeMcpStatus {
     $claude = Get-DevKitWindowsExecutable -Name 'claude'
     if (-not $claude) { return $result }
     $result.CliInstalled = $true
-    try {
-        $versionOut = (& $claude.Source '--version' 2>$null | Out-String).Trim()
-        if ($versionOut) { $result.Version = ($versionOut -split "`n")[0].Trim() }
-    } catch { }
+    $result.Version = Get-DevKitCliVersionCached -Command $claude
 
     if ([string]::IsNullOrWhiteSpace($ProjectPath) -or -not (Test-Path -LiteralPath $ProjectPath)) {
         $list = Invoke-DevKitMcpList -Path $env:TEMP
@@ -1499,7 +1538,7 @@ function Get-DevKitClaudeMcpStatus {
         return $result
     }
 
-    $diff = Get-DevKitMcpScopeDiff -ProjectPath $ProjectPath
+    $diff = Get-DevKitMcpScopeDiff -ProjectPath $ProjectPath -NeutralMaxAgeSeconds $script:McpNeutralListingMaxAgeSeconds
     if (-not $diff.Success) { $result.ErrorMessage = $diff.ErrorMessage; return $result }
     foreach ($name in $diff.UserScope.Keys) {
         $parsed = ConvertFrom-DevKitClaudeMcpLine -Line $diff.UserScope[$name]
@@ -1617,10 +1656,7 @@ function Get-DevKitKimiMcpStatus {
     $kimi = Get-DevKitWindowsExecutable -Name 'kimi'
     if (-not $kimi) { return $result }
     $result.CliInstalled = $true
-    try {
-        $versionOut = (& $kimi.Source '--version' 2>$null | Out-String).Trim()
-        if ($versionOut) { $result.Version = ($versionOut -split "`n")[0].Trim() }
-    } catch { }
+    $result.Version = Get-DevKitCliVersionCached -Command $kimi
 
     $userRows = @()
     $kimiHome = if ($env:KIMI_CODE_HOME) { $env:KIMI_CODE_HOME } else { Join-Path $HOME '.kimi-code' }
