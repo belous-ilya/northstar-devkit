@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tracing::{debug, error, warn};
 
@@ -72,6 +72,11 @@ const STDIN_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// slept in, so a `shutdown` arriving mid-backoff can cut it short instead
 /// of waiting out the full (up to 10s) delay holding the `running` lock.
 const BACKOFF_SLEEP_SLICE: Duration = Duration::from_millis(100);
+/// How long the stdout reader keeps reading after the sidecar PROCESS has
+/// exited before it stops waiting for end-of-file. Normally end-of-file
+/// arrives with the exit and this never runs out. It exists for the case
+/// where it does not: see the reader task in [`PsHost::ensure_alive`].
+const POST_EXIT_READ_GRACE: Duration = Duration::from_millis(1500);
 
 /// Strips the `\n` (and a CRLF's `\r`) terminator the way `lines()` used to
 /// and lossy-decodes the body: one invalid-UTF-8 byte becomes U+FFFD instead
@@ -153,7 +158,13 @@ pub struct SidecarSpec {
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<RpcResponse>>>>;
 
 struct RunningSidecar {
-    child: Child,
+    /// Ends the process. The `Child` itself lives in the exit-watcher task
+    /// (see [`PsHost::ensure_alive`]), which kills it when this is used OR
+    /// merely dropped - so a generation that is replaced or abandoned can
+    /// never leave its process behind.
+    kill: Option<oneshot::Sender<()>>,
+    /// Finishes when the process is gone, however it went.
+    exit_watcher: tokio::task::JoinHandle<()>,
     stdin: ChildStdin,
     reader_task: tokio::task::JoinHandle<()>,
     /// This generation's pending-request table (see [`PendingMap`]).
@@ -394,7 +405,9 @@ impl PsHost {
                 // `Disconnected` - exactly the cleanup a normal death gives
                 // every other caller.
                 if let Some(mut running) = guard.take() {
-                    let _ = running.child.start_kill();
+                    if let Some(kill) = running.kill.take() {
+                        let _ = kill.send(());
+                    }
                 }
                 return Err(HostError::Disconnected);
             }
@@ -523,6 +536,33 @@ impl PsHost {
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
 
+        // The exit watcher: the one place that knows the PROCESS is gone,
+        // as opposed to its output having ended. Those are not the same
+        // event. A pipe reports end-of-file when its last writer closes it,
+        // and every program the sidecar starts with inherited handles (a
+        // tool, a dev server a tool launched) holds a copy of the sidecar's
+        // stdout. A sidecar that died while one of them was running used to
+        // stay "alive" for as long as the survivor did: every call waited
+        // out its full timeout - hours, for a tool run - and nothing
+        // respawned. The reader task below now also listens for this.
+        //
+        // It owns the `Child` so it can wait on it without holding
+        // `running`'s lock. `kill_on_drop` still applies: a runtime that
+        // goes away drops this task and the process with it.
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let (exited_tx, exited_rx) = oneshot::channel::<()>();
+        let exit_watcher = tokio::spawn(async move {
+            tokio::select! {
+                _ = child.wait() => {}
+                // Fires when the sender is used and when it is dropped.
+                _ = kill_rx => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                }
+            }
+            let _ = exited_tx.send(());
+        });
+
         // Fresh per-generation pending map (see [`PendingMap`]'s doc comment)
         // - never shared with a previous or future spawn of the sidecar.
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -554,6 +594,11 @@ impl PsHost {
             // on stdout deliberately does not count.
             let mut spoke = false;
             let mut cleared_backoff = false;
+            let mut exited_rx = exited_rx;
+            // Set once the process is known to be gone: how long to keep
+            // reading what it left in the pipe before giving up on
+            // end-of-file.
+            let mut exit_deadline: Option<tokio::time::Instant> = None;
             loop {
                 // `read_until` + lossy decode, NOT `lines().next_line()`:
                 // one invalid-UTF-8 byte made the whole reader error out
@@ -564,14 +609,39 @@ impl PsHost {
                 // decodes with U+FFFD (and typically just fails JSON parse,
                 // which is logged and skipped) while the stream resyncs on
                 // the next \n. A genuine OS-level read error still breaks.
-                raw.clear();
-                match reader.read_until(b'\n', &mut raw).await {
+                //
+                // `raw` is cleared after a line is taken, not before the
+                // read: a read that loses the race below has already put
+                // its bytes in `raw`, and the next pass continues that same
+                // line. `biased`, reading first, so everything already in
+                // the pipe is consumed before the exit branches are looked
+                // at.
+                let read = tokio::select! {
+                    biased;
+                    read = reader.read_until(b'\n', &mut raw) => read,
+                    _ = &mut exited_rx, if exit_deadline.is_none() => {
+                        exit_deadline =
+                            Some(tokio::time::Instant::now() + POST_EXIT_READ_GRACE);
+                        continue;
+                    }
+                    _ = tokio::time::sleep_until(
+                        exit_deadline.unwrap_or_else(tokio::time::Instant::now)
+                    ), if exit_deadline.is_some() => {
+                        warn!(
+                            generation,
+                            "sidecar process exited but its stdout is still open (held by a program it started); treating it as dead"
+                        );
+                        break;
+                    }
+                };
+                match read {
                     Ok(0) => {
                         debug!("sidecar stdout closed (EOF)");
                         break;
                     }
                     Ok(_) => {
                         let line = decode_sidecar_line(&raw);
+                        raw.clear();
                         if line.trim().is_empty() {
                             continue;
                         }
@@ -703,7 +773,8 @@ impl PsHost {
         // clears it once this generation actually behaves like a working
         // sidecar. See `generation_proved_healthy`.
         *guard = Some(RunningSidecar {
-            child,
+            kill: Some(kill_tx),
+            exit_watcher,
             stdin,
             reader_task,
             pending,
@@ -761,12 +832,15 @@ impl PsHost {
             // backs up mid-drain - which could otherwise stall its own
             // WriteLine calls and turn a slow-but-healthy shutdown into a
             // deadlocked one.
-            let exited = tokio::time::timeout(SHUTDOWN_GRACE, running.child.wait()).await;
+            let exited =
+                tokio::time::timeout(SHUTDOWN_GRACE, &mut running.exit_watcher).await;
             if exited.is_err() {
                 warn!("sidecar did not exit within the shutdown grace period, force-killing");
-                let _ = running.child.start_kill();
+                if let Some(kill) = running.kill.take() {
+                    let _ = kill.send(());
+                }
             }
-            // `child.wait()` returns the moment the process is gone, which
+            // The exit watcher finishes the moment the process is gone, which
             // is typically *before* the reader task has observed EOF and run
             // its drain. Aborting straight away (as this used to) truncated
             // that drain, so a long-running in-flight call - a `tool.run`
