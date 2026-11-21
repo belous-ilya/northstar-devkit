@@ -634,6 +634,23 @@ while (-not $shuttingDown) {
 # returns - no Stop() race with a request that's mid-write), THEN close
 # the output queue once every lane has actually finished writing.
 
+# FIRST: stop any tool still running. A tool.run sits in its lane until the
+# child's stdout closes, so a run that never ends by itself (a dev server)
+# used to hold the drain below for its whole deadline - and then survive the
+# sidecar, keeping its port with no app left to stop it. Killing its tree
+# here is what lets the tool lane unwind and the drain finish promptly. The
+# stop routine lives in RpcMethods.ps1, which this thread has had no reason
+# to load until now; it is dot-sourced only when there is something to stop.
+if ($script:RunRegistry.Count -gt 0) {
+    try {
+        . $script:MethodsScriptPath
+        $stoppedRuns = Stop-DevKitAllToolRuns -Registry $script:RunRegistry
+        Write-DevKitRpcDiag "stopped $stoppedRuns tool run(s) still in flight at shutdown"
+    } catch {
+        Write-DevKitRpcDiag "could not stop in-flight tool runs at shutdown: $($_.Exception.Message)"
+    }
+}
+
 Write-DevKitRpcDiag "draining lanes"
 foreach ($lane in $lanes.Values) { $script:LaneQueues[$lane.Name].CompleteAdding() }
 
@@ -651,6 +668,11 @@ while (-not $writer.Handle.IsCompleted -and (Get-Date) -lt $writerDeadline) {
 }
 
 foreach ($lane in $lanes.Values) {
+    # Only a lane that actually finished is disposed. Dispose() on a pipeline
+    # still running first tries to stop it, and blocks for as long as that
+    # takes - a lane stuck in a native call would hold this process open
+    # until the host force-killed it. The exit below ends such a lane anyway.
+    if (-not $lane.Handle.IsCompleted) { continue }
     try { $lane.PS.Dispose() } catch {}
     try { $lane.Runspace.Close() } catch {}
 }

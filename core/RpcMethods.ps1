@@ -723,6 +723,45 @@ function Stop-DevKitToolRun {
     return (New-DevKitToolStopResult -RunId $RunId -Reason 'stopped' -ProcessId $rootPid -KilledProcessIds @($killed.ToArray()) -LaneReleased $released)
 }
 
+function Stop-DevKitAllToolRuns {
+    <#
+    .SYNOPSIS
+        Stops every tool run still in the registry, process tree and all.
+        Returns how many were stopped.
+    .DESCRIPTION
+        For the sidecar's SHUTDOWN path. Nothing used to stop a run when the
+        app quit: the sidecar waited out its drain deadline on a tool that
+        was never going to finish (a dev server), then exited - leaving the
+        tool's pwsh and everything under it running, holding its port, with
+        no app left to stop it. Quitting DevKit must not leave DevKit's own
+        children behind.
+
+        Called on the sidecar's main thread, which is why it lives here
+        beside Stop-DevKitToolRun rather than in the dispatch table: by the
+        time it runs, no lane is taking requests any more.
+
+        Never throws - a run that will not die must not block shutdown.
+    #>
+    param(
+        $Registry,
+        [int]$ExitWaitMs = 1500
+    )
+
+    if ($null -eq $Registry) { return 0 }
+    $stopped = 0
+    foreach ($runId in @($Registry.Keys)) {
+        try {
+            # ReleaseWaitMs 0: nobody is left to tell whether the lane freed
+            # up, and shutdown should not spend time finding out.
+            $result = Stop-DevKitToolRun -Registry $Registry -RunId ([string]$runId) -ExitWaitMs $ExitWaitMs -ReleaseWaitMs 0
+            if ($result -and $result['stopped']) { $stopped++ }
+        } catch {
+            # Keep going: one stubborn run must not shield the others.
+        }
+    }
+    return $stopped
+}
+
 function Get-DevKitCatalogPayload {
     <#
     .SYNOPSIS

@@ -409,6 +409,60 @@ Describe "Stop-DevKitToolRun" {
     }
 }
 
+Describe "Stop-DevKitAllToolRuns (the sidecar's shutdown sweep)" {
+
+    It "returns 0 for an empty or absent registry" {
+        Stop-DevKitAllToolRuns -Registry $null | Should -Be 0
+        Stop-DevKitAllToolRuns -Registry ([System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()) | Should -Be 0
+    }
+
+    It "does not throw on an entry with no process attached" {
+        $registry = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+        $registry['run-1'] = [hashtable]::Synchronized(@{ RunId = 'run-1'; Process = $null; ProcessId = 0; Stopped = $false })
+        { Stop-DevKitAllToolRuns -Registry $registry } | Should -Not -Throw
+    }
+
+    It "kills a still-running run AND the process it started" {
+        # A real, harmless process tree this test creates itself: a pwsh that
+        # starts a second pwsh and then sleeps - the shape of a tool wrapping
+        # a dev server. Quitting the app used to leave both running.
+        $pwshPath = (Get-Process -Id $PID).Path
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $pwshPath
+        $psi.Arguments = '-NoProfile -NonInteractive -Command "Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList ''-NoProfile'',''-NonInteractive'',''-Command'',''Start-Sleep -Seconds 120'' -WindowStyle Hidden; Start-Sleep -Seconds 120"'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $root = [System.Diagnostics.Process]::Start($psi)
+        $childIds = @()
+        try {
+            # Wait for the grandchild to exist.
+            foreach ($attempt in 1..60) {
+                $childIds = @(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $($root.Id)" -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.ProcessId })
+                if ($childIds.Count -gt 0) { break }
+                Start-Sleep -Milliseconds 100
+            }
+            $childIds.Count | Should -BeGreaterThan 0 -Because 'the fixture must have started its child before the sweep is tested'
+
+            $registry = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+            [void](Register-DevKitToolRun -Registry $registry -RunId 'run-live' -Process $root -Label 'test/tree')
+
+            Stop-DevKitAllToolRuns -Registry $registry | Should -Be 1
+
+            $root.WaitForExit(3000) | Should -BeTrue
+            Start-Sleep -Milliseconds 300
+            foreach ($childId in $childIds) {
+                Get-Process -Id $childId -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+            }
+        } finally {
+            # Never leave the fixture behind, whatever the assertions did.
+            foreach ($id in @($root.Id) + $childIds) {
+                try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { }
+            }
+            $root.Dispose()
+        }
+    }
+}
+
 Describe "tool.stop registration" {
 
     It "is NOT an array method - its result is an object" {
