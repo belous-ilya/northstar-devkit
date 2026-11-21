@@ -41,7 +41,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -84,10 +84,10 @@ if (@('src', 'public', 'node_modules', '.git', '.github', '.vscode') -contains $
 }
 
 try {
-    Push-Location $targetPath
+    Push-Location -LiteralPath $targetPath
 
     # Verify project
-    if (-not (Test-Path "package.json")) {
+    if (-not (Test-Path -LiteralPath "package.json")) {
         Write-DevKitError "No package.json found."
         exit 1
     }
@@ -124,7 +124,7 @@ try {
     if (-not $SkipBuild) {
         $backupPath = $null
 
-        if (Test-Path $outDirFull) {
+        if (Test-Path -LiteralPath $outDirFull) {
             if (-not $Force) {
                 # Headless guard: same probe as the vite-detection prompt above.
                 if (-not (Test-DevKitCanPrompt)) {
@@ -143,8 +143,8 @@ try {
             # production build. The backup is only removed once the new
             # build's exit code confirms success (further down).
             $backupPath = "$outDirFull.bak"
-            if (Test-Path $backupPath) {
-                Remove-Item -Path $backupPath -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
             }
             Write-DevKitStep "Backing up previous build"
             Rename-Item -Path $outDirFull -NewName (Split-Path $backupPath -Leaf)
@@ -154,8 +154,8 @@ try {
         # Clear Vite cache for clean build
         $cachePaths = @(".vite", "node_modules/.vite")
         foreach ($cachePath in $cachePaths) {
-            if (Test-Path $cachePath) {
-                Remove-Item -Path $cachePath -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $cachePath) {
+                Remove-Item -LiteralPath $cachePath -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
 
@@ -186,10 +186,10 @@ try {
         if ($buildExitCode -ne 0) {
             Write-Host "`n  ERROR: Build failed with exit code $buildExitCode`n" -ForegroundColor Red
 
-            if ($backupPath -and (Test-Path $backupPath)) {
+            if ($backupPath -and (Test-Path -LiteralPath $backupPath)) {
                 Write-DevKitStep "Restoring previous build from backup"
-                if (Test-Path $outDirFull) {
-                    Remove-Item -Path $outDirFull -Recurse -Force -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $outDirFull) {
+                    Remove-Item -LiteralPath $outDirFull -Recurse -Force -ErrorAction SilentlyContinue
                 }
                 Rename-Item -Path $backupPath -NewName (Split-Path $outDirFull -Leaf)
                 Write-DevKitDone
@@ -203,8 +203,8 @@ try {
         # not (re)create OutDir, it wrote somewhere else - and deleting the
         # backup now would leave the project with the previous build gone
         # and nothing in its place. Put the backup back and say so.
-        if (-not (Test-Path $outDirFull)) {
-            if ($backupPath -and (Test-Path $backupPath)) {
+        if (-not (Test-Path -LiteralPath $outDirFull)) {
+            if ($backupPath -and (Test-Path -LiteralPath $backupPath)) {
                 Rename-Item -Path $backupPath -NewName (Split-Path $outDirFull -Leaf)
             }
             Write-Host "`n  ERROR: The build succeeded but did not write to '$OutDir'." -ForegroundColor Red
@@ -216,14 +216,14 @@ try {
         Write-Host "`n  DONE: Build completed successfully." -ForegroundColor Green
 
         # Build succeeded and landed where expected - the backup is no longer needed.
-        if ($backupPath -and (Test-Path $backupPath)) {
-            Remove-Item -Path $backupPath -Recurse -Force -ErrorAction SilentlyContinue
+        if ($backupPath -and (Test-Path -LiteralPath $backupPath)) {
+            Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
         }
 
         # Show build stats - one recursive scan, reused for both the
         # size/count totals and (non-recursively) the top-file listing.
-        if (Test-Path $outDirFull) {
-            $outFiles = Get-ChildItem $outDirFull -Recurse -File
+        if (Test-Path -LiteralPath $outDirFull) {
+            $outFiles = Get-ChildItem -LiteralPath $outDirFull -Recurse -File
             $stats = $outFiles | Measure-Object -Property Length -Sum
             $buildSizeMB = [math]::Round($stats.Sum / 1MB, 2)
             $fileCount = $stats.Count
@@ -235,14 +235,14 @@ try {
 
             # List main (top-level) output files
             Write-Host "`n  Main output files:" -ForegroundColor Cyan
-            Get-ChildItem $outDirFull | Select-Object -First 10 | ForEach-Object {
+            Get-ChildItem -LiteralPath $outDirFull | Select-Object -First 10 | ForEach-Object {
                 $size = if ($_.PSIsContainer) { "<dir>" } else { "{0:N0} KB" -f ($_.Length / 1KB) }
                 Write-Host "    $($_.Name.PadRight(30)) $size" -ForegroundColor Gray
             }
         }
     } else {
         Write-Host "  Skipping build (using existing $OutDir)" -ForegroundColor Gray
-        if (-not (Test-Path $outDirFull)) {
+        if (-not (Test-Path -LiteralPath $outDirFull)) {
             Write-Host "`n  ERROR: No existing build found at $OutDir`n" -ForegroundColor Red
             exit 1
         }
@@ -253,16 +253,16 @@ try {
         Write-Host "`n  Analyzing bundle..." -ForegroundColor Cyan
 
         $statsFile = Join-Path $outDirFull "stats.html"
-        if (-not (Test-Path $statsFile)) {
+        if (-not (Test-Path -LiteralPath $statsFile)) {
             # @rollup/plugin-visualizer's output filename/location is
             # configurable per-project - best-effort: look for any
             # stats-like html file anywhere inside OutDir before giving up.
-            $foundStats = Get-ChildItem -Path $outDirFull -Recurse -Filter "*stats*.html" -ErrorAction SilentlyContinue |
+            $foundStats = Get-ChildItem -LiteralPath $outDirFull -Recurse -Filter "*stats*.html" -ErrorAction SilentlyContinue |
                 Select-Object -First 1
             if ($foundStats) { $statsFile = $foundStats.FullName }
         }
 
-        if (Test-Path $statsFile) {
+        if (Test-Path -LiteralPath $statsFile) {
             Write-Host "  Opening bundle analyzer..." -ForegroundColor Green
             Start-Process $statsFile
         } else {

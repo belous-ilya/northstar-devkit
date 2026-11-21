@@ -37,7 +37,7 @@ param(
 
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -57,10 +57,10 @@ Write-DevKitHeader "Git Sync Fork"
 Write-DevKitInfo "Path: $targetPath"
 
 try {
-    Push-Location $targetPath
+    Push-Location -LiteralPath $targetPath
 
     # Verify Git repo
-    if (-not (Test-Path ".git")) {
+    if (-not (Test-Path -LiteralPath ".git")) {
         Write-Host "`n  ERROR: Not a Git repository.`n" -ForegroundColor Red
         exit 1
     }
@@ -108,7 +108,7 @@ try {
     $rebaseMergePath = Join-Path $gitDir "rebase-merge"
     $rebaseApplyPath = Join-Path $gitDir "rebase-apply"
 
-    if (Test-Path $mergeHeadPath) {
+    if (Test-Path -LiteralPath $mergeHeadPath) {
         Write-Host "  ERROR: A merge is already in progress in this repository!" -ForegroundColor Red
         Write-Host "  Resolve it before syncing:" -ForegroundColor Yellow
         Write-Host "    git merge --continue   (after resolving conflicts)" -ForegroundColor Yellow
@@ -117,7 +117,7 @@ try {
         exit 1
     }
 
-    if ((Test-Path $rebaseMergePath) -or (Test-Path $rebaseApplyPath)) {
+    if ((Test-Path -LiteralPath $rebaseMergePath) -or (Test-Path -LiteralPath $rebaseApplyPath)) {
         Write-Host "  ERROR: A rebase is already in progress in this repository!" -ForegroundColor Red
         Write-Host "  Resolve it before syncing:" -ForegroundColor Yellow
         Write-Host "    git rebase --continue  (after resolving conflicts)" -ForegroundColor Yellow

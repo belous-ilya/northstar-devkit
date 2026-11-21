@@ -23,7 +23,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -53,7 +53,7 @@ $checkPaths = @(
     (Join-Path $targetPath ".turbo")
 )
 
-$found = [bool]($checkPaths | Where-Object { Test-Path $_ })
+$found = [bool]($checkPaths | Where-Object { Test-Path -LiteralPath $_ })
 
 if (-not $found) {
     Write-DevKitInfo "No Turbopack caches found."
@@ -75,7 +75,7 @@ try {
     # Fall through to the Test-Path verification below to decide success.
 }
 
-$remaining = $checkPaths | Where-Object { Test-Path $_ }
+$remaining = $checkPaths | Where-Object { Test-Path -LiteralPath $_ }
 if (-not $remaining) {
     Write-DevKitDone
 } else {

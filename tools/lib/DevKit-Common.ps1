@@ -49,7 +49,7 @@ try {
 # launched, so pin its own Utility module now, once, before anything below
 # calls Import-PowerShellDataFile.
 $devKitUtilityManifestPath = Join-Path $PSHOME "Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1"
-if (Test-Path $devKitUtilityManifestPath) {
+if (Test-Path -LiteralPath $devKitUtilityManifestPath) {
     Import-Module $devKitUtilityManifestPath -Force -ErrorAction SilentlyContinue
 }
 
@@ -147,7 +147,7 @@ function Read-DevKitStoreFile {
 
 function Get-DevKitSettingsFile {
     $dir = Join-Path $env:LOCALAPPDATA "NorthstarDevKit"
-    if (-not (Test-Path $dir)) {
+    if (-not (Test-Path -LiteralPath $dir)) {
         # Best-effort: a creation failure (permissions, profile not fully
         # loaded during logon) must not be a terminating error here -
         # downstream readers already tolerate the file simply being absent.
@@ -211,7 +211,7 @@ function Get-DevKitSettings {
     }
 
     $path = Get-DevKitSettingsFile
-    if (-not (Test-Path $path)) { return $defaults }
+    if (-not (Test-Path -LiteralPath $path)) { return $defaults }
 
     # Unreadable right now is NOT corrupt: answer this one call with the
     # defaults and leave the file exactly where it is (Read-DevKitStoreFile).
@@ -238,7 +238,7 @@ function Get-DevKitSettings {
         return $data
     } catch {
         $backupPath = "$path.corrupt-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
-        try { Move-Item -Path $path -Destination $backupPath -Force -ErrorAction SilentlyContinue } catch {}
+        try { Move-Item -LiteralPath $path -Destination $backupPath -Force -ErrorAction SilentlyContinue } catch {}
         Write-DevKitError "Settings file was corrupted and has been reset. Backup: $backupPath"
         return $defaults
     }
@@ -290,10 +290,10 @@ function Set-DevKitSettings {
                 }
             }
         } catch { $toSave = $Settings }
-        $toSave | ConvertTo-Json -Depth 6 | Set-Content -Path $tempPath -Encoding UTF8
-        Move-Item -Path $tempPath -Destination $path -Force
+        $toSave | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $path -Force
     } catch {
-        if (Test-Path $tempPath) { Remove-Item $tempPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
         throw "Failed to save settings: $_"
     }
 }
@@ -405,7 +405,7 @@ function Get-DevKitModule {
     param([Parameter(Mandatory = $true)][string]$FolderPath)
 
     $manifestPath = Join-Path $FolderPath "_module.psd1"
-    if (-not (Test-Path $manifestPath)) {
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
         throw "No _module.psd1 manifest found in '$FolderPath'"
     }
     # Import-PowerShellDataFile only ever parses literal data (hashtables,
@@ -746,12 +746,12 @@ function Resolve-DevKitDirectory {
         [string]$Path
     )
 
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         throw "Path not found: $Path"
     }
 
-    $resolved = (Resolve-Path $Path).Path
-    if (-not (Test-Path $resolved -PathType Container)) {
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    if (-not (Test-Path -LiteralPath $resolved -PathType Container)) {
         throw "Path is not a directory: $resolved"
     }
 
@@ -768,7 +768,7 @@ function Invoke-DevKitInDirectory {
     )
 
     $resolved = Resolve-DevKitDirectory -Path $Path
-    Push-Location $resolved
+    Push-Location -LiteralPath $resolved
     try {
         & $ScriptBlock
     } finally {
@@ -1078,8 +1078,8 @@ function Clear-DevKitNodeCaches {
 
     $found = $false
     foreach ($cachePath in $cachePaths) {
-        if (Test-Path $cachePath) {
-            Remove-Item -Path $cachePath -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $cachePath) {
+            Remove-Item -LiteralPath $cachePath -Recurse -Force -ErrorAction SilentlyContinue
             $found = $true
         }
     }
@@ -1121,7 +1121,7 @@ function Get-DevKitPackageManager {
     )
 
     foreach ($manager in $managers) {
-        if (Test-Path (Join-Path $resolved $manager.Lock)) {
+        if (Test-Path -LiteralPath (Join-Path $resolved $manager.Lock)) {
             return $manager
         }
     }
@@ -1129,9 +1129,9 @@ function Get-DevKitPackageManager {
     # No lock file found - check package.json's corepack "packageManager"
     # field (e.g. "pnpm@8.15.0") before defaulting to npm.
     $packageJsonPath = Join-Path $resolved "package.json"
-    if (Test-Path $packageJsonPath) {
+    if (Test-Path -LiteralPath $packageJsonPath) {
         try {
-            $packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
+            $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
             if ($packageJson.PSObject.Properties.Name -contains "packageManager" -and $packageJson.packageManager) {
                 $managerName = ($packageJson.packageManager -split "@")[0].Trim()
                 $matched = @($managers | Where-Object { $_.Command -eq $managerName })
@@ -1446,7 +1446,7 @@ function ConvertFrom-DevKitExcludedPortRanges {
 
 function Get-DevKitProjectsFile {
     $dir = Join-Path $env:LOCALAPPDATA "NorthstarDevKit"
-    if (-not (Test-Path $dir)) {
+    if (-not (Test-Path -LiteralPath $dir)) {
         # Best-effort, same as Get-DevKitSettingsFile: downstream readers
         # tolerate the registry file simply being absent.
         try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { }
@@ -1495,10 +1495,10 @@ function Save-DevKitProjectRegistry {
                 }
             }
         } catch { }
-        $Registry | ConvertTo-Json -Depth 6 | Set-Content -Path $tempPath -Encoding UTF8
-        Move-Item -Path $tempPath -Destination $path -Force
+        $Registry | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        Move-Item -LiteralPath $tempPath -Destination $path -Force
     } catch {
-        if (Test-Path $tempPath) { Remove-Item $tempPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $tempPath) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
         throw "Failed to save project registry: $_"
     }
 }
@@ -1514,7 +1514,7 @@ function Get-DevKitProjectRegistry {
     # and deliberately dropped it" (a Remove - keep the deletion).
     $script:DevKitProjectRegistryReadIds = @()
 
-    if (-not (Test-Path $path)) { return $empty }
+    if (-not (Test-Path -LiteralPath $path)) { return $empty }
 
     # Unreadable right now is NOT corrupt: answer this call with an empty
     # registry and leave the file alone. The empty read-ids baseline set
@@ -1540,7 +1540,7 @@ function Get-DevKitProjectRegistry {
         # A corrupt/hand-edited file must never crash DevKit.ps1 - Show-Header
         # reads the registry on every menu redraw. Quarantine and start clean.
         $backupPath = "$path.corrupt-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
-        try { Move-Item -Path $path -Destination $backupPath -Force -ErrorAction SilentlyContinue } catch {}
+        try { Move-Item -LiteralPath $path -Destination $backupPath -Force -ErrorAction SilentlyContinue } catch {}
         Write-DevKitError "Project registry was corrupted and has been reset. Backup: $backupPath"
         return $empty
     }
@@ -1560,15 +1560,15 @@ function Get-DevKitLinkedProjects {
 function Get-DevKitProjectTags {
     param([Parameter(Mandatory = $true)][string]$Path)
     $tags = @()
-    if (Test-Path (Join-Path $Path "package.json")) { $tags += "node" }
-    if (Test-Path (Join-Path $Path ".git")) { $tags += "git" }
-    if ((Test-Path (Join-Path $Path "next.config.js")) -or
-        (Test-Path (Join-Path $Path "next.config.mjs")) -or
-        (Test-Path (Join-Path $Path "next.config.ts"))) { $tags += "nextjs" }
-    if ((Test-Path (Join-Path $Path "vite.config.js")) -or
-        (Test-Path (Join-Path $Path "vite.config.ts"))) { $tags += "vite" }
-    if ((Test-Path (Join-Path $Path "Dockerfile")) -or
-        (Test-Path (Join-Path $Path "docker-compose.yml"))) { $tags += "docker" }
+    if (Test-Path -LiteralPath (Join-Path $Path "package.json")) { $tags += "node" }
+    if (Test-Path -LiteralPath (Join-Path $Path ".git")) { $tags += "git" }
+    if ((Test-Path -LiteralPath (Join-Path $Path "next.config.js")) -or
+        (Test-Path -LiteralPath (Join-Path $Path "next.config.mjs")) -or
+        (Test-Path -LiteralPath (Join-Path $Path "next.config.ts"))) { $tags += "nextjs" }
+    if ((Test-Path -LiteralPath (Join-Path $Path "vite.config.js")) -or
+        (Test-Path -LiteralPath (Join-Path $Path "vite.config.ts"))) { $tags += "vite" }
+    if ((Test-Path -LiteralPath (Join-Path $Path "Dockerfile")) -or
+        (Test-Path -LiteralPath (Join-Path $Path "docker-compose.yml"))) { $tags += "docker" }
     return $tags
 }
 

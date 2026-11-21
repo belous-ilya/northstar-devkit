@@ -32,7 +32,7 @@ param(
 
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -80,17 +80,17 @@ Write-Host "  Scanning for repositories..." -ForegroundColor Cyan
 $excludedDirNames = @('node_modules', 'dist', '.next', '.turbo', 'bin', 'obj', '.git', '.venv')
 
 $gitRepos = @()
-if (Test-Path (Join-Path $targetPath ".git")) {
-    $gitRepos += Get-Item -Path $targetPath
+if (Test-Path -LiteralPath (Join-Path $targetPath ".git")) {
+    $gitRepos += Get-Item -LiteralPath $targetPath
 }
 $dirQueue = [System.Collections.Generic.Queue[object]]::new()
-$dirQueue.Enqueue([PSCustomObject]@{ Item = Get-Item -Path $targetPath; Depth = 0 })
+$dirQueue.Enqueue([PSCustomObject]@{ Item = Get-Item -LiteralPath $targetPath; Depth = 0 })
 while ($dirQueue.Count -gt 0) {
     $current = $dirQueue.Dequeue()
     if ($current.Depth -ge $Depth) { continue }
-    foreach ($childDir in @(Get-ChildItem -Path $current.Item.FullName -Directory -ErrorAction SilentlyContinue |
+    foreach ($childDir in @(Get-ChildItem -LiteralPath $current.Item.FullName -Directory -ErrorAction SilentlyContinue |
             Where-Object { $excludedDirNames -notcontains $_.Name })) {
-        if (Test-Path (Join-Path $childDir.FullName ".git")) {
+        if (Test-Path -LiteralPath (Join-Path $childDir.FullName ".git")) {
             $gitRepos += $childDir
         }
         # Keep descending past a found repo - nested repos (submodules,
@@ -121,7 +121,7 @@ foreach ($repo in $gitRepos) {
     $relPath = $repoPath.Substring($targetPath.Length).TrimStart('\', '/')
 
     try {
-        Push-Location $repoPath -ErrorAction Stop
+        Push-Location -LiteralPath $repoPath -ErrorAction Stop
     } catch {
         Write-Host "  $relPath" -ForegroundColor Red -NoNewline
         Write-Host " [ERROR: could not enter directory: $_]" -ForegroundColor DarkGray
