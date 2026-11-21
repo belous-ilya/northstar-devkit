@@ -1,8 +1,17 @@
 import { useSyncExternalStore } from "react";
-import { onDevKitEvent, parseRpcError, rpcCall } from "../../../lib/ipc";
+import {
+  TOOL_RESULT_GRACE_MS,
+  droppedEventCount,
+  droppedEventsNote,
+  onDevKitEvent,
+  parseRpcError,
+  rpcCall,
+  type ToolRunResult,
+} from "../../../lib/ipc";
+import { createLineBatcher } from "../../../lib/lineBatcher";
 import { useRunHistoryStore, type RunSpec } from "../../../stores/useRunHistoryStore";
 import { playSound } from "../../../lib/sounds";
-import type { ToolConsoleLine } from "../../../components/ToolConsole";
+import { nextConsoleLineId, type ToolConsoleLine } from "../../../components/ToolConsole";
 
 /**
  * The widget's single tool-run channel, shared by Quick Actions and Node &
@@ -70,6 +79,15 @@ export interface WidgetToolRunSnapshot {
 /** Live console cap - the run history store keeps its own (deeper) copy. */
 const MAX_LIVE_LINES = 400;
 
+/**
+ * How long streamed lines pile up before they are shown and recorded
+ * together. Each line used to be its own snapshot (a render of the panel)
+ * and its own history-store update; a tool printing a thousand lines a
+ * second did both a thousand times. Same window as the Control Center's
+ * run dialog.
+ */
+const STREAM_FLUSH_MS = 100;
+
 const IDLE: WidgetToolRunSnapshot = {
   runId: null,
   label: null,
@@ -112,9 +130,31 @@ export function useWidgetToolRun(): WidgetToolRunSnapshot {
 }
 
 function appendLive(stream: string, line: string): void {
-  const lines = [...snapshot.lines, { stream, line }];
+  const lines = [...snapshot.lines, { id: nextConsoleLineId(), stream, line }];
   setSnapshot({ lines: lines.length > MAX_LIVE_LINES ? lines.slice(-MAX_LIVE_LINES) : lines });
 }
+
+/**
+ * The in-flight run's streamed output on its way to the screen and to the
+ * run's history entry. Anything that must come AFTER the output received
+ * so far (the outcome, a notice) calls `streamed.flush()` first.
+ */
+const streamed = createLineBatcher<{ runId: string; stream: string; line: string }>((batch) => {
+  // Lines of a run that has since been let go of still belong in its
+  // history; only the current run's are shown.
+  const byRun = new Map<string, { stream: string; line: string }[]>();
+  for (const l of batch) {
+    const group = byRun.get(l.runId);
+    if (group) group.push(l);
+    else byRun.set(l.runId, [l]);
+  }
+  const history = useRunHistoryStore.getState();
+  for (const [runId, group] of byRun) history.appendLines(runId, group);
+  const live = batch.filter((l) => l.runId === snapshot.runId);
+  if (live.length === 0) return;
+  const lines = [...snapshot.lines, ...live.map(({ stream, line }) => ({ id: nextConsoleLineId(), stream, line }))];
+  setSnapshot({ lines: lines.length > MAX_LIVE_LINES ? lines.slice(-MAX_LIVE_LINES) : lines });
+}, STREAM_FLUSH_MS);
 
 function detachListener(): void {
   unlisten?.();
@@ -137,6 +177,7 @@ function describeLaunchFailure(err: unknown): string {
 /** Ends a run that was never actually launched, with the reason on screen. */
 function failLaunch(runId: string, message: string): void {
   detachListener();
+  streamed.flush();
   appendLive("stderr", message);
   setSnapshot({ runId: null, label: null, exitCode: -1, degraded: false, launchError: message });
   const history = useRunHistoryStore.getState();
@@ -184,20 +225,32 @@ export async function startWidgetToolRun(spec: WidgetRunSpec): Promise<void> {
 
   let sawEvent = false;
 
+  // Ends the run. Reached from the tool.finished event and, when that event
+  // never arrives, from the tool.run answer (see TOOL_RESULT_GRACE_MS);
+  // whichever comes second finds the run no longer current and does nothing.
+  const settle = (code: number, cancelled: boolean) => {
+    if (snapshot.runId !== runId) return;
+    streamed.flush();
+    detachListener();
+    setSnapshot({ runId: null, label: null, exitCode: code, degraded: false });
+    history().finishRun(runId, code, cancelled);
+    playSound(code === 0 ? "success" : "error");
+  };
+
   try {
     unlisten = await onDevKitEvent((evt) => {
+      const dropped = droppedEventCount(evt);
+      if (dropped !== null) {
+        if (snapshot.runId === runId) streamed.push({ runId, stream: "stderr", line: droppedEventsNote(dropped) });
+        return;
+      }
       if (evt.runId !== runId) return;
       sawEvent = true;
       if (snapshot.runId !== runId) return;
       if (evt.event === "tool.output" && evt.stream && evt.line !== undefined) {
-        appendLive(evt.stream, evt.line);
-        history().appendLine(runId, evt.stream, evt.line);
+        streamed.push({ runId, stream: evt.stream, line: evt.line });
       } else if (evt.event === "tool.finished") {
-        const code = Number(evt.exitCode ?? -1);
-        detachListener();
-        setSnapshot({ runId: null, label: null, exitCode: code, degraded: false });
-        history().finishRun(runId, code);
-        playSound(code === 0 ? "success" : "error");
+        settle(Number(evt.exitCode ?? -1), evt.cancelled === true);
       }
     });
   } catch (err) {
@@ -208,13 +261,31 @@ export async function startWidgetToolRun(spec: WidgetRunSpec): Promise<void> {
   }
 
   try {
-    await rpcCall("tool.run", {
+    const result = await rpcCall<ToolRunResult>("tool.run", {
       folder: spec.folder,
       script: spec.script,
       args: spec.args,
       runId,
       ...(spec.confirmed ? { confirmed: true } : {}),
     });
+    // The tool has exited. Its outcome normally arrives as tool.finished -
+    // but events are dropped when a tool floods the app with output
+    // (host.lagged), and a dropped tool.finished left the shared guard shut
+    // and every action button in both panels disabled. This answer cannot
+    // be dropped, so it settles the run if the event has not by then.
+    setTimeout(() => {
+      const code = Number(result?.exitCode ?? -1);
+      const cancelled = result?.cancelled === true;
+      if (snapshot.runId === runId) {
+        settle(code, cancelled);
+        return;
+      }
+      // Let go of earlier ("Stop watching"): nobody was listening when it
+      // ended, but its outcome is known now, so its history row gets it
+      // instead of staying "outcome unknown".
+      const entry = history().entries.find((e) => e.id === runId);
+      if (entry && entry.exitCode === null) history().finishRun(runId, code, cancelled);
+    }, TOOL_RESULT_GRACE_MS);
   } catch (err) {
     if (snapshot.runId !== runId) return;
     if (!sawEvent) {
@@ -222,6 +293,7 @@ export async function startWidgetToolRun(spec: WidgetRunSpec): Promise<void> {
       return;
     }
     const message = `RPC error: ${String(err)} - the tool may still be running; still watching for it to finish.`;
+    streamed.flush();
     appendLive("stderr", message);
     history().appendLine(runId, "stderr", message);
     setSnapshot({ degraded: true });
@@ -240,6 +312,7 @@ export function stopWatchingWidgetRun(): void {
   detachListener();
   if (runId) {
     const message = "Stopped watching - the tool may still be running. Its row in Run history has a Stop button.";
+    streamed.flush();
     appendLive("stderr", message);
     useRunHistoryStore.getState().appendLine(runId, "stderr", message);
     useRunHistoryStore.getState().detachRun(runId);

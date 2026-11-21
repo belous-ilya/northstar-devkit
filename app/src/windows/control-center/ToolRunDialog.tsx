@@ -3,17 +3,29 @@ import { motion, type Transition } from "framer-motion";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import clsx from "clsx";
-import { rpcCall, onToolRun, onDevKitEvent, parseRpcError } from "../../lib/ipc";
+import {
+  TOOL_RESULT_GRACE_MS,
+  droppedEventCount,
+  droppedEventsNote,
+  onDevKitEvent,
+  onToolRun,
+  parseRpcError,
+  rpcCall,
+  type ToolRunResult,
+} from "../../lib/ipc";
+import { createLineBatcher } from "../../lib/lineBatcher";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useRunHistoryStore, type RunHistoryEntry } from "../../stores/useRunHistoryStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
 import { useAnimationsEnabled } from "../../hooks/useApplyAppearance";
+import { useStickToBottom } from "../../hooks/useStickToBottom";
 import { playSound } from "../../lib/sounds";
 import { Button } from "../../components/primitives/Button";
 import { GlassPanel } from "../../components/primitives/GlassPanel";
 import { Badge } from "../../components/primitives/Badge";
 import { Expander } from "../../components/primitives/Expander";
 import { RunHistoryList } from "../../components/history/RunHistoryList";
+import { nextConsoleLineId, type ToolConsoleLine } from "../../components/ToolConsole";
 import type { CatalogItem, CatalogModule, DirChildrenResult, ToolStopResult } from "../../lib/types";
 import "./ToolRunDialog.css";
 
@@ -75,6 +87,22 @@ const BACKGROUND_RUN_MAX_COUNT = 50;
 const backgroundRuns = new Map<string, number>();
 let backgroundWatcher: Promise<UnlistenFn> | null = null;
 
+/**
+ * Output of the runs being watched in the background, collected for a
+ * moment and written to the history store together - one store update per
+ * flush and run instead of one per line (see STREAM_FLUSH_MS).
+ */
+const backgroundLines = createLineBatcher<{ runId: string; stream: string; line: string }>((batch) => {
+  const byRun = new Map<string, { stream: string; line: string }[]>();
+  for (const l of batch) {
+    const group = byRun.get(l.runId);
+    if (group) group.push(l);
+    else byRun.set(l.runId, [l]);
+  }
+  const store = useRunHistoryStore.getState();
+  for (const [runId, group] of byRun) store.appendLines(runId, group);
+}, STREAM_FLUSH_MS);
+
 function watchInBackground(runId: string): void {
   const now = Date.now();
   backgroundRuns.set(runId, now);
@@ -87,12 +115,22 @@ function watchInBackground(runId: string): void {
     backgroundRuns.delete(oldest);
   }
   backgroundWatcher ??= onDevKitEvent((evt) => {
+    const store = useRunHistoryStore.getState();
+    const dropped = droppedEventCount(evt);
+    if (dropped !== null) {
+      // Not tied to a run, so every run still being watched gets the note.
+      for (const runId of backgroundRuns.keys()) {
+        backgroundLines.push({ runId, stream: "stderr", line: droppedEventsNote(dropped) });
+      }
+      return;
+    }
     const id = evt.runId;
     if (!id || !backgroundRuns.has(id)) return;
-    const store = useRunHistoryStore.getState();
     if (evt.event === "tool.output" && typeof evt.line === "string") {
-      store.appendLine(id, evt.stream === "stderr" ? "stderr" : "stdout", evt.line);
+      backgroundLines.push({ runId: id, stream: evt.stream === "stderr" ? "stderr" : "stdout", line: evt.line });
     } else if (evt.event === "tool.finished") {
+      // The last lines first: a finished row's transcript is complete.
+      backgroundLines.flush();
       backgroundRuns.delete(id);
       store.finishRun(id, Number(evt.exitCode ?? -1), evt.cancelled === true);
     }
@@ -160,7 +198,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
   const active = useProjectStore((s) => s.active);
   const [values, setValues] = useState<Record<string, string>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [lines, setLines] = useState<{ stream: string; line: string }[]>([]);
+  const [lines, setLines] = useState<ToolConsoleLine[]>([]);
   const [running, setRunning] = useState(false);
   const [exitCode, setExitCode] = useState<number | null>(null);
   /** The tool.run RPC failed but the run may still be alive - see executeRun. */
@@ -173,7 +211,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
   const [cancelled, setCancelled] = useState(false);
   /** Bumped to reopen the Run history expander (the lane-busy state offers it). */
   const [historyNonce, setHistoryNonce] = useState(0);
-  const consoleRef = useRef<HTMLDivElement>(null);
+  const consoleStick = useStickToBottom<HTMLDivElement>(lines);
   const panelRef = useRef<HTMLDivElement>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
   /** runId of the run this dialog is currently watching, if any. */
@@ -191,18 +229,22 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
    * Streamed lines waiting for the next coalesced flush (see
    * STREAM_FLUSH_MS). Ref, not state: nothing reads it during render.
    */
-  const lineBufferRef = useRef<{ stream: string; line: string }[]>([]);
+  const lineBufferRef = useRef<{ runId: string; id: number; stream: string; line: string }[]>([]);
   const flushTimerRef = useRef<number | null>(null);
   const animationsEnabled = useAnimationsEnabled();
   const confirmDestructive = useConfirmDestructive();
   const historyCount = useRunHistoryStore((s) => s.entries.length);
   const startRun = useRunHistoryStore((s) => s.startRun);
   const appendLine = useRunHistoryStore((s) => s.appendLine);
+  const appendLines = useRunHistoryStore((s) => s.appendLines);
   const finishRun = useRunHistoryStore((s) => s.finishRun);
 
   /**
-   * Commits buffered console lines in one setLines (see STREAM_FLUSH_MS).
-   * MAX_CONSOLE_LINES is applied here, same cap as before, just batched.
+   * Commits buffered console lines (see STREAM_FLUSH_MS): one setLines for
+   * the screen and one store update for the run's history entry. Both used
+   * to be paid per line; the history half was the larger, since each line
+   * copied the run's stored transcript and notified every subscriber.
+   * MAX_CONSOLE_LINES is applied here.
    */
   const flushLines = useCallback(() => {
     if (flushTimerRef.current !== null) {
@@ -212,24 +254,45 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
     const pending = lineBufferRef.current;
     if (pending.length === 0) return;
     lineBufferRef.current = [];
+    // One run at a time in practice; grouped anyway so a line can never be
+    // recorded against a run it did not come from.
+    const byRun = new Map<string, { stream: string; line: string }[]>();
+    for (const l of pending) {
+      const group = byRun.get(l.runId);
+      if (group) group.push(l);
+      else byRun.set(l.runId, [l]);
+    }
+    for (const [runId, group] of byRun) appendLines(runId, group);
     setLines((prev) => {
-      const next = [...prev, ...pending];
+      const next = [...prev, ...pending.map(({ id, stream, line }) => ({ id, stream, line }))];
       return next.length > MAX_CONSOLE_LINES ? next.slice(-MAX_CONSOLE_LINES) : next;
     });
-  }, []);
+  }, [appendLines]);
 
-  function bufferLine(stream: string, line: string) {
-    lineBufferRef.current.push({ stream, line });
+  function bufferLine(runId: string, stream: string, line: string) {
+    lineBufferRef.current.push({ runId, id: nextConsoleLineId(), stream, line });
     if (flushTimerRef.current === null) {
       flushTimerRef.current = window.setTimeout(flushLines, STREAM_FLUSH_MS);
     }
   }
 
   /**
+   * A line the dialog itself adds (an error, a notice), on screen and in
+   * the run's history. Flushes first so it lands after the output already
+   * received, in both places.
+   */
+  function addNotice(runId: string, stream: "stdout" | "stderr", line: string) {
+    flushLines();
+    setLines((prev) => [...prev, { id: nextConsoleLineId(), stream, line }]);
+    appendLine(runId, stream, line);
+  }
+
+  /**
    * Empties the pending buffer into the run's HISTORY entry instead of the
    * on-screen console - used when handing a still-live run to the background
    * watcher, where lines must keep accumulating in the transcript even
-   * though nobody is rendering them any more.
+   * though nobody is rendering them any more. The buffer is the only place
+   * these lines are until a flush, so this is what keeps them.
    */
   function drainBufferToStore(runId: string) {
     const pending = lineBufferRef.current;
@@ -238,12 +301,33 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
       window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
-    for (const l of pending) appendLine(runId, l.stream, l.line);
+    appendLines(runId, pending);
   }
 
-  useEffect(() => {
-    consoleRef.current?.scrollTo({ top: consoleRef.current.scrollHeight });
-  }, [lines]);
+  /**
+   * Ends the run this dialog is watching. Reached from the tool.finished
+   * event and, when that event never arrives, from the tool.run answer
+   * (see TOOL_RESULT_GRACE_MS) - whichever comes first; the second finds
+   * the run no longer active and does nothing.
+   */
+  function settleRun(runId: string, code: number, evtCancelled: boolean) {
+    if (activeRunRef.current !== runId) return;
+    flushLines();
+    const wasCancelled = evtCancelled || stopRequestedRef.current === runId;
+    setExitCode(code);
+    setRunning(false);
+    setDegraded(false);
+    setStopping(false);
+    setCancelled(wasCancelled);
+    unlistenRef.current?.();
+    unlistenRef.current = null;
+    activeRunRef.current = null;
+    finishRun(runId, code, wasCancelled);
+    // A killed pwsh child exits -1. That is the shape of a
+    // cancellation the user asked for, not of a failure, so it must
+    // not get the failure sound.
+    playSound(wasCancelled ? "thud" : code === 0 ? "success" : "error");
+  }
 
   // Initial focus lands on the dialog panel so keyboard users tab from
   // inside it (not from whatever sits under the overlay), and screen readers
@@ -418,7 +502,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
       watchInBackground(previous);
     }
 
-    setLines(intro ? [{ stream: "stdout", line: intro }] : []);
+    setLines(intro ? [{ id: nextConsoleLineId(), stream: "stdout", line: intro }] : []);
     setExitCode(null);
     setDegraded(false);
     setLaunchError(null);
@@ -445,37 +529,26 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
           // until the window dies. The lines are coalesced before they reach
           // state (see STREAM_FLUSH_MS); the cap itself is applied in
           // flushLines. useRunHistoryStore already bounds what it retains;
-          // this bounds what is displayed.
-          bufferLine(stream, line);
-          appendLine(runId, stream, line);
+          // this bounds what is displayed. The history entry is written
+          // from the same buffer, at the flush.
+          bufferLine(runId, stream, line);
         },
-        onFinished: (code, evtCancelled) => {
-          if (activeRunRef.current !== runId) return;
-          flushLines();
-          const wasCancelled = evtCancelled || stopRequestedRef.current === runId;
-          setExitCode(code);
-          setRunning(false);
-          setDegraded(false);
-          setStopping(false);
-          setCancelled(wasCancelled);
-          unlisten();
-          unlistenRef.current = null;
-          activeRunRef.current = null;
-          finishRun(runId, code, wasCancelled);
-          // A killed pwsh child exits -1. That is the shape of a
-          // cancellation the user asked for, not of a failure, so it must
-          // not get the failure sound.
-          playSound(wasCancelled ? "thud" : code === 0 ? "success" : "error");
+        onFinished: (code, evtCancelled) => settleRun(runId, code, evtCancelled),
+        onLagged: (dropped) => {
+          if (activeRunRef.current === runId) bufferLine(runId, "stderr", droppedEventsNote(dropped));
         },
       });
-      unlistenRef.current = unlisten;
+      // The run may already have been superseded while the subscription
+      // was being set up; settleRun and the unmount cleanup both go
+      // through unlistenRef, so it must hold THIS run's handle or none.
+      if (activeRunRef.current === runId) unlistenRef.current = unlisten;
+      else unlisten();
     } catch (err) {
       const message = `Could not subscribe to run output: ${String(err)}`;
-      setLines((prev) => [...prev, { stream: "stderr", line: message }]);
+      addNotice(runId, "stderr", message);
       setExitCode(-1);
       setRunning(false);
       activeRunRef.current = null;
-      appendLine(runId, "stderr", message);
       finishRun(runId, -1);
       return;
     }
@@ -496,13 +569,30 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
       // gate first - run() above confirms on item.caution, and
       // RunHistoryList confirms on entry.caution before runFromHistory - so
       // a true value here always means a human said yes to THIS run.
-      await rpcCall("tool.run", {
+      const result = await rpcCall<ToolRunResult>("tool.run", {
         folder: target.folder,
         script: target.script,
         args,
         runId,
         confirmed: target.caution,
       });
+      // The tool has exited. Its outcome normally arrives as tool.finished,
+      // a moment before or after this answer - but events can be dropped
+      // when a tool floods the app with output (host.lagged), and a dropped
+      // tool.finished left the dialog "running" for ever with the tool lane
+      // long since free. This answer cannot be dropped, so after a short
+      // wait for the event it settles whatever is still open: the dialog's
+      // own run, or one it handed to the background watcher.
+      window.setTimeout(() => {
+        const code = Number(result?.exitCode ?? -1);
+        const wasCancelled = result?.cancelled === true;
+        if (activeRunRef.current === runId) {
+          settleRun(runId, code, wasCancelled);
+        } else if (backgroundRuns.delete(runId)) {
+          backgroundLines.flush();
+          useRunHistoryStore.getState().finishRun(runId, code, wasCancelled);
+        }
+      }, TOOL_RESULT_GRACE_MS);
     } catch (err) {
       // Superseded, or tool.finished already landed while the RPC was
       // still settling - the run's outcome is already known, don't muddy it.
@@ -535,10 +625,8 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
         unlistenRef.current?.();
         unlistenRef.current = null;
         activeRunRef.current = null;
-        flushLines();
         const message = `Could not start this run: ${rejection.message}`;
-        setLines((prev) => [...prev, { stream: "stderr", line: message }]);
-        appendLine(runId, "stderr", message);
+        addNotice(runId, "stderr", message);
         setExitCode(-1);
         setRunning(false);
         finishRun(runId, -1);
@@ -552,8 +640,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
       // - a warning line plus a "Stop watching" escape hatch - and keep the
       // subscription up until the run genuinely ends or the dialog unmounts.
       const message = `RPC error: ${rejection.raw} - the tool may still be running; still watching for it to finish.`;
-      setLines((prev) => [...prev, { stream: "stderr", line: message }]);
-      appendLine(runId, "stderr", message);
+      addNotice(runId, "stderr", message);
       setDegraded(true);
     }
   }
@@ -585,8 +672,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
       // way its own outcome has the last word.
       if (activeRunRef.current !== runId) return;
       const message = `Could not cancel this run: ${String(err)}`;
-      setLines((prev) => [...prev, { stream: "stderr", line: message }]);
-      appendLine(runId, "stderr", message);
+      addNotice(runId, "stderr", message);
       setStopping(false);
       stopRequestedRef.current = null;
       return;
@@ -598,8 +684,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
     // the sidecar answers it with a successful notFound/alreadyExited whose
     // message is already plain English, so print that verbatim either way.
     const line = result?.message ?? "Stop requested.";
-    setLines((prev) => [...prev, { stream: "stdout", line }]);
-    appendLine(runId, "stdout", line);
+    addNotice(runId, "stdout", line);
 
     if (!result?.stopped && result?.reason !== "pending") {
       // Nothing was killed, so no tool.finished is coming on our account -
@@ -630,8 +715,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
     if (runId) {
       const message =
         "Stopped watching this run. It may still be executing - its Run history row below stays live and can stop it.";
-      setLines((prev) => [...prev, { stream: "stderr", line: message }]);
-      appendLine(runId, "stderr", message);
+      addNotice(runId, "stderr", message);
       watchInBackground(runId);
     }
     setRunning(false);
@@ -944,10 +1028,10 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
             )}
 
             {lines.length > 0 && (
-              <div className="tool-run-dialog__console" ref={consoleRef}>
+              <div className="tool-run-dialog__console" {...consoleStick}>
                 {lines.map((l, i) => (
                   <div
-                    key={i}
+                    key={l.id ?? i}
                     className={l.stream === "stderr" ? "tool-run-dialog__console-line tool-run-dialog__console-err" : "tool-run-dialog__console-line"}
                   >
                     {l.line}

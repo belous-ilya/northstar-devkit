@@ -408,6 +408,13 @@ interface RunHistoryState {
   /** Records a run at launch. `id` is the runId passed to `tool.run`. */
   startRun: (id: string, spec: RunSpec) => void;
   appendLine: (id: string, stream: string, line: string) => void;
+  /**
+   * Several lines in ONE store update. A chatty tool emits well over a
+   * thousand lines a second, and one update per line meant one copy of the
+   * run's transcript and one notification to every subscriber per line.
+   * The run surfaces collect lines for a moment and hand them over together.
+   */
+  appendLines: (id: string, lines: readonly { stream: string; line: string }[]) => void;
   finishRun: (id: string, exitCode: number, cancelled?: boolean) => void;
   /** The watcher is going away (dialog closed, user stopped watching). */
   detachRun: (id: string) => void;
@@ -448,13 +455,18 @@ export const useRunHistoryStore = create<RunHistoryState>((set, get) => ({
     flushPersist(get().entries);
   },
 
-  appendLine: (id, stream, line) => {
+  appendLine: (id, stream, line) => get().appendLines(id, [{ stream, line }]),
+  appendLines: (id, lines) => {
+    if (lines.length === 0) return;
     set((s) => {
       const index = s.entries.findIndex((e) => e.id === id);
       if (index < 0) return s;
       const prev = s.entries[index];
-      const text = line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)} …[line truncated]` : line;
-      let output = [...prev.output, { stream: stream === "stderr" ? "stderr" : "stdout", line: text }];
+      const added = lines.map(({ stream, line }) => ({
+        stream: stream === "stderr" ? "stderr" : "stdout",
+        line: line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)} …[line truncated]` : line,
+      }));
+      let output = [...prev.output, ...added];
       let droppedLines = prev.droppedLines;
       if (output.length > MAX_LINES_PER_RUN) {
         const excess = output.length - MAX_LINES_PER_RUN;
