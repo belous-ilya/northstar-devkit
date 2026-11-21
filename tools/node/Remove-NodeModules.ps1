@@ -75,8 +75,7 @@ if (-not (Test-Path $nmPath)) {
     }
 
     if (-not $Force) {
-        $confirm = Read-Host "  Delete node_modules? (y/n)"
-        if ($confirm -ne 'y') {
+        if (-not (Confirm-DevKitDestructiveAction -Action "delete node_modules")) {
             Write-DevKitInfo "Cancelled."
             exit 0
         }

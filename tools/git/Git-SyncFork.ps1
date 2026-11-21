@@ -161,8 +161,7 @@ try {
 
     # Confirm
     if (-not $Force) {
-        $confirm = Read-Host "  Sync $Branch with $UpstreamRemote/$Branch? (y/n)"
-        if ($confirm -ne 'y') {
+        if (-not (Confirm-DevKitDestructiveAction -Action "sync $Branch with $UpstreamRemote/$Branch (rewrites the fork branch when rebasing)")) {
             Write-Host "`n  Cancelled.`n" -ForegroundColor Gray
             exit 0
         }

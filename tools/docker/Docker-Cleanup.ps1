@@ -120,7 +120,13 @@ if ($df) {
         $reclaimable = $matches[1]
     }
     $builderLine = $df | Select-String "Build Cache"
-    if ($builderLine -match '(\d+\.?\d*\s*(?i:B|KB|MB|GB|TB))\s+\((\d+)%\)') {
+    # The Build Cache row prints its RECLAIMABLE value WITHOUT the "(nn%)"
+    # the other rows carry ("Build Cache  61  0  1.448GB  668.4MB"), so the
+    # pattern used for Images never matched it: the cache always read
+    # "Unknown", counted as zero, and a machine whose only reclaimable space
+    # was build cache was told "Nothing to clean up!". Take the last size on
+    # the line, with the percentage optional.
+    if ($builderLine -match '(\d+\.?\d*\s*(?i:B|KB|MB|GB|TB))(?:\s+\(\d+%\))?\s*$') {
         $builderReclaimable = $matches[1]
     }
 }
@@ -154,7 +160,15 @@ if ($AllUnused) {
 if (-not $DanglingOnly) {
     Write-Host "    Build cache:        $builderReclaimable" -ForegroundColor Cyan
 }
-Write-Host "    Estimated reclaimable: $reclaimable" -ForegroundColor Cyan
+# 'docker system df' counts every image no container uses as reclaimable.
+# Only -AllUnused removes those; the default run removes dangling (untagged)
+# images only. Printed as a bare "Estimated reclaimable" this promised 10 GB
+# to a run that then freed none of it.
+if ($AllUnused) {
+    Write-Host "    Estimated reclaimable (images): $reclaimable" -ForegroundColor Cyan
+} else {
+    Write-Host "    Held by unused images: $reclaimable (kept in this mode; -AllUnused removes them)" -ForegroundColor Cyan
+}
 Write-Host ""
 
 # Check if there's anything to clean. Stopped containers are excluded from
@@ -166,7 +180,11 @@ if (($DanglingOnly -or $containerCount -eq 0) -and $unusedImageCount -eq 0 -and
     (-not $Volumes -or $volumeCount -eq 0) -and
     (-not $AllUnused -or $networkCount -eq 0) -and
     ($DanglingOnly -or $builderReclaimableBytes -eq 0)) {
-    Write-Host "  OK: Nothing to clean up!`n" -ForegroundColor Green
+    Write-Host "  OK: Nothing to clean up!" -ForegroundColor Green
+    if (-not $AllUnused -and $reclaimable -ne 'Unknown' -and $reclaimable -notmatch '^0(\.0+)?\s*[A-Za-z]*$') {
+        Write-Host "  (In this mode. Tagged images that no container uses hold $reclaimable; run with -AllUnused to remove them.)" -ForegroundColor Gray
+    }
+    Write-Host ""
     exit 0
 }
 
@@ -188,20 +206,31 @@ if ($DryRun) {
             ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
     
+
+    if ($Volumes -or $AllUnused) {
+        if ($volumeCount -gt 0) {
+            Write-Host "`n  Unused volumes that would be removed (their data is not recoverable):" -ForegroundColor Yellow
+            $unusedVolumes | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+    }
+
+    if (-not $DanglingOnly -and $builderReclaimableBytes -gt 0) {
+        Write-Host "`n  Build cache that would be pruned: $builderReclaimable" -ForegroundColor Yellow
+    }
+
     Write-Host ""
     exit 0
 }
 
 # Confirm
 if (-not $Force) {
-    $confirmPrompt = "  Proceed with cleanup? (y/n)"
+    $confirmAction = "run the Docker cleanup described above"
     if (-not $DanglingOnly) {
         # Step 5 always prunes the build cache when -DanglingOnly is not set -
         # disclose that here so users aren't surprised by it after confirming.
-        $confirmPrompt = "  Proceed with cleanup (includes build cache prune)? (y/n)"
+        $confirmAction = "run the Docker cleanup described above, including a build cache prune"
     }
-    $confirm = Read-Host $confirmPrompt
-    if ($confirm -ne 'y') {
+    if (-not (Confirm-DevKitDestructiveAction -Action $confirmAction)) {
         Write-Host "`n  Cancelled.`n" -ForegroundColor Gray
         exit 0
     }

@@ -29,10 +29,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter port number",
+              "Max": 65535,
               "Name": "Port",
               "Min": 1,
-              "Max": 65535,
+              "Prompt": "Enter port number",
               "Type": "Int",
               "InvalidMessage": "Invalid port number."
             }
@@ -52,10 +52,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter PID to kill",
+              "Max": 2147483647,
               "Name": "ProcessId",
               "Min": 1,
-              "Max": 2147483647,
+              "Prompt": "Enter PID to kill",
               "Type": "Int",
               "InvalidMessage": "Invalid PID."
             }
@@ -85,10 +85,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter port number",
+              "Max": 65535,
               "Name": "Port",
               "Min": 1,
-              "Max": 65535,
+              "Prompt": "Enter port number",
               "Type": "Int",
               "InvalidMessage": "Invalid port number."
             }
@@ -108,10 +108,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter port number",
+              "Max": 65535,
               "Name": "Port",
               "Min": 1,
-              "Max": 65535,
+              "Prompt": "Enter port number",
               "Type": "Int",
               "InvalidMessage": "Invalid port number."
             }
@@ -141,10 +141,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Enter URL to test (blank = scan listening dev ports)",
-              "Type": "String",
-              "Name": "Url"
+              "Optional": true,
+              "Name": "Url",
+              "Type": "String"
             }
           ],
           "staticArgs": null
@@ -180,10 +180,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Reinstall dependencies afterwards?",
-              "Type": "YesNo",
-              "Name": "Reinstall"
+              "Optional": true,
+              "Name": "Reinstall",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -204,7 +204,7 @@
           "key": "4",
           "label": "Check NPM Cache Size",
           "script": "Check-NpmCacheSize.ps1",
-          "help": "Read-only report of the package-manager cache location for the project at -Path (defaults to current directory), and its size where the package manager exposes one: npm via 'npm cache verify', pnpm/yarn/bun by measuring the reported cache/store folder directly (bun's cache path is a documented fixed per-user location, not queried from bun itself). Use this before deciding whether a cache clear is worth running. Makes no changes.",
+          "help": "Read-only report of the package-manager cache location for the project at -Path (defaults to current directory), and its size, measured by adding up the files in the folder the package manager reports (bun's cache path is a documented fixed per-user location, not queried from bun itself). Changes nothing: it no longer runs 'npm cache verify', which rewrites the cache. Use this before deciding whether a cache clear is worth running. Makes no changes.",
           "caution": false,
           "requiresProject": true,
           "projectArgName": null,
@@ -223,10 +223,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "InvalidMessage": "Enter a script name.",
               "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
-              "Type": "String",
-              "Name": "Name"
+              "InvalidMessage": "Enter a script name.",
+              "Name": "Name",
+              "Type": "String"
             }
           ],
           "staticArgs": null
@@ -242,10 +242,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Delete the folders it lists? (No = report only)",
-              "Type": "YesNo",
-              "Name": "Apply"
+              "Optional": true,
+              "Name": "Apply",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -305,16 +305,16 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Clear Turbopack cache too?",
-              "Type": "YesNo",
-              "Name": "Turbo"
+              "Optional": true,
+              "Name": "Turbo",
+              "Type": "YesNo"
             },
             {
-              "Prompt": "Port (0 = package default; press Enter for default)",
+              "Max": 65535,
               "Name": "Port",
               "Min": 0,
-              "Max": 65535,
+              "Prompt": "Port (0 = package default; press Enter for default)",
               "Type": "Int",
               "Optional": true
             }
@@ -340,24 +340,24 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Port (0 = Vite default; press Enter for default)",
+              "Max": 65535,
               "Name": "Port",
               "Min": 0,
-              "Max": 65535,
+              "Prompt": "Port (0 = Vite default; press Enter for default)",
               "Type": "Int",
               "Optional": true
             },
             {
-              "Optional": true,
               "Prompt": "Skip the dependency install (faster when nothing changed)?",
-              "Type": "YesNo",
-              "Name": "SkipInstall"
+              "Optional": true,
+              "Name": "SkipInstall",
+              "Type": "YesNo"
             },
             {
-              "Optional": true,
               "Prompt": "Expose the server on the local network (--host)?",
-              "Type": "YesNo",
-              "Name": "ExposeHost"
+              "Optional": true,
+              "Name": "ExposeHost",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -373,18 +373,18 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Preview port (press Enter for 4173)",
+              "Max": 65535,
               "Name": "Port",
               "Min": 1,
-              "Max": 65535,
+              "Prompt": "Preview port (press Enter for 4173)",
               "Type": "Int",
               "Optional": true
             },
             {
-              "Optional": true,
               "Prompt": "Skip the build and preview the existing output?",
-              "Type": "YesNo",
-              "Name": "SkipBuild"
+              "Optional": true,
+              "Name": "SkipBuild",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -408,10 +408,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Preview only - show what would change and change nothing?",
-              "Type": "YesNo",
-              "Name": "DryRun"
+              "Optional": true,
+              "Name": "DryRun",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -439,10 +439,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Rebase onto upstream instead of merging?",
-              "Type": "YesNo",
-              "Name": "Rebase"
+              "Optional": true,
+              "Name": "Rebase",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -458,10 +458,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "How many hours back? (blank = 24)",
+              "Max": 720,
               "Name": "Hours",
               "Min": 1,
-              "Max": 720,
+              "Prompt": "How many hours back? (blank = 24)",
               "Type": "Int",
               "Optional": true,
               "InvalidMessage": "Invalid hours."
@@ -488,16 +488,16 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Preview only - list what would be removed and change nothing?",
-              "Type": "YesNo",
-              "Name": "DryRun"
+              "Optional": true,
+              "Name": "DryRun",
+              "Type": "YesNo"
             },
             {
-              "Optional": true,
               "Prompt": "Keep images too (remove containers only)?",
-              "Type": "YesNo",
-              "Name": "KeepImages"
+              "Optional": true,
+              "Name": "KeepImages",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": {
@@ -515,10 +515,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Preview only - list what would be removed and change nothing?",
-              "Type": "YesNo",
-              "Name": "DryRun"
+              "Optional": true,
+              "Name": "DryRun",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null
@@ -534,22 +534,22 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
               "Prompt": "Preview only - list what would be removed and change nothing?",
-              "Type": "YesNo",
-              "Name": "DryRun"
+              "Optional": true,
+              "Name": "DryRun",
+              "Type": "YesNo"
             },
             {
-              "Optional": true,
               "Prompt": "Also remove every unused image and unused network (not just dangling ones)?",
-              "Type": "YesNo",
-              "Name": "AllUnused"
+              "Optional": true,
+              "Name": "AllUnused",
+              "Type": "YesNo"
             },
             {
-              "Optional": true,
               "Prompt": "Also remove unused volumes (their data is deleted)?",
-              "Type": "YesNo",
-              "Name": "Volumes"
+              "Optional": true,
+              "Name": "Volumes",
+              "Type": "YesNo"
             }
           ],
           "staticArgs": null

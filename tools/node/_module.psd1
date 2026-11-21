@@ -31,7 +31,7 @@
             Label  = 'Check NPM Cache Size'
             Script = 'Check-NpmCacheSize.ps1'
             RequiresProject = $true
-            Help   = "Read-only report of the package-manager cache location for the project at -Path (defaults to current directory), and its size where the package manager exposes one: npm via 'npm cache verify', pnpm/yarn/bun by measuring the reported cache/store folder directly (bun's cache path is a documented fixed per-user location, not queried from bun itself). Use this before deciding whether a cache clear is worth running. Makes no changes."
+            Help   = "Read-only report of the package-manager cache location for the project at -Path (defaults to current directory), and its size, measured by adding up the files in the folder the package manager reports (bun's cache path is a documented fixed per-user location, not queried from bun itself). Changes nothing: it no longer runs 'npm cache verify', which rewrites the cache. Use this before deciding whether a cache clear is worth running. Makes no changes."
         }
         @{
             Key             = '5'

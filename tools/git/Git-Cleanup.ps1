@@ -59,25 +59,33 @@ try {
 Write-DevKitHeader "Git Cleanup"
 Write-DevKitInfo "Path: $targetPath"
 
-$gitPath = Join-Path $targetPath ".git"
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "`n  ERROR: Git not found in PATH.`n" -ForegroundColor Red
+    exit 1
+}
 
-# Verify Git repo
-if (-not (Test-Path $gitPath)) {
+# Ask git rather than looking for a .git folder: a folder below the
+# repository root has none, and neither does a submodule's working tree in
+# the shape this used to test for.
+$insideWorkTree = (git -C $targetPath rev-parse --is-inside-work-tree 2>$null | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $insideWorkTree -ne 'true') {
     Write-Host "`n  ERROR: Not a Git repository.`n" -ForegroundColor Red
     exit 1
 }
 
+# Every step that fails is counted, so the run cannot end on "cleaned" (and
+# exit 0) after printing errors.
+$script:failures = 0
+
+# Long-lived branches that are routinely level with the default branch -
+# which makes them "merged" - and must never be offered for deletion.
+$protectedBranches = @(
+    'main', 'master', 'develop', 'development', 'dev', 'trunk',
+    'staging', 'stage', 'production', 'prod', 'release', 'gh-pages'
+)
+
 try {
     Push-Location $targetPath
-
-# Check if git command available
-try {
-    $null = git rev-parse --git-dir 2>$null
-} catch {
-    Write-Host "`n  ERROR: Git not found in PATH.`n" -ForegroundColor Red
-    Pop-Location
-    exit 1
-}
 
 # Get initial size
 Write-Host "`n  Analyzing repository..." -ForegroundColor Cyan
@@ -91,6 +99,7 @@ if (-not $DryRun) {
     git fetch --all --prune 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: git fetch --all --prune failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        $script:failures++
     }
 }
 
@@ -128,14 +137,19 @@ if (-not $defaultBranch) {
     }
 }
 
-# Find merged branches (excluding current, the default branch, main, master, develop)
+# Find merged branches (excluding current, the default branch, and the
+# long-lived names in $protectedBranches, plus anything under release/ or
+# hotfix/)
 $mergedBranches = @()
 if ($defaultBranch) {
     Write-Host "  Default branch: $defaultBranch" -ForegroundColor Gray
     $mergedBranches = git branch --merged $defaultBranch 2>$null |
         Where-Object { $_ -match '^\s+' } |
         ForEach-Object { $_.Trim() } |
-        Where-Object { $_ -ne $currentBranch -and $_ -ne $defaultBranch -and $_ -notin @('main', 'master', 'develop') }
+        Where-Object {
+            $_ -ne $currentBranch -and $_ -ne $defaultBranch -and
+            $_ -notin $protectedBranches -and $_ -notmatch '^(release|hotfix)/'
+        }
 } else {
     Write-Host "  WARNING: Could not determine the default branch; skipping merged-branch detection." -ForegroundColor Yellow
 }
@@ -147,7 +161,7 @@ if ($mergedBranches) {
     if ($DryRun) {
         Write-Host "  [DRY RUN] Would delete these branches" -ForegroundColor Magenta
     } else {
-        $deleteBranches = $Force -or ((Read-Host "`n  Delete these merged branches? (y/n)") -eq 'y')
+        $deleteBranches = Confirm-DevKitDestructiveAction -Action "delete the merged branches listed above (git branch -d)" -Force:$Force
         if ($deleteBranches) {
             foreach ($branch in $mergedBranches) {
                 try {
@@ -158,9 +172,11 @@ if ($mergedBranches) {
                         Write-Host "  Deleted: $branch" -ForegroundColor Green
                     } else {
                         Write-Host "  ERROR deleting $branch`: $deleteOutput" -ForegroundColor Red
+                        $script:failures++
                     }
                 } catch {
                     Write-Host "  ERROR deleting $branch`: $_" -ForegroundColor Red
+                    $script:failures++
                 }
             }
         }
@@ -169,14 +185,20 @@ if ($mergedBranches) {
     Write-Host "`n  No merged branches to clean up." -ForegroundColor Green
 }
 
-# Prune remote-tracking branches
-if ($DryRun) {
+# Prune remote-tracking branches. A repository with no 'origin' (local
+# only, or a differently named remote) has nothing to prune there, and
+# asking anyway is an error from git that says nothing about the cleanup.
+$hasOrigin = @(git remote 2>$null) -contains 'origin'
+if (-not $hasOrigin) {
+    Write-Host "`n  No 'origin' remote; skipping remote-tracking prune." -ForegroundColor Gray
+} elseif ($DryRun) {
     Write-Host "`n  [DRY RUN] Would prune remote-tracking branches" -ForegroundColor Magenta
 } else {
     Write-Host "`n  Pruning remote-tracking branches..." -ForegroundColor Cyan
     git remote prune origin 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: git remote prune origin failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        $script:failures++
     }
 }
 
@@ -211,6 +233,7 @@ function Invoke-DevKitGitGc {
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ERROR: git $($gcArgs -join ' ') failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        $script:failures++
     }
 }
 
@@ -222,8 +245,8 @@ if ($DryRun) {
 } elseif ($ClearReflog) {
     Write-Host "`n  Skipping pre-reflog garbage collection (will run once after reflog clear)." -ForegroundColor Gray
 } else {
-    $gcQuestion = if ($Aggressive) { "`n  Run AGGRESSIVE garbage collection? --prune=now is irreversible (y/n)" } else { "`n  Run garbage collection? (y/n)" }
-    $runGc = $Force -or ((Read-Host $gcQuestion) -eq 'y')
+    $gcAction = if ($Aggressive) { "run AGGRESSIVE garbage collection (--prune=now is irreversible)" } else { "run garbage collection" }
+    $runGc = Confirm-DevKitDestructiveAction -Action $gcAction -Force:$Force
     if ($runGc) {
         Write-Host ""
         Invoke-DevKitGitGc -Thorough:$Aggressive
@@ -237,11 +260,12 @@ if ($ClearReflog) {
     if ($DryRun) {
         Write-Host "  [DRY RUN] Would clear reflog" -ForegroundColor Magenta
     } else {
-        if ($Force -or (Read-Host "`n  Clear reflog? This is irreversible! (y/n)") -eq 'y') {
+        if (Confirm-DevKitDestructiveAction -Action "clear the reflog (irreversible)" -Force:$Force) {
             Write-Host "  Clearing reflog..." -ForegroundColor Cyan
             git reflog expire --expire=now --all 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  ERROR: git reflog expire failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+                $script:failures++
             } else {
                 Write-Host "  Reflog cleared." -ForegroundColor Green
             }
@@ -253,7 +277,7 @@ if ($ClearReflog) {
         # above is skipped), so it runs here regardless of the reflog answer
         # above - otherwise declining the reflog prompt would mean gc never
         # runs at all for this invocation.
-        if ($Force -or ((Read-Host "`n  Run garbage collection? --prune=now is irreversible (y/n)") -eq 'y')) {
+        if (Confirm-DevKitDestructiveAction -Action "run garbage collection with --prune=now (irreversible)" -Force:$Force) {
             Invoke-DevKitGitGc -Thorough
         } else {
             Write-Host "  Skipped garbage collection." -ForegroundColor Yellow
@@ -271,10 +295,16 @@ if (-not $DryRun) {
     Write-Host "  Size Before: $sizeBefore" -ForegroundColor Gray
     Write-Host "  Size After:  $sizeAfter" -ForegroundColor Gray
     Write-Host "  ===================================" -ForegroundColor Cyan
-    Write-Host "`n  DONE: Git repository cleaned!`n" -ForegroundColor Green
+    if ($script:failures -gt 0) {
+        Write-Host "`n  FINISHED WITH ERRORS: $($script:failures) step(s) failed - see the ERROR lines above.`n" -ForegroundColor Red
+    } else {
+        Write-Host "`n  DONE: Git repository cleaned!`n" -ForegroundColor Green
+    }
 } else {
     Write-Host "`n  [DRY RUN] No changes made.`n" -ForegroundColor Magenta
 }
 } finally {
     Pop-Location
 }
+if ($script:failures -gt 0) { exit 1 }
+exit 0

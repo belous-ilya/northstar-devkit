@@ -23,7 +23,11 @@
     .\Kill-Port.ps1 -Port 3000 -Force
     .\Kill-Port.ps1 -Port 3000 -InfoOnly
 #>
-[CmdletBinding()]
+# DefaultParameterSetName: with two sets and no default, running this with
+# neither -Port nor -ProcessId (or with only -Force / -InfoOnly) died in
+# the parameter binder with "Parameter set cannot be resolved" before the
+# script's own "No PID specified or found" message could run.
+[CmdletBinding(DefaultParameterSetName='ByPort')]
 param(
     [Parameter(ParameterSetName='ByPort')]
     [ValidateRange(1, 65535)]
@@ -118,8 +122,7 @@ if ($refusal) {
 Write-Host ""
 
 if (-not $Force) {
-    $confirm = Read-Host "Kill process $($process.ProcessName) (PID: $ProcessId)? (y/n)"
-    if ($confirm -ne 'y') {
+    if (-not (Confirm-DevKitDestructiveAction -Action "stop $($process.ProcessName) (PID $ProcessId)")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

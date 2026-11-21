@@ -52,6 +52,14 @@ if ($foundProcesses.Count -eq 0) {
 
 Write-Host ""
 
+if ($Kill -and -not (Test-DevKitCanPrompt)) {
+    # -Kill asks about each process in turn. With nobody to answer (the
+    # Control Center runs tools with stdin closed) Read-Host throws on the
+    # first one, so say so and stop at the report instead.
+    Write-DevKitInfo "-Kill asks about each process, which needs a terminal. Nothing was stopped; use Kill Port for a specific port."
+    $Kill = $false
+}
+
 if ($Kill) {
     Write-Host "  Kill Mode Enabled`n" -ForegroundColor Magenta
 
