@@ -14,6 +14,12 @@ All notable changes to Northstar DevKit are documented here.
   offers a retry after a failed install.
 - A re-check that failed while an earlier update was still known was
   reported as a failed install.
+- **Uninstalling while DevKit was running did nothing.** DevKit runs as
+  Administrator and the uninstaller does not, so it could not close the
+  app: Windows Settings showed an error, and a silent uninstall failed
+  without a word. The uninstaller now asks for administrator rights once
+  and uses them to close DevKit and remove its scheduled task, then
+  carries on. If DevKit is not running, nothing changes.
 
 ## [4.8.0] - 2026-11-21
 

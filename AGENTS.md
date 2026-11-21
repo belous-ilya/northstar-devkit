@@ -800,7 +800,7 @@ means it'll work from the other.
   from `CARGO_MANIFEST_DIR` to the repo checkout in a dev build. There is
   no custom `Uninstall.ps1` any more - NSIS generates its own uninstaller
   as part of the bundle, extended by a small `installerHooks` file
-  (`app/src-tauri/windows/hooks.nsh`) with two hooks. POSTINSTALL runs
+  (`app/src-tauri/windows/hooks.nsh`) with three hooks. POSTINSTALL runs
   `core/Remove-StaleInstallFiles.ps1`, which deletes the files named in
   `core/RemovedFiles.txt` - paths an EARLIER release installed under
   `core/` or `tools/` that this one no longer ships: the stock installer
@@ -817,7 +817,12 @@ means it'll work from the other.
   deliberately not a delete-first PREINSTALL hook: the template runs that
   hook before its own running-app check, which the user can cancel, and
   that would leave the app without scripts. The hooks start Windows' own
-  programs by full `$SYSDIR` path, never by bare name. POSTUNINSTALL
+  programs by full `$SYSDIR` path, never by bare name. PREUNINSTALL
+  closes a running DevKit: the app is elevated and the per-user
+  uninstaller is not, so the template's own running-app step cannot
+  touch it and an uninstall while DevKit ran simply failed. The hook
+  asks for administrator rights once and, in that one step, closes
+  DevKit and removes the elevation task. POSTUNINSTALL
   best-effort removes the mandatory-elevation scheduled task, the
   'DevKit (Admin)' shortcuts, the hidden launcher, and the admin-mode
   state marker (retrying the task removal elevated when the plain delete

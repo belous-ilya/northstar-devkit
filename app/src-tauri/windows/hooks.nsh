@@ -1,6 +1,6 @@
 ; DevKit NSIS installer hooks (registered via bundle.windows.nsis.installerHooks).
 ;
-; Two hooks:
+; Three hooks:
 ;
 ; POSTINSTALL removes what the PREVIOUS version installed and this one no
 ; longer ships. The stock installer only ever adds and overwrites: a script
@@ -15,6 +15,14 @@
 ; without its scripts (a delete-first PREINSTALL hook could: the template
 ; runs it before its own running-app check, which the user may cancel), and
 ; it depends on nothing inside Tauri's installer template.
+;
+; PREUNINSTALL closes a running DevKit. The app is admin-only and this
+; uninstaller is not elevated, so the template's own "close the running app"
+; step cannot touch it: uninstalling while DevKit was running (it is a tray
+; app - it nearly always is) showed an error from Windows Settings and, in
+; silent mode, did nothing at all without a word. The hook asks for
+; administrator rights once and uses them for both things that need them:
+; closing DevKit and removing its elevation task.
 ;
 ; POSTUNINSTALL cleans up what the app's mandatory-elevation gate
 ; (src/elevation.rs) created outside the install folder: every launch goes
@@ -46,6 +54,34 @@
     Pop $0
     Pop $1
     DetailPrint "Removed files from previous versions that are no longer shipped"
+  ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  ; Same rule as POSTUNINSTALL below: every run except /UPDATE.
+  ${If} $UpdateMode <> 1
+    ; Is DevKit running? Asked through tasklist rather than the template's
+    ; process plugin: this needs no admin rights (an elevated process's
+    ; image name is visible to everyone) and depends on nothing inside the
+    ; template, whose plugin has already changed its arguments once between
+    ; Tauri releases. 'find' exits 0 when the name is in the list.
+    nsExec::ExecToStack '"$SYSDIR\cmd.exe" /c ""$SYSDIR\tasklist.exe" /FI "IMAGENAME eq ${MAINBINARYNAME}.exe" /NH | "$SYSDIR\find.exe" /I "${MAINBINARYNAME}.exe""'
+    Pop $0 ; exit code: 0 means it is running
+    Pop $1
+    ${If} $0 == 0
+      DetailPrint "DevKit is running as administrator; closing it needs administrator rights"
+      ; ONE elevated step, so ONE prompt: close DevKit with everything it
+      ; started (/T: its sidecar, a running tool, the terminal), and remove
+      ; the elevation task while the rights are in hand - POSTUNINSTALL then
+      ; finds it gone and does not ask again. Only System32 programs, by full
+      ; path. It closes every running DevKit, including a development build:
+      ; nothing here can tell them apart without running a script from the
+      ; (user-writable) install folder with these rights, which is worse.
+      ; Declining the prompt leaves DevKit running; the template's own check
+      ; that follows then stops the uninstall, as it always did.
+      ExecShellWait "runas" "$SYSDIR\cmd.exe" '/c ""$SYSDIR\taskkill.exe" /IM ${MAINBINARYNAME}.exe /F /T & "$SYSDIR\schtasks.exe" /delete /tn "NorthstarDevKit-Admin" /f"' SW_HIDE
+      Sleep 1500
+    ${EndIf}
   ${EndIf}
 !macroend
 
