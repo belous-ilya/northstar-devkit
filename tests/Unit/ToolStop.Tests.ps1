@@ -578,3 +578,142 @@ Describe "Get-DevKitToolRunRefusal (lifted from Invoke-DevKitRpc.ps1)" {
         Get-DevKitToolRunRefusal -Registry $null -Id 1 | Should -BeNullOrEmpty
     }
 }
+
+Describe "a Stop that arrives while the tool is still starting" {
+
+    # Between the main thread claiming the gate for a tool.run and the tool
+    # lane registering the started process, the run is in neither place
+    # tool.stop used to look. A Stop clicked then was answered "that run is
+    # no longer active" and the tool went on to start and run.
+
+    BeforeEach {
+        $script:Gate = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
+        $script:Pending = [System.Collections.Concurrent.ConcurrentDictionary[string, long]]::new()
+        $script:Registry = [System.Collections.Concurrent.ConcurrentDictionary[string, object]]::new()
+        # What Invoke-DevKitRpc.ps1's main thread does when it admits a run.
+        $script:Claim = Request-DevKitToolLaneSlot -Gate $script:Gate
+        $script:Gate['runId'] = 'run-starting'
+    }
+
+    It "parks the stop and answers 'pending' instead of 'notFound'" {
+        $result = Stop-DevKitToolRun -Registry $script:Registry -RunId 'run-starting' -Gate $script:Gate -PendingStops $script:Pending
+        $result.reason | Should -Be 'pending'
+        $result.stopped | Should -BeFalse
+        $result.message | Should -Match 'still starting'
+        $script:Pending.ContainsKey('run-starting') | Should -BeTrue
+    }
+
+    It "does not park a stop for any OTHER run id, even while a run is starting" {
+        # The run-history Stop button asks about rows from earlier sessions;
+        # nothing would ever act on a stop parked for those.
+        $result = Stop-DevKitToolRun -Registry $script:Registry -RunId 'some-old-run' -Gate $script:Gate -PendingStops $script:Pending
+        $result.reason | Should -Be 'notFound'
+        $script:Pending.Count | Should -Be 0
+    }
+
+    It "answers 'notFound' when no run holds the lane" {
+        Release-DevKitToolLaneSlot -Gate $script:Gate -Token $script:Claim
+        $result = Stop-DevKitToolRun -Registry $script:Registry -RunId 'run-starting' -Gate $script:Gate -PendingStops $script:Pending
+        $result.reason | Should -Be 'notFound'
+    }
+
+    It "stays 'notFound' without a gate or a pending table (dot-sourced outside a lane)" {
+        (Stop-DevKitToolRun -Registry $script:Registry -RunId 'run-starting').reason | Should -Be 'notFound'
+    }
+
+    It "releasing the claim also forgets which run held it" {
+        Release-DevKitToolLaneSlot -Gate $script:Gate -Token $script:Claim
+        $script:Gate.ContainsKey('runId') | Should -BeFalse
+        $script:Gate.ContainsKey('active') | Should -BeFalse
+    }
+
+    It "a foreign release leaves the claimed run id alone" {
+        Release-DevKitToolLaneSlot -Gate $script:Gate -Token 'not-the-claim'
+        $script:Gate['runId'] | Should -Be 'run-starting'
+    }
+
+    It "tool.run honours the parked stop the moment the run is registered" {
+        [void](Stop-DevKitToolRun -Registry $script:Registry -RunId 'run-starting' -Gate $script:Gate -PendingStops $script:Pending)
+        # A real, harmless child to stand in for the tool: it only sleeps.
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = (Get-Process -Id $PID).Path
+        $psi.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 120"'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $child = [System.Diagnostics.Process]::Start($psi)
+        try {
+            $entry = Register-DevKitToolRun -Registry $script:Registry -RunId 'run-starting' -Process $child -Label 'test/sleep'
+            Complete-DevKitPendingToolStop -Registry $script:Registry -PendingStops $script:Pending -RunId 'run-starting' | Should -BeTrue
+            $child.WaitForExit(5000) | Should -BeTrue
+            Test-DevKitToolRunCancelled -Entry $entry | Should -BeTrue
+            $script:Pending.ContainsKey('run-starting') | Should -BeFalse
+        } finally {
+            try { if (-not $child.HasExited) { $child.Kill() } } catch { }
+            $child.Dispose()
+        }
+    }
+
+    It "does nothing at registration when no stop was parked" {
+        Complete-DevKitPendingToolStop -Registry $script:Registry -PendingStops $script:Pending -RunId 'run-starting' | Should -BeFalse
+    }
+
+    It "ignores, and clears, a stop parked more than a minute ago" {
+        $script:Pending['run-starting'] = [datetime]::UtcNow.AddMinutes(-5).Ticks
+        $script:Pending['never-started'] = [datetime]::UtcNow.AddMinutes(-9).Ticks
+        Mock Stop-DevKitToolRun { throw 'a stale parked stop must not kill anything' }
+        Complete-DevKitPendingToolStop -Registry $script:Registry -PendingStops $script:Pending -RunId 'run-starting' | Should -BeFalse
+        $script:Pending.Count | Should -Be 0
+    }
+
+    It "stops the run itself when it registered between the two looks" {
+        # Stop-DevKitToolRun's first look misses; the run registers; the
+        # second look (after parking) must find and stop it, not answer
+        # 'pending' for a stop nobody will ever pick up.
+        # $script: so the mock body, which runs in its own scope, can see it.
+        $script:RaceEntry = [hashtable]::Synchronized(@{ RunId = 'run-starting'; Process = $null; ProcessId = 0; Stopped = $false })
+        Mock Add-DevKitPendingToolStop {
+            $script:Registry['run-starting'] = $script:RaceEntry      # the lane registers "meanwhile"
+            $PendingStops[$RunId] = [datetime]::UtcNow.Ticks
+            return $true
+        }
+        $result = Stop-DevKitToolRun -Registry $script:Registry -RunId 'run-starting' -Gate $script:Gate -PendingStops $script:Pending
+        $result.reason | Should -Not -Be 'pending'
+        Test-DevKitToolRunCancelled -Entry $script:RaceEntry | Should -BeTrue
+        $script:Pending.ContainsKey('run-starting') | Should -BeFalse
+    }
+
+    It "words the pending result in the one place results are worded" {
+        (New-DevKitToolStopResult -RunId 'r' -Reason 'pending').message | Should -Match 'will be stopped'
+        (New-DevKitToolStopResult -RunId 'r' -Reason 'pending').stopped | Should -BeFalse
+    }
+}
+
+Describe "the tool-lane gate cannot be left claimed (Invoke-DevKitRpc.ps1)" {
+
+    BeforeAll {
+        $script:SidecarText = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'core\Invoke-DevKitRpc.ps1'))
+    }
+
+    It "gives the claim back when the tool lane failed to initialize" {
+        # Otherwise the first tool.run is answered LaneInitFailed and every
+        # later one "a tool is already running", for the life of the sidecar.
+        $initFailed = $script:SidecarText.IndexOf("-Kind 'LaneInitFailed'")
+        $release = $script:SidecarText.IndexOf("[void]`$ToolLaneGate.TryRemove('active', [ref]`$dropped)")
+        $release | Should -BeGreaterThan -1
+        $release | Should -BeLessThan $initFailed
+        ($initFailed - $release) | Should -BeLessThan 400
+    }
+
+    It "releases after a tool.run that threw before its own finally" {
+        $script:SidecarText.Contains("Release-DevKitToolLaneSlot -Gate `$ToolLaneGate -Token ([string]`$request.params.__toolLaneToken)") | Should -BeTrue
+    }
+
+    It "records which run holds the claim, and shares the parked-stops table with the lanes" {
+        $script:SidecarText.Contains("`$script:ToolLaneGate['runId'] = `$claimedRunId") | Should -BeTrue
+        $script:SidecarText.Contains("SetVariable('PendingToolStops', `$script:PendingToolStops)") | Should -BeTrue
+    }
+
+    It "watches the writer runspace in the health probe" {
+        $script:SidecarText.Contains('if ($writer.Handle.IsCompleted) {') | Should -BeTrue
+    }
+}

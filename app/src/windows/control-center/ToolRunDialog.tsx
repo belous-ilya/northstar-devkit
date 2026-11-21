@@ -601,9 +601,12 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
     setLines((prev) => [...prev, { stream: "stdout", line }]);
     appendLine(runId, "stdout", line);
 
-    if (!result?.stopped) {
+    if (!result?.stopped && result?.reason !== "pending") {
       // Nothing was killed, so no tool.finished is coming on our account -
       // the run had already ended and its own event is already on its way.
+      // (`pending` is the exception: the tool was still starting, the
+      // sidecar stops it as soon as it has, and tool.finished follows - so
+      // the dialog stays in "stopping" for it.)
       setStopping(false);
       stopRequestedRef.current = null;
     }

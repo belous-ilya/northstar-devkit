@@ -180,6 +180,16 @@ $script:RunRegistry = [System.Collections.Concurrent.ConcurrentDictionary[string
 # lanes exactly as RunRegistry is.
 $script:ToolLaneGate = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
 
+# Stops asked for in the spawn window. Between the main thread claiming the
+# gate for a tool.run and the tool lane registering the started process
+# (50-150ms normally, seconds while that lane is still importing after a
+# boot or respawn) the run exists nowhere tool.stop can find it, and a Stop
+# clicked then was answered "that run is no longer active" while the tool
+# went on to start. The gate carries the claimed run's id under 'runId'; a
+# tool.stop for exactly that id is parked here, and tool.run acts on it the
+# moment it has a process to stop. runId -> UTC ticks of the request.
+$script:PendingToolStops = [System.Collections.Concurrent.ConcurrentDictionary[string, long]]::new()
+
 # Extra arguments for the ConvertFrom-Json that parses each request line:
 # -DateKind String where this PowerShell has it (7.5+), nothing elsewhere
 # (5.1 never converts; 7.0 - 7.4 cannot be told not to, and the store
@@ -230,6 +240,7 @@ function Start-DevKitRpcLane {
     $rs.SessionStateProxy.SetVariable('ImportLock', $script:ImportLock)
     $rs.SessionStateProxy.SetVariable('RunRegistry', $script:RunRegistry)
     $rs.SessionStateProxy.SetVariable('ToolLaneGate', $script:ToolLaneGate)
+    $rs.SessionStateProxy.SetVariable('PendingToolStops', $script:PendingToolStops)
 
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
@@ -272,6 +283,24 @@ function Start-DevKitRpcLane {
             [Console]::Error.WriteLine("[devkit-rpc][$LaneName] FAILED to initialize after $($sw.Elapsed.TotalMilliseconds)ms: $($importError.Exception.Message)")
             [Console]::Error.WriteLine($importError.ScriptStackTrace)
             foreach ($request in $InQueue.GetConsumingEnumerable()) {
+                # The main thread claimed the single-flight tool gate for
+                # this request before enqueueing it, and the only code that
+                # gives it back is tool.run's own finally - which never runs
+                # here, because RpcMethods.ps1 is exactly what failed to
+                # load. Without this the first tool.run was answered
+                # LaneInitFailed and every later one "a tool is already
+                # running", for the life of the sidecar. Inline (not
+                # Release-DevKitToolLaneSlot): that function lives in the
+                # file that did not load. Ownership-checked the same way.
+                try {
+                    $claim = [string]$request.params.__toolLaneToken
+                    $held = $null
+                    if ($claim -and $ToolLaneGate.TryGetValue('active', [ref]$held) -and [object]::Equals($held, $claim)) {
+                        $dropped = $null
+                        [void]$ToolLaneGate.TryRemove('runId', [ref]$dropped)
+                        [void]$ToolLaneGate.TryRemove('active', [ref]$dropped)
+                    }
+                } catch { }
                 $line = ConvertTo-DevKitRpcLine (New-DevKitRpcFailure -Id $request.id -Kind 'LaneInitFailed' -Message "The '$LaneName' lane failed to initialize: $($importError.Exception.Message)")
                 # Same shutdown-race guard as the healthy path's Add.
                 try { $OutQueue.Add($line) } catch { }
@@ -318,6 +347,15 @@ function Start-DevKitRpcLane {
             } catch {
                 $reqSw.Stop()
                 $line = ConvertTo-DevKitRpcLine (New-DevKitRpcFailure -Id $request.id -Message $_.Exception.Message -Detail $_.ScriptStackTrace)
+            }
+            # Safety net for the single-flight tool gate. tool.run releases
+            # its own claim in a finally; this covers a tool.run that threw
+            # before reaching it (a bad parameter, a method-table error).
+            # The run is over either way by the time control is back here,
+            # and the release is ownership-checked, so a second release of
+            # the same claim is a no-op and can never clear a newer one.
+            if ($request.method -eq 'tool.run') {
+                try { Release-DevKitToolLaneSlot -Gate $ToolLaneGate -Token ([string]$request.params.__toolLaneToken) } catch { }
             }
             # Guarded: during shutdown the main thread closes $OutQueue after
             # a drain deadline; a method still in flight past that deadline
@@ -549,6 +587,15 @@ while (-not $shuttingDown) {
         if ($signaled) { continue }
         if (-not $shuttingDown -and ([DateTime]::UtcNow - $lastLaneProbeAt) -ge $laneProbeInterval) {
             $lastLaneProbeAt = [DateTime]::UtcNow
+            # The writer first: it is the one runspace allowed to touch
+            # stdout. If its loop ended (a failed write to a broken pipe),
+            # every lane keeps answering into a queue nobody drains - each
+            # call then times out after 60s with nothing in the log, and
+            # the lane checks below all still pass.
+            if ($writer.Handle.IsCompleted) {
+                Write-DevKitRpcDiag "writer runspace died unexpectedly; exiting non-zero so the host respawns a healthy sidecar"
+                exit 1
+            }
             foreach ($lane in $lanes.Values) {
                 if ($lane.Handle.IsCompleted) {
                     # A completed handle mid-life means the runspace thread is
@@ -628,6 +675,12 @@ while (-not $shuttingDown) {
                             Add-Member -InputObject $request -Force -NotePropertyName 'params' -NotePropertyValue ([PSCustomObject]@{})
                         }
                         Add-Member -InputObject $request.params -Force -NotePropertyName '__toolLaneToken' -NotePropertyValue $slot
+                        # Which run holds the claim - see $script:PendingToolStops.
+                        # A request without a runId gets one minted inside the
+                        # lane, which nobody could have asked to stop yet.
+                        $claimedRunId = ''
+                        try { $claimedRunId = [string]$request.params.runId } catch { }
+                        if ($claimedRunId) { $script:ToolLaneGate['runId'] = $claimedRunId }
                     }
                 }
             }

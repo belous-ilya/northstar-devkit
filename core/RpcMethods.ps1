@@ -383,6 +383,9 @@ function Release-DevKitToolLaneSlot {
     try {
         if ($Gate.TryGetValue('active', [ref]$current) -and [object]::Equals($current, $Token)) {
             $removed = $null
+            # 'runId' first: while 'active' is still held no new claim can
+            # exist, so this can only be removing this claim's own id.
+            [void]$Gate.TryRemove('runId', [ref]$removed)
             [void]$Gate.TryRemove('active', [ref]$removed)
         }
     } catch { }
@@ -608,7 +611,7 @@ function New-DevKitToolStopResult {
     #>
     param(
         [Parameter(Mandatory)][string]$RunId,
-        [Parameter(Mandatory)][ValidateSet('stopped', 'notFound', 'alreadyExited', 'failed')][string]$Reason,
+        [Parameter(Mandatory)][ValidateSet('stopped', 'notFound', 'alreadyExited', 'failed', 'pending')][string]$Reason,
         [int]$ProcessId = 0,
         [AllowEmptyCollection()][int[]]$KilledProcessIds = @(),
         [bool]$LaneReleased = $true,
@@ -628,6 +631,7 @@ function New-DevKitToolStopResult {
             'alreadyExited' { $Message = 'That run had already finished - nothing left to stop.' }
             'notFound' { $Message = 'That run is no longer active - it finished on its own.' }
             'failed' { $Message = "Could not stop PID $ProcessId." }
+            'pending' { $Message = 'Stop requested - the tool is still starting and will be stopped the moment it has.' }
         }
     }
 
@@ -663,6 +667,61 @@ function Wait-DevKitToolRunReleased {
         Start-Sleep -Milliseconds 40
     }
     return (-not $Registry.ContainsKey($RunId))
+}
+
+function Add-DevKitPendingToolStop {
+    <#
+    .SYNOPSIS
+        Parks a stop for a run that is being started but has no process yet.
+        Returns $true when it was parked: only when the gate names exactly
+        this run as the one holding the tool lane. A stop for any other id
+        (a row from an earlier session, a run that already ended) is not
+        parked - nothing would ever act on it.
+    #>
+    param($Gate, $PendingStops, [Parameter(Mandatory)][string]$RunId)
+
+    if ($null -eq $Gate -or $null -eq $PendingStops) { return $false }
+    $claimed = $null
+    try {
+        if (-not $Gate.TryGetValue('runId', [ref]$claimed)) { return $false }
+    } catch { return $false }
+    if (-not [object]::Equals($claimed, $RunId)) { return $false }
+    try { $PendingStops[$RunId] = [datetime]::UtcNow.Ticks } catch { return $false }
+    return $true
+}
+
+function Complete-DevKitPendingToolStop {
+    <#
+    .SYNOPSIS
+        tool.run's half of the spawn-window stop: called once the run is
+        registered. If a stop was parked for it (within the last minute),
+        stops it now and returns $true. Anything older is a leftover from a
+        run that never started, and is just cleared.
+    #>
+    param($Registry, $PendingStops, [Parameter(Mandatory)][string]$RunId, [int]$MaxAgeSeconds = 60)
+
+    if ($null -eq $PendingStops) { return $false }
+    $ticks = 0L
+    $had = $false
+    try { $had = $PendingStops.TryRemove($RunId, [ref]$ticks) } catch { $had = $false }
+    # Sweep leftovers while here, so a stop parked for a run that then
+    # failed to spawn cannot sit in the table for the life of the sidecar.
+    try {
+        $cutoff = [datetime]::UtcNow.AddSeconds(-$MaxAgeSeconds).Ticks
+        foreach ($key in @($PendingStops.Keys)) {
+            $at = 0L
+            if ($PendingStops.TryGetValue($key, [ref]$at) -and $at -lt $cutoff) {
+                $gone = 0L
+                [void]$PendingStops.TryRemove($key, [ref]$gone)
+            }
+        }
+    } catch { }
+    if (-not $had) { return $false }
+    if (([datetime]::UtcNow.Ticks - $ticks) -gt ([timespan]::FromSeconds($MaxAgeSeconds).Ticks)) { return $false }
+    # ReleaseWaitMs 0: this runs ON the tool lane, inside the run - waiting
+    # for the lane to be released would be waiting for ourselves.
+    [void](Stop-DevKitToolRun -Registry $Registry -RunId $RunId -ReleaseWaitMs 0)
+    return $true
 }
 
 function Stop-DevKitToolRun {
@@ -701,7 +760,12 @@ function Stop-DevKitToolRun {
         [Parameter(Mandatory)][string]$RunId,
         [int]$ExitWaitMs = 2000,
         [int]$ReleaseWaitMs = 1500,
-        [double]$ToleranceMs = 250
+        [double]$ToleranceMs = 250,
+        # The single-flight gate and the parked-stops table (see
+        # $script:PendingToolStops in Invoke-DevKitRpc.ps1). Both optional:
+        # without them a run that is not registered is simply "not found".
+        $Gate = $null,
+        $PendingStops = $null
     )
 
     if ($null -eq $Registry) { return (New-DevKitToolStopResult -RunId $RunId -Reason 'notFound') }
@@ -710,7 +774,21 @@ function Stop-DevKitToolRun {
     $found = $false
     try { $found = $Registry.TryGetValue($RunId, [ref]$entry) } catch { $found = $false }
     if (-not $found -or $null -eq $entry) {
-        return (New-DevKitToolStopResult -RunId $RunId -Reason 'notFound')
+        # Not registered. If the gate says THIS run is the one being
+        # started, it is in the spawn window: park the stop for tool.run to
+        # act on. Then look once more - the run may have registered (and
+        # looked for a parked stop, finding none) between the two reads, in
+        # which case it is stopped here in the ordinary way.
+        if (-not (Add-DevKitPendingToolStop -Gate $Gate -PendingStops $PendingStops -RunId $RunId)) {
+            return (New-DevKitToolStopResult -RunId $RunId -Reason 'notFound')
+        }
+        $found = $false
+        try { $found = $Registry.TryGetValue($RunId, [ref]$entry) } catch { $found = $false }
+        if (-not $found -or $null -eq $entry) {
+            return (New-DevKitToolStopResult -RunId $RunId -Reason 'pending')
+        }
+        $parked = 0L
+        try { [void]$PendingStops.TryRemove($RunId, [ref]$parked) } catch { }
     }
 
     $entry['Stopped'] = $true
@@ -1178,6 +1256,12 @@ function Invoke-DevKitRpcMethod {
 
                 & $EmitEvent 'tool.started' $runId @{ pid = $proc.Id }
 
+                # A Stop clicked while this run was still being started was
+                # parked (it had no process to kill). Honour it now; the
+                # drain below then sees the pipe close and reports the run
+                # cancelled, exactly as for a stop that arrived later.
+                [void](Complete-DevKitPendingToolStop -Registry $RunRegistry -PendingStops $PendingToolStops -RunId $runId)
+
                 $exitCode = -1
                 $cancelled = $false
                 try {
@@ -1264,7 +1348,7 @@ function Invoke-DevKitRpcMethod {
             # lane is by definition blocked inside the run being cancelled.
             $runId = [string](Get-DevKitRpcParam $Params 'runId' '')
             if ([string]::IsNullOrWhiteSpace($runId)) { throw 'tool.stop requires a runId.' }
-            return Stop-DevKitToolRun -Registry $RunRegistry -RunId $runId
+            return Stop-DevKitToolRun -Registry $RunRegistry -RunId $runId -Gate $ToolLaneGate -PendingStops $PendingToolStops
         }
 
         default {

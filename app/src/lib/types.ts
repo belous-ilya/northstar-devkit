@@ -150,7 +150,8 @@ export interface ProcessKillResult {
 export interface ToolStopResult {
   runId: string;
   stopped: boolean;
-  reason: "stopped" | "notFound" | "alreadyExited" | "failed";
+  /** `pending`: the run was still being started - it will be stopped as soon as it has a process, and reports `tool.finished` then. */
+  reason: "stopped" | "notFound" | "alreadyExited" | "failed" | "pending";
   processId: number;
   killedProcessIds: number[];
   killedCount: number;
