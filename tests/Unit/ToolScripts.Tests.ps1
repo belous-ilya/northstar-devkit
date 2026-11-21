@@ -707,3 +707,49 @@ Describe "Find-StaleNodeModules.ps1 measures how long the PROJECT has been idle"
         $text | Should -Match 'AgeDays\s+= \[int\]\[math\]::Round\(\(\(Get-Date\) - \$lastActivity\)\.TotalDays\)'
     }
 }
+
+Describe "Test-DevEndpoint.ps1 does not send HTTP to database ports" {
+
+    # With no URL it probes every common dev port that is listening - and
+    # that list includes PostgreSQL, MySQL, Redis and MongoDB. An HTTP
+    # request to one of those is logged by the server as a broken or hostile
+    # client, and the probe waits out its whole timeout for nothing.
+
+    BeforeAll {
+        $ast = Get-ScriptAst 'tools\ports\Test-DevEndpoint.ps1'
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-DevKitEndpointProbePlan' }, $true)
+        . ([scriptblock]::Create($fn.Extent.Text))
+        # The script's own table of database ports, evaluated on its own.
+        $assignment = $ast.Find({ param($n)
+                $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$NonHttpPorts' }, $true)
+        $script:NonHttpPorts = & ([scriptblock]::Create($assignment.Right.Extent.Text))
+        $script:Plan = @(Get-DevKitEndpointProbePlan -Ports @(3000, 5432, 5173, 6379, 3306, 27017, 8080) -NonHttp $script:NonHttpPorts)
+    }
+
+    It "probes web ports and only reports database ports" {
+        @($script:Plan | Where-Object Probe | ForEach-Object Port) | Should -Be @(3000, 5173, 8080)
+        @($script:Plan | Where-Object { -not $_.Probe } | ForEach-Object Port) | Should -Be @(5432, 6379, 3306, 27017)
+    }
+
+    It "names the database, so the row says why it was not probed" {
+        ($script:Plan | Where-Object Port -EQ 5432).Service | Should -Be 'PostgreSQL'
+        ($script:Plan | Where-Object Port -EQ 6379).Service | Should -Be 'Redis'
+        ($script:Plan | Where-Object Port -EQ 3306).Service | Should -Be 'MySQL'
+        ($script:Plan | Where-Object Port -EQ 27017).Service | Should -Be 'MongoDB'
+    }
+
+    It "keeps the ports in the order given and answers nothing for no ports" {
+        @($script:Plan | ForEach-Object Port) | Should -Be @(3000, 5432, 5173, 6379, 3306, 27017, 8080)
+        @(Get-DevKitEndpointProbePlan -Ports @() -NonHttp $script:NonHttpPorts).Count | Should -Be 0
+    }
+
+    It "is what the scan loop goes through before it sends anything" {
+        $text = $ast.Extent.Text
+        $loop = $text.IndexOf('Get-DevKitEndpointProbePlan -Ports $activePorts -NonHttp $NonHttpPorts')
+        $probe = $text.IndexOf('Invoke-DevKitEndpointProbe -TargetUrl "http://localhost:$p"')
+        $loop | Should -BeGreaterThan -1
+        $probe | Should -BeGreaterThan $loop
+        # Nothing else in the script probes a port by number.
+        @([regex]::Matches($text, 'Invoke-DevKitEndpointProbe -TargetUrl "http://localhost')).Count | Should -Be 1
+    }
+}

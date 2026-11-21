@@ -8,7 +8,9 @@
     the status code, latency, and final URL after redirects; for https URLs it
     additionally inspects the TLS certificate and reports days until expiry.
     Without -Url, probes http://localhost:<port> for every common dev port
-    that is actually listening and prints a compact table.
+    that is actually listening and prints a compact table. Ports that
+    belong to a database (PostgreSQL, MySQL, Redis, MongoDB) are listed as
+    listening but are not sent an HTTP request: they do not speak HTTP.
 
     Read-only: only makes network requests to localhost or the URL you give
     it; every request failure is reported as a clean "not responding" result,
@@ -29,7 +31,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -38,6 +40,37 @@ if (Test-Path $CommonModule) {
 
 # Same list Scan-Ports.ps1 scans.
 $CommonPorts = @(3000, 3001, 3002, 3003, 5173, 5174, 8000, 8080, 8081, 9000, 4200, 5000, 5500, 1337, 5432, 3306, 6379, 27017)
+
+# Ports in that list that belong to a database. An HTTP request to one is
+# not a harmless miss: the server logs it as a broken or hostile client
+# (PostgreSQL: "invalid length of startup packet"; Redis: "Possible SECURITY
+# ATTACK detected", and it drops the connection), and the probe then sits
+# out its whole timeout waiting for an answer that cannot come.
+$NonHttpPorts = @{
+    5432  = 'PostgreSQL'
+    3306  = 'MySQL'
+    6379  = 'Redis'
+    27017 = 'MongoDB'
+}
+
+function Get-DevKitEndpointProbePlan {
+    <#
+    .SYNOPSIS
+        What to do with each listening port: send it an HTTP request, or
+        only report it. Pure - nothing is contacted.
+    .OUTPUTS
+        One object per port, in the order given: Port [int], Probe [bool],
+        Service [string or $null] (the database's name when Probe is false).
+    #>
+    param(
+        [int[]]$Ports = @(),
+        [hashtable]$NonHttp = @{}
+    )
+    foreach ($port in $Ports) {
+        $service = $NonHttp[$port]
+        [PSCustomObject]@{ Port = $port; Probe = ($null -eq $service); Service = $service }
+    }
+}
 
 function Invoke-DevKitEndpointProbe {
     <#
@@ -226,7 +259,12 @@ if ($activePorts.Count -eq 0) {
 
 Write-Host ""
 Write-Host ("  {0,-7}{1,-9}{2,-11}{3}" -f 'PORT', 'STATUS', 'LATENCY', 'NOTE') -ForegroundColor Cyan
-foreach ($p in $activePorts) {
+foreach ($step in @(Get-DevKitEndpointProbePlan -Ports $activePorts -NonHttp $NonHttpPorts)) {
+    $p = $step.Port
+    if (-not $step.Probe) {
+        Write-Host ("  {0,-7}{1,-9}{2,-11}{3}" -f $p, '-', '-', "listening - $($step.Service), not an HTTP service (not probed)") -ForegroundColor DarkGray
+        continue
+    }
     $probe = Invoke-DevKitEndpointProbe -TargetUrl "http://localhost:$p" -TimeoutSec 2
     if ($probe.Responding) {
         Write-Host ("  {0,-7}{1,-9}{2,-11}" -f $p, $probe.StatusCode, "$($probe.LatencyMs) ms") -ForegroundColor (Get-DevKitStatusColor $probe.StatusCode)
