@@ -102,6 +102,54 @@ function Get-DevKitGpuReading {
 }
 
 $script:CpuTempCache = $null
+# The thermal-zone counter objects, built once per runspace:
+# $null = not tried yet, an empty array = this machine has none.
+$script:ThermalZoneCounters = $null
+
+function Get-DevKitThermalZoneKelvin {
+    <#
+    .SYNOPSIS
+        The hottest ACPI thermal zone, in Kelvin, or $null when Windows
+        exposes none. Reads the 'Thermal Zone Information' performance
+        counters through .NET rather than Get-Counter.
+    .DESCRIPTION
+        Get-Counter waits out a full sample interval on every call, even for
+        a counter that is a plain current value: measured at 1.2 s per read.
+        That read ran on the metrics lane, so every time the cached
+        temperature expired the gauges stalled for over a second. The .NET
+        counter objects cost about 0.6 s to build, once, and then answer in
+        under a millisecond. They also take the counter's English name on
+        every Windows language, where Get-Counter needs the translated one.
+    #>
+    if ($null -eq $script:ThermalZoneCounters) {
+        $script:ThermalZoneCounters = @()
+        try {
+            $category = [System.Diagnostics.PerformanceCounterCategory]::new('Thermal Zone Information')
+            $script:ThermalZoneCounters = @($category.GetInstanceNames() | ForEach-Object {
+                    [System.Diagnostics.PerformanceCounter]::new('Thermal Zone Information', 'Temperature', $_, $true)
+                })
+        } catch {
+            # No such counter set on this machine (most virtual machines):
+            # remembered as "none", so the cost of finding out is paid once.
+            $script:ThermalZoneCounters = @()
+        }
+    }
+    if ($script:ThermalZoneCounters.Count -eq 0) { return $null }
+    try {
+        $max = $null
+        foreach ($counter in $script:ThermalZoneCounters) {
+            $value = $counter.NextValue()
+            if ($null -eq $max -or $value -gt $max) { $max = $value }
+        }
+        return $max
+    } catch {
+        # A zone that went away mid-session: drop the objects and build them
+        # again on the next read instead of failing for ever.
+        foreach ($counter in $script:ThermalZoneCounters) { try { $counter.Dispose() } catch { } }
+        $script:ThermalZoneCounters = $null
+        return $null
+    }
+}
 
 function Get-DevKitCpuTempReading {
     <#
@@ -110,21 +158,19 @@ function Get-DevKitCpuTempReading {
         performance counter first (works unelevated on most Win10/11 boxes),
         then the MSAcpi WMI class (usually admin-only). $null when Windows
         exposes nothing - the UI shows "n/a" rather than inventing a number.
-        Cached per runspace for 45 seconds: the thermal counter always waits
-        out a full ~1s PDH sample interval, and a temperature that moves over
-        tens of seconds doesn't need that spent every 2s cycle.
+        Cached per runspace for 15 seconds: the counter read is cheap now
+        (see Get-DevKitThermalZoneKelvin), but the WMI fallback is not, and a
+        temperature that moves over tens of seconds does not need asking for
+        on every 2s cycle.
     #>
-    if ($null -ne $script:CpuTempCache -and ((Get-Date) - $script:CpuTempCache.At).TotalSeconds -lt 45) {
+    if ($null -ne $script:CpuTempCache -and ((Get-Date) - $script:CpuTempCache.At).TotalSeconds -lt 15) {
         return $script:CpuTempCache.Value
     }
     $reading = $null
-    try {
-        $samples = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples
-        $max = ($samples | Measure-Object -Property CookedValue -Maximum).Maximum
-        if ($null -ne $max -and $max -gt 200) {   # sanity: values arrive in Kelvin
-            $reading = [math]::Round($max - 273.15, 1)
-        }
-    } catch { }
+    $kelvin = Get-DevKitThermalZoneKelvin
+    if ($null -ne $kelvin -and $kelvin -gt 200) {   # sanity: values arrive in Kelvin
+        $reading = [math]::Round($kelvin - 273.15, 1)
+    }
     if ($null -eq $reading) {
         try {
             $zones = Get-CimInstance -Namespace 'root/wmi' -Class 'MSAcpi_ThermalZoneTemperature' -ErrorAction Stop

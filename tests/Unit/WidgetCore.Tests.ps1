@@ -1266,3 +1266,80 @@ Describe "Get-DevKitCliVersionCached" {
         $script:CliVersionCache.Count | Should -Be 0
     }
 }
+
+Describe "Get-DevKitCpuTempReading" {
+
+    # The thermal-zone read used to go through Get-Counter, which waits a
+    # full sample interval per call (1.2 s measured) - on the metrics lane,
+    # so the gauges stalled each time the cached value expired.
+
+    BeforeEach {
+        $script:CpuTempCache = $null
+        $script:ZoneReads = 0
+    }
+
+    It "converts the thermal zone's Kelvin reading to Celsius" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return 320.15 }
+        Mock Get-CimInstance { throw 'the WMI fallback must not run when the counter answered' }
+        Get-DevKitCpuTempReading | Should -Be 47
+    }
+
+    It "reads the zone once for many asks inside the cache window" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return 320.15 }
+        1..10 | ForEach-Object { $null = Get-DevKitCpuTempReading }
+        $script:ZoneReads | Should -Be 1
+    }
+
+    It "reads again once the kept value is older than the window" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return 320.15 }
+        $null = Get-DevKitCpuTempReading
+        $script:CpuTempCache.At = (Get-Date).AddSeconds(-16)
+        $null = Get-DevKitCpuTempReading
+        $script:ZoneReads | Should -Be 2
+    }
+
+    It "falls back to the ACPI WMI class (tenths of Kelvin) when there is no counter" {
+        Mock Get-DevKitThermalZoneKelvin { return $null }
+        Mock Get-CimInstance { return [PSCustomObject]@{ CurrentTemperature = 3231.5 } }
+        Get-DevKitCpuTempReading | Should -Be 50
+    }
+
+    It "answers nothing rather than a made-up number when neither source has a plausible value" {
+        # 30 is not Kelvin for anything a computer survives; 0 is what a
+        # zone with no sensor behind it reports.
+        Mock Get-DevKitThermalZoneKelvin { return 30 }
+        Mock Get-CimInstance { return [PSCustomObject]@{ CurrentTemperature = 0 } }
+        Get-DevKitCpuTempReading | Should -BeNullOrEmpty
+    }
+
+    It "keeps a 'nothing available' answer for the window too, instead of asking every cycle" {
+        Mock Get-DevKitThermalZoneKelvin { $script:ZoneReads++; return $null }
+        Mock Get-CimInstance { throw 'access denied' }
+        1..5 | ForEach-Object { Get-DevKitCpuTempReading | Should -BeNullOrEmpty }
+        $script:ZoneReads | Should -Be 1
+    }
+}
+
+Describe "Get-DevKitThermalZoneKelvin" {
+
+    It "answers nothing or a plausible Kelvin value on whatever machine runs this, without throwing" {
+        $script:ThermalZoneCounters = $null
+        $value = Get-DevKitThermalZoneKelvin
+        if ($null -ne $value) {
+            $value | Should -BeGreaterThan 200
+            $value | Should -BeLessThan 500
+        }
+        # Whatever the answer, the lookup is not repeated: the counters are
+        # either built or known to be absent.
+        $null -ne $script:ThermalZoneCounters | Should -BeTrue
+    }
+
+    It "answers a second read from the same counter objects, quickly" {
+        $null = Get-DevKitThermalZoneKelvin
+        $before = $script:ThermalZoneCounters
+        $elapsed = Measure-Command { 1..20 | ForEach-Object { $null = Get-DevKitThermalZoneKelvin } }
+        [object]::ReferenceEquals($before, $script:ThermalZoneCounters) | Should -BeTrue
+        # Twenty reads. The old way took over a second for ONE.
+        $elapsed.TotalMilliseconds | Should -BeLessThan 1000
+    }
+}
