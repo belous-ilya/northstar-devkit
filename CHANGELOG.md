@@ -106,6 +106,10 @@ the whole app fixes the first batch of what it found.
   instead of crashing. Which tools ask, and when, is unchanged.
 - The update check runs once a day in an app that stays open. It ran only
   at startup, so a widget left running for weeks never saw a release.
+- **Switching projects no longer kills the embedded terminal.** The
+  session, and anything running in it, stays where it was started. The
+  header shows which folder it is in and offers "Move to <project>" when
+  the active project has changed.
 - The in-app updater, and every link in the app and the docs, now point
   at `github.com/belous-ilya/northstar-devkit`. The account was renamed
   and the old address only worked through GitHub's redirect; versions
