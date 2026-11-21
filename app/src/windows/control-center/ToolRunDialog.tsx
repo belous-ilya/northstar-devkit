@@ -14,7 +14,7 @@ import { GlassPanel } from "../../components/primitives/GlassPanel";
 import { Badge } from "../../components/primitives/Badge";
 import { Expander } from "../../components/primitives/Expander";
 import { RunHistoryList } from "../../components/history/RunHistoryList";
-import type { CatalogItem, CatalogModule, DirChildrenResult } from "../../lib/types";
+import type { CatalogItem, CatalogModule, DirChildrenResult, ToolStopResult } from "../../lib/types";
 import "./ToolRunDialog.css";
 
 interface ToolRunDialogProps {
@@ -35,27 +35,6 @@ interface RunTarget {
   script: string;
   label: string;
   caution: boolean;
-}
-
-/**
- * What the sidecar answers a tool.stop with - see New-DevKitToolStopResult
- * in core/RpcMethods.ps1, which is also where `message` is worded.
- *
- * `notFound` and `alreadyExited` are ordinary outcomes of the
- * click-versus-finish race, not failures: the sidecar returns them as a
- * SUCCESSFUL result precisely so this dialog can report them as a fact
- * rather than as an error.
- */
-interface ToolStopResult {
-  runId: string;
-  stopped: boolean;
-  reason: "stopped" | "notFound" | "alreadyExited" | "failed";
-  processId: number;
-  killedProcessIds: number[];
-  killedCount: number;
-  /** False when the kill landed but the run still has not reported completion - something is holding its stdout pipe. */
-  laneReleased: boolean;
-  message: string;
 }
 
 /**

@@ -141,6 +141,24 @@ export interface ProcessKillResult {
   Note: string;
 }
 
+// ---------- tool.stop (New-DevKitToolStopResult in core/RpcMethods.ps1,
+// which is also where `message` is worded) ----------
+// `notFound` and `alreadyExited` are ordinary outcomes of the
+// click-versus-finish race, not failures: the sidecar returns them as a
+// SUCCESSFUL result precisely so the UI can report them as a fact rather
+// than as an error.
+export interface ToolStopResult {
+  runId: string;
+  stopped: boolean;
+  reason: "stopped" | "notFound" | "alreadyExited" | "failed";
+  processId: number;
+  killedProcessIds: number[];
+  killedCount: number;
+  /** False when the kill landed but the run still has not reported completion - something is holding its stdout pipe. */
+  laneReleased: boolean;
+  message: string;
+}
+
 // ---------- catalog.get (verified live) ----------
 export interface ToolPrompt {
   Name: string;

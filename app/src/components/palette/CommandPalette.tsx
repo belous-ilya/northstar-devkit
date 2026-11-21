@@ -141,7 +141,11 @@ export function CommandPalette() {
   } = useQuery({
     queryKey: ["catalog.get"],
     queryFn: () => rpcCall<Catalog>("catalog.get"),
-    staleTime: 60_000,
+    // The catalog is the manifests shipped with this install: it cannot
+    // change while the app runs. A 60s staleTime re-read all of them on
+    // the sidecar every time the palette or the drawer was opened a
+    // minute after the last time. Reload (the Retry button) still refetches.
+    staleTime: Infinity,
     enabled: open,
   });
   const catalogErrorText = catalogError instanceof Error && catalogError.message ? catalogError.message : null;

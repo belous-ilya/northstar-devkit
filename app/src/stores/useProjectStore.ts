@@ -7,6 +7,13 @@ interface ProjectState {
   active: LinkedProject | null;
   linked: LinkedProject[];
   loading: boolean;
+  /**
+   * The last refresh could not reach the sidecar. `refresh` swallows its
+   * error (callers are fire-and-forget), so without this an empty `linked`
+   * after a failed first load is indistinguishable from "no projects linked
+   * yet" - and nothing would know to try again.
+   */
+  loadFailed: boolean;
   refresh: () => Promise<void>;
   setActive: (id: string) => Promise<void>;
   /** Deselects the active project - the picker's explicit "None". */
@@ -18,6 +25,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   active: null,
   linked: [],
   loading: false,
+  loadFailed: false,
 
   refresh: async () => {
     set({ loading: true });
@@ -26,9 +34,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         rpcCall<LinkedProject | null>("projects.getActive"),
         rpcCall<LinkedProject[]>("projects.list"),
       ]);
-      set({ active, linked: asArray(linked), loading: false });
+      set({ active, linked: asArray(linked), loading: false, loadFailed: false });
     } catch {
-      set({ loading: false });
+      set({ loading: false, loadFailed: true });
     }
   },
 

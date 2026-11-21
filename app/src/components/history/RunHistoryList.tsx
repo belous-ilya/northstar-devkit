@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { useRunHistoryStore, type RunHistoryEntry } from "../../stores/useRunHistoryStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
+import { rpcCall } from "../../lib/ipc";
+import type { ToolStopResult } from "../../lib/types";
 import { Badge } from "../primitives/Badge";
 import { Button } from "../primitives/Button";
 import { ToolConsole } from "../ToolConsole";
@@ -15,10 +17,10 @@ interface RunHistoryListProps {
    */
   onRunAgain?: (entry: RunHistoryEntry) => void;
   /**
-   * Stops a still-running row through the host's tool.stop path. Optional
-   * because not every host can stop: hosts that own a single active run
-   * (ToolRunDialog) pass theirs, hosts that don't simply render no Stop
-   * button, exactly as before.
+   * Stops a row through the host's own tool.stop path - for hosts that are
+   * watching a run themselves and want its sound and badge semantics
+   * (ToolRunDialog). Optional: without it the list stops the run by its id
+   * directly (see stopByRunId), so every host gets a working Stop.
    */
   onStopRun?: (entry: RunHistoryEntry) => Promise<void>;
   /** Denser type and padding for the widget's narrow column. */
@@ -31,6 +33,50 @@ interface RunHistoryListProps {
 
 /** Wall-clock ages tick over while the list is open, so re-render slowly. */
 const TICK_MS = 30_000;
+
+/**
+ * How long a row with an unknown outcome is still offered a Stop. Nothing a
+ * DevKit tool starts is meant to outlive a day, and the sidecar's registry
+ * does not survive an app restart anyway.
+ */
+const MAYBE_RUNNING_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A row DevKit lost track of (the window reloaded, or the watcher let go)
+ * whose run may well still be going in the sidecar - holding the one tool
+ * lane, so every new run is refused with "another tool is already running".
+ * These rows used to offer only Dismiss, which left no control anywhere
+ * that could end the run short of restarting the app.
+ */
+function mayStillBeRunning(entry: RunHistoryEntry, now: number): boolean {
+  if (entry.finishedAt === null) return true;
+  if (!entry.detached || entry.cancelled || entry.exitCode !== null) return false;
+  const startedAt = Date.parse(entry.startedAt);
+  return Number.isFinite(startedAt) && now - startedAt < MAYBE_RUNNING_MS;
+}
+
+/**
+ * Stops a run by its id. The row id IS the runId the sidecar registered the
+ * run under, so this works from any window and after a reload - no host
+ * needs to be watching the run. Every answer is written into the row's own
+ * transcript, and the row is settled to match it.
+ */
+async function stopByRunId(entry: RunHistoryEntry): Promise<void> {
+  const history = useRunHistoryStore.getState();
+  try {
+    const result = await rpcCall<ToolStopResult>("tool.stop", { runId: entry.id });
+    history.appendLine(entry.id, "stdout", result?.message ?? "Stop requested.");
+    if (result?.stopped) {
+      // A row some window is still watching is finalized by its own
+      // tool.finished; a row nobody watches has to be settled here.
+      if (entry.finishedAt !== null) history.finishRun(entry.id, -1, true);
+    } else if (result?.reason === "notFound" || result?.reason === "alreadyExited") {
+      history.confirmNotRunning(entry.id);
+    }
+  } catch (err) {
+    history.appendLine(entry.id, "stderr", `Could not stop this run: ${String(err)}`);
+  }
+}
 
 function relativeTime(iso: string, now: number): string {
   const at = Date.parse(iso);
@@ -125,11 +171,13 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
   }
 
   function stop() {
-    if (stopping || !onStopRun) return;
+    if (stopping) return;
     setStopping(true);
-    // The button is just a spinner while the stop is in flight; the row's
-    // own tool.finished finalizes it (exit -1) regardless of the outcome.
-    void Promise.resolve(onStopRun(entry)).finally(() => setStopping(false));
+    // The button is just a spinner while the stop is in flight. A live row
+    // goes through the host when it has its own stop path; everything else
+    // (no host path, or a row nobody is watching any more) is stopped by id.
+    const request = entry.finishedAt === null && onStopRun ? onStopRun(entry) : stopByRunId(entry);
+    void Promise.resolve(request).finally(() => setStopping(false));
   }
 
   const duration = formatDuration(entry.startedAt, entry.finishedAt);
@@ -159,21 +207,28 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
             <ExitBadge entry={entry} />
           </span>
         </button>
-        {entry.finishedAt === null ? (
-          onStopRun && (
-            <div className="run-history__row-actions">
-              <Button size="sm" variant="danger" loading={stopping} onClick={stop}>
-                {stopping ? "Stopping" : "Stop"}
-              </Button>
-            </div>
-          )
-        ) : (
-          <div className="run-history__row-actions">
+        <div className="run-history__row-actions">
+          {mayStillBeRunning(entry, now) && (
+            <Button
+              size="sm"
+              variant="danger"
+              loading={stopping}
+              onClick={stop}
+              title={
+                entry.finishedAt === null
+                  ? "Stop this run and everything it started"
+                  : "DevKit lost track of this run - if it is still going, this stops it"
+              }
+            >
+              {stopping ? "Stopping" : "Stop"}
+            </Button>
+          )}
+          {entry.finishedAt !== null && (
             <Button size="sm" variant="ghost" onClick={() => removeRun(entry.id)}>
               Dismiss
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className={clsx("run-history__panel", open && "run-history__panel--open")}>

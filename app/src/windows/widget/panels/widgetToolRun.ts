@@ -159,7 +159,7 @@ function failLaunch(runId: string, message: string): void {
  *    not found"). No tool.finished is ever coming; finalize now and say so.
  *  - At least one event has arrived, so a real process exists and the
  *    rejection is about the REQUEST (a timeout, most likely), not the run.
- *    DevKit cannot cancel a running tool, so keep listening and only mark
+ *    The run is real and still going, so keep listening and only mark
  *    the run degraded - same rule the Control Center's ToolRunDialog uses.
  *
  * `sawEvent` is a better discriminator than matching the error text: any
@@ -229,17 +229,17 @@ export async function startWidgetToolRun(spec: WidgetRunSpec): Promise<void> {
 }
 
 /**
- * Detaches from the in-flight run. NOT cancellation - the widget does not
- * call tool.stop here, so nothing this button does stops the tool. It
- * exists only so a run whose tool.finished will never arrive can't hold the
- * shared guard - and therefore every action button in both panels - shut
- * for the rest of the session.
+ * Detaches from the in-flight run. NOT cancellation - nothing this button
+ * does stops the tool (the run's row in Run history has the Stop that
+ * does). It exists only so a run whose tool.finished will never arrive
+ * can't hold the shared guard - and therefore every action button in both
+ * panels - shut for the rest of the session.
  */
 export function stopWatchingWidgetRun(): void {
   const runId = snapshot.runId;
   detachListener();
   if (runId) {
-    const message = "Stopped watching. DevKit cannot cancel a running tool - it may still be executing.";
+    const message = "Stopped watching - the tool may still be running. Its row in Run history has a Stop button.";
     appendLive("stderr", message);
     useRunHistoryStore.getState().appendLine(runId, "stderr", message);
     useRunHistoryStore.getState().detachRun(runId);

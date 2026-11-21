@@ -45,6 +45,8 @@ const TAB_PREFIX = "git";
  * section had been expanded, because the flyout keeps its panes mounted.
  */
 const OVERVIEW_POLL_MS = 6000;
+/** How often a folder judged "not a git repo" is asked again while its pane is in view. */
+const NOT_REPO_RECHECK_MS = 60_000;
 
 /** Porcelain XY status -> what it means and which tone says so. */
 function dirtyKind(status: string): { code: string; label: string; tone: string } {
@@ -121,9 +123,9 @@ export function GitPanel() {
   // flag for the same reason). A hook's result cannot gate the render that
   // calls the hook, so the gate rides the PREVIOUS render's value through
   // state - one 6s grace tick when disabling, exact when re-enabling.
-  // Accepted tradeoff: a folder git-init'd mid-session is not noticed until
-  // the project is re-selected (a new path is a fresh cache entry, and the
-  // gate reopens for it).
+  // A shut gate is re-checked once a minute (see the effect below), so a
+  // folder that becomes a repo mid-session is picked up without re-selecting
+  // the project.
   const [knownNotRepoPrev, setKnownNotRepoPrev] = useState(false);
   const overview = usePolledRpc<GitOverview>(
     "git.overview",
@@ -147,6 +149,21 @@ export function GitPanel() {
   // Sync the gate mirror declared above (render N's poll ran on render N-1's
   // verdict; the state bump is what re-renders and applies it).
   useEffect(() => setKnownNotRepoPrev(knownNotRepo), [knownNotRepo]);
+
+  // "Not a repo" must not be a verdict for life. The backend says the same
+  // thing for a folder that really is not a repository and for one git
+  // refuses to open ("dubious ownership") - and in that second case the pane
+  // itself tells the user which command fixes it. With the 6s poll gated
+  // off, running that command (or `git init`) changed nothing on screen
+  // until the project was re-selected. One cheap re-check a minute while
+  // the pane is in view reopens the gate by itself the moment the answer
+  // changes. (refetch runs a disabled query too; a still-negative answer
+  // leaves the gate shut.)
+  useEffect(() => {
+    if (!knownNotRepoPrev || !onScreen || !path) return;
+    const timer = window.setInterval(() => void refetch(), NOT_REPO_RECHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [knownNotRepoPrev, onScreen, path, refetch]);
 
   const lists = useGitHubLists(path, onScreen && !notRepoReason);
   const { prs, issues, prRows, issueRows } = lists;

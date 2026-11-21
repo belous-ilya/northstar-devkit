@@ -144,9 +144,14 @@ export function FilesPanel() {
       return;
     }
     setExpandedPaths((prev) => ({ ...prev, [path]: true }));
-    if (childrenByPath[path] || errorByPath[path]) return; // already cached
 
-    setLoadingPaths((prev) => ({ ...prev, [path]: true }));
+    // Every expand asks again. A folder used to be read once and cached for
+    // the life of the project selection, while the root refreshed every 15s:
+    // create a file, collapse and re-expand its folder, and it was not
+    // there. The cached listing still shows at once (no flash back to
+    // "loading"); the fresh one replaces it when it lands.
+    const hadListing = !!childrenByPath[path];
+    if (!hadListing) setLoadingPaths((prev) => ({ ...prev, [path]: true }));
     try {
       const result = await rpcCall<DirChildrenResult>("files.children", { path });
       if (result.Error) {
@@ -155,9 +160,11 @@ export function FilesPanel() {
         setChildrenByPath((prev) => ({ ...prev, [path]: result.Children }));
       }
     } catch (err) {
-      setErrorByPath((prev) => ({ ...prev, [path]: err instanceof Error ? err.message : String(err) }));
+      // A refresh that fails keeps the listing already on screen rather
+      // than replacing something true with an error.
+      if (!hadListing) setErrorByPath((prev) => ({ ...prev, [path]: err instanceof Error ? err.message : String(err) }));
     } finally {
-      setLoadingPaths((prev) => ({ ...prev, [path]: false }));
+      if (!hadListing) setLoadingPaths((prev) => ({ ...prev, [path]: false }));
     }
   }
 

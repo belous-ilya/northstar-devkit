@@ -5,6 +5,8 @@ import clsx from "clsx";
 import { useApplyAppearance } from "../hooks/useApplyAppearance";
 import { useVisibility } from "../hooks/useVisibility";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { useProjectStore } from "../stores/useProjectStore";
+import { ensureProjectsLoaded } from "./projects/ensureProjects";
 import { sidecarRestart, sidecarStatus, isElevated } from "../lib/ipc";
 import { playSound } from "../lib/sounds";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -113,6 +115,23 @@ function SidecarHealthIndicator() {
       return null;
     }
   }, []);
+
+  // The sidecar came back (Restart below, or the host's own respawn). The
+  // polled panels recover by themselves on their next tick, but settings and
+  // the project list are loaded ONCE, at mount - so if that load failed
+  // because the sidecar was not up yet, they stayed empty for good: "No
+  // linked projects", every panel "No project selected", dock settings never
+  // applied. Reload both whenever a known-dead sidecar is seen alive again,
+  // and also on the first "alive" if either load is still marked failed.
+  const previousHealth = useRef<SidecarHealth>("unknown");
+  useEffect(() => {
+    const was = previousHealth.current;
+    previousHealth.current = health;
+    if (health !== "alive") return;
+    const recovered = was === "dead";
+    if (recovered || useProjectStore.getState().loadFailed) void ensureProjectsLoaded(true);
+    if (recovered || useSettingsStore.getState().error !== null) void useSettingsStore.getState().refresh();
+  }, [health]);
 
   // Same contract as every polled panel: nothing runs while the window is
   // hidden, and the first check on becoming visible is immediate.

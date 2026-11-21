@@ -66,6 +66,10 @@ export interface RunSpec {
 }
 
 const STORAGE_KEY = "devkit.runHistory.v1";
+/** What has been deliberately removed - see Tombstones. */
+const TOMBSTONE_KEY = "devkit.runHistory.removed.v1";
+/** Dismissed-row ids remembered; older ones are forgotten (their rows have aged out by then). */
+const MAX_TOMBSTONE_IDS = 300;
 const DEFAULT_LIMIT = 50;
 /** Hard ceiling on retained runs regardless of the user's runHistoryLimit. */
 const MAX_LIMIT = 200;
@@ -157,11 +161,82 @@ function parseEntries(raw: string | null): RunHistoryEntry[] {
   }
 }
 
+/**
+ * A record of what the user removed on purpose.
+ *
+ * Each window persists its whole view of the history and merges the other
+ * window's by UNION. Without this, a removal could never stick: clear the
+ * history in the Control Center, run one tool in the widget, and the widget's
+ * next write handed every cleared row straight back. A union cannot tell
+ * "the other window never saw this row" from "the other window deleted it" -
+ * the tombstones are what says so.
+ */
+export interface Tombstones {
+  /** ISO time of the last Clear history; every run started at or before it stays gone. */
+  clearedAt: string | null;
+  /** Ids removed one at a time with Dismiss. */
+  ids: string[];
+}
+
+const NO_TOMBSTONES: Tombstones = { clearedAt: null, ids: [] };
+
+function parseTombstones(raw: string | null): Tombstones {
+  if (!raw) return NO_TOMBSTONES;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return NO_TOMBSTONES;
+    const value = parsed as Record<string, unknown>;
+    return {
+      clearedAt: typeof value.clearedAt === "string" ? value.clearedAt : null,
+      ids: Array.isArray(value.ids) ? value.ids.filter((id): id is string => typeof id === "string").slice(-MAX_TOMBSTONE_IDS) : [],
+    };
+  } catch {
+    return NO_TOMBSTONES;
+  }
+}
+
+function loadTombstones(): Tombstones {
+  const store = storage();
+  if (!store) return NO_TOMBSTONES;
+  try {
+    return parseTombstones(store.getItem(TOMBSTONE_KEY));
+  } catch {
+    return NO_TOMBSTONES;
+  }
+}
+
+function saveTombstones(tombstones: Tombstones): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    store.setItem(TOMBSTONE_KEY, JSON.stringify(tombstones));
+  } catch {
+    // Same as persist(): a removal that cannot be recorded still applies in this window.
+  }
+}
+
+/** Drops every entry the tombstones say was removed. */
+export function applyTombstones(entries: RunHistoryEntry[], tombstones: Tombstones): RunHistoryEntry[] {
+  if (tombstones.clearedAt === null && tombstones.ids.length === 0) return entries;
+  const clearedAt = tombstones.clearedAt === null ? NaN : Date.parse(tombstones.clearedAt);
+  const removed = new Set(tombstones.ids);
+  return entries.filter((entry) => {
+    if (removed.has(entry.id)) return false;
+    if (Number.isFinite(clearedAt)) {
+      const startedAt = Date.parse(entry.startedAt);
+      if (Number.isFinite(startedAt) && startedAt <= clearedAt) return false;
+    }
+    return true;
+  });
+}
+
+let tombstones: Tombstones = loadTombstones();
+
 function loadPersisted(): RunHistoryEntry[] {
   const store = storage();
   if (!store) return [];
   try {
-    return parseEntries(store.getItem(STORAGE_KEY));
+    return applyTombstones(parseEntries(store.getItem(STORAGE_KEY)), tombstones);
   } catch {
     return [];
   }
@@ -272,25 +347,50 @@ function clampLimit(value: unknown): number {
   return Math.min(MAX_LIMIT, Math.max(1, Math.floor(value)));
 }
 
+/** A run whose real outcome is known: it reported an exit code and nobody gave up watching it. */
+function hasOutcome(entry: RunHistoryEntry): boolean {
+  return typeof entry.exitCode === "number" && !entry.detached;
+}
+
 /**
- * Union by run id, newest first. Used only by the cross-window storage
- * listener: the local copy wins whenever it is the richer one (this window
- * may be mid-run on an entry another window only ever saw as metadata).
+ * Which copy of one run to keep when two windows disagree.
+ *
+ *  1. A copy this window is watching LIVE always stays - only the watcher
+ *     receives the run's output and its tool.finished.
+ *  2. Otherwise a copy that knows the OUTCOME beats one that does not. This
+ *     is the rule the old "richer transcript wins" logic was missing: the
+ *     other window sees a run only through storage, where a run in flight
+ *     arrives as "ended, outcome unknown" - and when the real finish arrived
+ *     later with the same number of lines, the stale unknown copy won the
+ *     tie and the row said "unknown" for good.
+ *  3. With nothing else to choose by, the longer transcript; a tie goes to
+ *     the incoming copy, which is the newer write.
  */
-function mergeEntries(local: RunHistoryEntry[], incoming: RunHistoryEntry[], limit: number): RunHistoryEntry[] {
+export function preferLocalCopy(local: RunHistoryEntry, incoming: RunHistoryEntry): boolean {
+  if (local.finishedAt === null) return true;
+  const localKnows = hasOutcome(local);
+  const incomingKnows = hasOutcome(incoming);
+  if (localKnows !== incomingKnows) return localKnows;
+  return local.output.length > incoming.output.length;
+}
+
+/**
+ * Union by run id, newest first, minus anything the tombstones say was
+ * removed. Used only by the cross-window storage listener.
+ */
+export function mergeEntries(
+  local: RunHistoryEntry[],
+  incoming: RunHistoryEntry[],
+  limit: number,
+  removed: Tombstones = NO_TOMBSTONES,
+): RunHistoryEntry[] {
   const byId = new Map<string, RunHistoryEntry>();
   for (const entry of incoming) byId.set(entry.id, entry);
   for (const entry of local) {
     const other = byId.get(entry.id);
-    if (!other) {
-      byId.set(entry.id, entry);
-      continue;
-    }
-    const localIsLive = entry.finishedAt === null;
-    const localIsRicher = entry.output.length >= other.output.length;
-    if (localIsLive || localIsRicher) byId.set(entry.id, entry);
+    if (!other || preferLocalCopy(entry, other)) byId.set(entry.id, entry);
   }
-  return [...byId.values()]
+  return applyTombstones([...byId.values()], removed)
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
     .slice(0, limit);
 }
@@ -311,6 +411,12 @@ interface RunHistoryState {
   finishRun: (id: string, exitCode: number, cancelled?: boolean) => void;
   /** The watcher is going away (dialog closed, user stopped watching). */
   detachRun: (id: string) => void;
+  /**
+   * A row restored as "outcome unknown" has been checked and is NOT running
+   * (tool.stop answered notFound / alreadyExited). Clears `detached`, which
+   * is what offers the Stop button; the outcome itself stays unknown.
+   */
+  confirmNotRunning: (id: string) => void;
   /** Drops one row outright (the row's own Dismiss button) - no confirm, unlike clear(). */
   removeRun: (id: string) => void;
   clear: () => void;
@@ -390,12 +496,30 @@ export const useRunHistoryStore = create<RunHistoryState>((set, get) => ({
     flushPersist(get().entries);
   },
 
+  confirmNotRunning: (id) => {
+    set((s) => {
+      const index = s.entries.findIndex((e) => e.id === id);
+      if (index < 0 || !s.entries[index].detached) return s;
+      const entries = s.entries.slice();
+      entries[index] = { ...entries[index], detached: false };
+      return { entries };
+    });
+    flushPersist(get().entries);
+  },
+
   removeRun: (id) => {
+    // Tombstone first: the other window's next write still carries this
+    // row, and the merge would hand it straight back without one.
+    tombstones = { ...tombstones, ids: [...tombstones.ids.filter((x) => x !== id), id].slice(-MAX_TOMBSTONE_IDS) };
+    saveTombstones(tombstones);
     set((s) => ({ entries: s.entries.filter((e) => e.id !== id) }));
     flushPersist(get().entries);
   },
 
   clear: () => {
+    // Everything started up to now stays gone, in every window.
+    tombstones = { clearedAt: new Date().toISOString(), ids: [] };
+    saveTombstones(tombstones);
     set({ entries: [] });
     flushPersist([]);
   },
@@ -428,10 +552,20 @@ useSettingsStore.subscribe((state) => {
 try {
   if (typeof window !== "undefined") {
     window.addEventListener("storage", (event) => {
+      if (event.key === TOMBSTONE_KEY) {
+        // The other window removed something: drop it here too. No
+        // re-persist - this window's stored copy is rewritten on its next
+        // own change, and the tombstones keep the rows out until then.
+        tombstones = parseTombstones(event.newValue);
+        const current = useRunHistoryStore.getState();
+        const kept = applyTombstones(current.entries, tombstones);
+        if (kept.length !== current.entries.length) useRunHistoryStore.setState({ entries: kept });
+        return;
+      }
       if (event.key !== STORAGE_KEY) return;
       const incoming = parseEntries(event.newValue);
       const current = useRunHistoryStore.getState();
-      useRunHistoryStore.setState({ entries: mergeEntries(current.entries, incoming, current.limit) });
+      useRunHistoryStore.setState({ entries: mergeEntries(current.entries, incoming, current.limit, tombstones) });
     });
   }
 } catch {
