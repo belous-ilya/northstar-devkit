@@ -1,9 +1,11 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { useRunHistoryStore, type RunHistoryEntry } from "../../stores/useRunHistoryStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
 import { rpcCall } from "../../lib/ipc";
-import type { ToolStopResult } from "../../lib/types";
+import { toolStillShips } from "../../lib/catalogLookup";
+import type { Catalog, ToolStopResult } from "../../lib/types";
 import { Badge } from "../primitives/Badge";
 import { Button } from "../primitives/Button";
 import { ToolConsole } from "../ToolConsole";
@@ -139,6 +141,18 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
   const confirmDestructive = useConfirmDestructive();
   const removeRun = useRunHistoryStore((s) => s.removeRun);
 
+  // History outlives the tools it recorded. The catalog says whether this
+  // row's tool still ships; it is asked for only once a row with a "Run
+  // again" button has been opened, and it is the same cached answer the
+  // palette and the Control Center use (it cannot change while the app runs).
+  const { data: catalog } = useQuery({
+    queryKey: ["catalog.get"],
+    queryFn: () => rpcCall<Catalog>("catalog.get"),
+    staleTime: Infinity,
+    enabled: everOpened && !!onRunAgain,
+  });
+  const stillShips = toolStillShips(catalog, entry.folder, entry.script);
+
   function toggle() {
     setOpen((v) => {
       if (!v) setEverOpened(true);
@@ -259,11 +273,16 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
                 <div className="run-history__empty">No output was captured for this run.</div>
               )}
 
-              {onRunAgain && (
+              {onRunAgain && stillShips && (
                 <div className="run-history__actions">
                   <Button size="sm" variant={entry.caution ? "danger" : "subtle"} disabled={busy} onClick={runAgain}>
                     Run again
                   </Button>
+                </div>
+              )}
+              {onRunAgain && !stillShips && (
+                <div className="run-history__empty">
+                  This tool is no longer part of DevKit, so it cannot be run again.
                 </div>
               )}
             </div>
