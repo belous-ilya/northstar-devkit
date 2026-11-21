@@ -627,3 +627,83 @@ Describe "dev-server tools report a failed start" {
         $catches[0].Body.Extent.Text | Should -Match 'exit 1'
     }
 }
+
+Describe "Find-StaleNodeModules.ps1 measures how long the PROJECT has been idle" {
+
+    # It used to show the age of the node_modules folder itself. That
+    # timestamp only moves when a dependency is added or removed, so a
+    # project worked on every day with unchanged dependencies was listed as
+    # months old - in a tool whose next question is "delete these?".
+
+    BeforeAll {
+        $ast = Get-ScriptAst 'tools\node\Find-StaleNodeModules.ps1'
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-DevKitProjectLastActivity' }, $true)
+        . ([scriptblock]::Create($fn.Extent.Text))
+
+        function New-AgedProject {
+            param([string]$Name, [hashtable]$DaysAgo)
+            $project = Join-Path $TestDrive $Name
+            $modules = Join-Path $project 'node_modules'
+            $null = New-Item -ItemType Directory -Path $modules -Force
+            # Create everything first, date it afterwards: creating a file
+            # moves its folder's own timestamp to now.
+            foreach ($relative in $DaysAgo.Keys) {
+                if ($relative -eq 'node_modules') { continue }
+                $full = Join-Path $project $relative
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force
+                [System.IO.File]::WriteAllText($full, 'x')
+            }
+            foreach ($relative in $DaysAgo.Keys) {
+                $full = if ($relative -eq 'node_modules') { $modules } else { Join-Path $project $relative }
+                (Get-Item -LiteralPath $full -Force).LastWriteTime = (Get-Date).AddDays(-$DaysAgo[$relative])
+            }
+            return $modules
+        }
+        function Get-IdleDays { param([string]$Modules) [int][math]::Round(((Get-Date) - (Get-DevKitProjectLastActivity -NodeModulesPath $Modules)).TotalDays) }
+    }
+
+    It "calls a project idle for 0 days when it was committed to today, however old its node_modules is" {
+        $modules = New-AgedProject 'active' @{ 'node_modules' = 200; 'package.json' = 200; '.git\logs\HEAD' = 0 }
+        Get-IdleDays $modules | Should -Be 0
+    }
+
+    It "counts a recent install, by each package manager's own marker file" {
+        Get-IdleDays (New-AgedProject 'npm' @{ 'node_modules' = 90; 'node_modules\.package-lock.json' = 3 }) | Should -Be 3
+        Get-IdleDays (New-AgedProject 'pnpm' @{ 'node_modules' = 90; 'node_modules\.modules.yaml' = 4 }) | Should -Be 4
+        Get-IdleDays (New-AgedProject 'yarn' @{ 'node_modules' = 90; 'node_modules\.yarn-integrity' = 5 }) | Should -Be 5
+    }
+
+    It "counts a package.json or lock file change" {
+        Get-IdleDays (New-AgedProject 'pkg' @{ 'node_modules' = 90; 'package.json' = 7 }) | Should -Be 7
+        Get-IdleDays (New-AgedProject 'lock' @{ 'node_modules' = 90; 'package.json' = 80; 'pnpm-lock.yaml' = 6 }) | Should -Be 6
+    }
+
+    It "still calls a project stale when nothing in it has moved" {
+        $modules = New-AgedProject 'stale' @{ 'node_modules' = 150; 'package.json' = 160; 'package-lock.json' = 150; '.git\logs\HEAD' = 170; '.git\HEAD' = 170 }
+        Get-IdleDays $modules | Should -Be 150
+    }
+
+    It "does not treat a refreshed .git\index as activity (git status rewrites it)" {
+        $modules = New-AgedProject 'polled' @{ 'node_modules' = 120; '.git\index' = 0; '.git\logs\HEAD' = 120 }
+        Get-IdleDays $modules | Should -Be 120
+    }
+
+    It "counts work in the repository a nested package belongs to (a monorepo)" {
+        $modules = New-AgedProject 'mono\packages\web' @{ 'node_modules' = 100; 'package.json' = 100 }
+        $repoLog = Join-Path $TestDrive 'mono\.git\logs\HEAD'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $repoLog) -Force
+        [System.IO.File]::WriteAllText($repoLog, 'x')
+        (Get-Item -LiteralPath $repoLog).LastWriteTime = (Get-Date).AddDays(-1)
+        Get-IdleDays $modules | Should -Be 1
+    }
+
+    It "works for a project folder with brackets in its name" {
+        Get-IdleDays (New-AgedProject 'app [v2]' @{ 'node_modules' = 60; 'package.json' = 2 }) | Should -Be 2
+    }
+
+    It "is what the report's age column is computed from" {
+        $text = (Get-ScriptAst 'tools\node\Find-StaleNodeModules.ps1').Extent.Text
+        $text | Should -Match 'Get-DevKitProjectLastActivity -NodeModulesPath \$dir\.FullName'
+        $text | Should -Match 'AgeDays\s+= \[int\]\[math\]::Round\(\(\(Get-Date\) - \$lastActivity\)\.TotalDays\)'
+    }
+}
