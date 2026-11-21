@@ -78,12 +78,10 @@ cargo build --release -p devkit-cli
 | Vite | Fresh dev server, preview builds |
 | Git | Cleanup, status across all repos, sync forks, standup log |
 | Docker | Nuke containers and images, cleanup, tail logs |
-| System | Edit PATH, back up and restore env vars, hosts file |
-| Workflow | Open editor/repo, copy `.env` templates, `.env` drift check, end-of-day close-out |
-| Diagnostics | Environment health check, system info export |
 | WiFi | Optimize DNS, scan networks, speed test |
-| Maintenance | Disk cleanup, startup/services tuning, SFC/DISM repair, Windows Update reset, power and hardware health |
-| Agents & MCP | Detect and update AI CLIs, add MCP servers from a catalog or by hand, scan for missing ones |
+
+Two more live on the widget itself rather than in the catalog: **Doctor** (an environment health
+check) and **Close-Out** (the end-of-day cleanup, with a dry-run **Preview** beside it).
 
 Every tool is a plain PowerShell script under `tools/` — the widget, the Control Center and the
 CLI all run these exact files, and so can you:
@@ -107,9 +105,9 @@ mostly support `-DryRun` — preview first.
 - **Network access**, in full: the updater checks GitHub Releases (throttled to once per 24h, plus
   a manual **Check for Updates** button) and, when an update exists, downloads it, verifies its
   minisign signature, installs and relaunches in place; the widget's GitHub panel shells out to
-  your own authenticated `gh` CLI to list pull requests and issues; the AI CLI updater queries the
-  GitHub Releases API for the tools it manages; the installer fetches the Microsoft WebView2
-  runtime if it is absent. No telemetry is collected.
+  your own authenticated `gh` CLI to list pull requests and issues; the WiFi optimizer pings
+  public DNS servers and downloads from Cloudflare's speed-test endpoint when you run it; the
+  installer fetches the Microsoft WebView2 runtime if it is absent. No telemetry is collected.
 - **DevKit always runs as Administrator** — there is no un-elevated mode. A startup
   gate redirects every launch through a `NorthstarDevKit-Admin` scheduled task (the same
   mechanism MSI Afterburner uses), so you see exactly one UAC prompt in the app's life,

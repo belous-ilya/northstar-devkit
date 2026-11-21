@@ -29,12 +29,12 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Type": "Int",
               "Name": "Port",
-              "Prompt": "Enter port number",
+              "Min": 1,
               "InvalidMessage": "Invalid port number.",
-              "Min": 1
+              "Type": "Int",
+              "Prompt": "Enter port number",
+              "Max": 65535
             }
           ],
           "staticArgs": {
@@ -52,12 +52,12 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 2147483647,
-              "Type": "Int",
               "Name": "ProcessId",
-              "Prompt": "Enter PID to kill",
+              "Min": 1,
               "InvalidMessage": "Invalid PID.",
-              "Min": 1
+              "Type": "Int",
+              "Prompt": "Enter PID to kill",
+              "Max": 2147483647
             }
           ],
           "staticArgs": null
@@ -85,12 +85,12 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Type": "Int",
               "Name": "Port",
-              "Prompt": "Enter port number",
+              "Min": 1,
               "InvalidMessage": "Invalid port number.",
-              "Min": 1
+              "Type": "Int",
+              "Prompt": "Enter port number",
+              "Max": 65535
             }
           ],
           "staticArgs": {
@@ -108,12 +108,12 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Type": "Int",
               "Name": "Port",
-              "Prompt": "Enter port number",
+              "Min": 1,
               "InvalidMessage": "Invalid port number.",
-              "Min": 1
+              "Type": "Int",
+              "Prompt": "Enter port number",
+              "Max": 65535
             }
           ],
           "staticArgs": null
@@ -142,8 +142,8 @@
           "prompts": [
             {
               "Prompt": "Enter URL to test (blank = scan listening dev ports)",
-              "Optional": true,
               "Name": "Url",
+              "Optional": true,
               "Type": "String"
             }
           ],
@@ -217,8 +217,8 @@
           "prompts": [
             {
               "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
-              "InvalidMessage": "Enter a script name.",
               "Name": "Name",
+              "InvalidMessage": "Enter a script name.",
               "Type": "String"
             }
           ],
@@ -292,17 +292,17 @@
           "prompts": [
             {
               "Prompt": "Clear Turbopack cache too?",
-              "Optional": true,
               "Name": "Turbo",
+              "Optional": true,
               "Type": "YesNo"
             },
             {
-              "Max": 65535,
-              "Type": "Int",
               "Name": "Port",
-              "Prompt": "Port (0 = package default; press Enter for default)",
+              "Min": 0,
               "Optional": true,
-              "Min": 0
+              "Type": "Int",
+              "Prompt": "Port (0 = package default; press Enter for default)",
+              "Max": 65535
             }
           ],
           "staticArgs": null
@@ -394,13 +394,13 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 720,
-              "Type": "Int",
               "Name": "Hours",
-              "Prompt": "How many hours back? (blank = 24)",
-              "Optional": true,
+              "Min": 1,
               "InvalidMessage": "Invalid hours.",
-              "Min": 1
+              "Optional": true,
+              "Type": "Int",
+              "Prompt": "How many hours back? (blank = 24)",
+              "Max": 720
             }
           ],
           "staticArgs": null
@@ -443,504 +443,6 @@
           "script": "Docker-QuickLogs.ps1",
           "help": "Tails 'docker logs' for one or more containers at once (all running containers by default, or specific names via -Container), with a distinct color prefix per container, an initial line count (-Lines, default 50), optional -Timestamps, and optional -Follow to keep streaming instead of printing the last N lines and exiting. Use this to watch several services' logs together during local development. Note: read-only against Docker (no containers/images/volumes are touched), but with -Follow it blocks the terminal indefinitely - press Ctrl+C to stop, and never invoke -Follow from an unattended/non-interactive context.",
           "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        }
-      ]
-    },
-    {
-      "group": "System & Workflow",
-      "folder": "system",
-      "name": "System Tools",
-      "description": "Edit the PATH environment variable, back up and restore User/Machine environment variables to/from a JSON file, reload the current shell's environment without restarting the terminal, and edit the hosts file. DevKit itself always runs as Administrator (a startup gate redirects every launch through the built-in 'NorthstarDevKit-Admin' elevation task - one UAC prompt at first-run setup, none after), so admin-gated operations here just work. Most operations here read or write real environment state directly via [Environment]::GetEnvironmentVariable/SetEnvironmentVariable.",
-      "items": [
-        {
-          "key": "1",
-          "label": "Edit PATH Variable",
-          "script": "Edit-Path.ps1",
-          "help": "Interactive and flag-driven editor for the User or Machine PATH environment variable, with duplicate- and missing-path detection. Use -Show for a read-only report of the current PATH; -Add/-Remove/-Clean (or the [A]/[R]/[C] options in the interactive menu you get by running it with no flags) write PATH for real via [Environment]::SetEnvironmentVariable. Editing Machine PATH requires Administrator privileges - since DevKit always runs elevated, that just works (the script still offers to relaunch itself elevated if invoked outside DevKit, un-elevated). Safety note: -Remove and -Clean (and their interactive equivalents) each prompt with a y/n confirmation showing exactly what will change before writing, unless -Force is passed; -Add writes immediately (additive, low-risk); -Show never mutates anything.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "2",
-          "label": "Backup Environment Variables",
-          "script": "Env-Backup.ps1",
-          "help": "Writes a timestamped JSON snapshot of current User environment variables (and Machine variables too, if run elevated - which DevKit always is) to disk - additive only, it never changes the live environment. By default it saves under %LOCALAPPDATA%\\NorthstarDevKit\\backups - outside any project or git repo - so a secrets-adjacent file is never dropped into a repository; pass -OutputPath to choose a different folder. Variable names that look like secrets (TOKEN/KEY/SECRET/PASSWORD/CREDENTIAL/CONNECTIONSTRING/API_KEY) are redacted by default; pass -IncludeSecrets or -Redact:$false to store raw values instead. Safety note: shows a warning that the file may contain secrets and asks to continue before writing, unless -Force is passed - low risk overall since it only ever creates a new file, never overwrites or deletes anything.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "3",
-          "label": "Restore Environment Variables",
-          "script": "Env-Restore.ps1",
-          "help": "Restores User (and, if run elevated, Machine) environment variables from a JSON file produced by 'Backup Environment Variables'. Use -WhatIf to preview what would be restored with no changes made at all. For PATH specifically, without -Force it shows an Added/Removed diff against the CURRENT live PATH and lets you choose Overwrite/Merge/Skip per scope rather than blindly replacing it. Safety note: mutates real User/Machine environment variables via [Environment]::SetEnvironmentVariable - always confirms first unless -Force is passed, and -Force also switches PATH restoration to a straight overwrite instead of the diff/merge prompt. Machine variables in the backup are skipped with a message if not run as Administrator.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": {
-            "TypePrompt": "Enter backup file path to restore",
-            "Filter": "DevKit backups (*.json)|*.json|All files (*.*)|*.*",
-            "ParamName": "BackupFile",
-            "Description": "Select an environment backup to restore"
-          },
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "4",
-          "label": "Shell Reload (refresh env)",
-          "script": "Shell-Reload.ps1",
-          "help": "Refreshes this PowerShell session's environment variables from the registry and re-dot-sources your PowerShell profile scripts, without closing the terminal. -Full also merges every current User and Machine variable into the session, not just PATH and a short common list (TEMP/TMP/HOME/USERPROFILE/JAVA_HOME/NODE_PATH/PYTHONPATH/GOPATH); -ProfileOnly skips the environment refresh and only reloads profiles; -ShowDiff prints which variables changed as a result. Only affects this running session's in-memory environment - it never calls SetEnvironmentVariable, so there's nothing to confirm.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "5",
-          "label": "Edit Hosts File",
-          "script": "Edit-HostsFile.ps1",
-          "help": "View, add, remove, and comment-toggle entries in the Windows hosts file (%windir%\\System32\\drivers\\etc\\hosts). Use -Show (or the menu's default listing) for a read-only numbered report showing each entry's IP, hostnames, and commented state; run with no flags for an interactive [A]dd/[R]emove/[T]oggle/[Q]uit menu, or -Add \"ip hostname...\" / -Remove / -Toggle (by listing index or hostname pattern) for scripted changes. Use this to map local dev domains (e.g. 127.0.0.1 mysite.local) without opening Notepad as admin. Safety note: every mutation requires Administrator privileges (already satisfied inside always-elevated DevKit; the script still offers to relaunch itself elevated if invoked outside DevKit), is gated by the shared confirmation prompt unless -Force is passed, creates a timestamped backup under %LOCALAPPDATA%\\NorthstarDevKit\\hosts-backups\\ before the first write of a session, writes the file back as plain ASCII preserving all comments and ordering, and clears the DNS client cache afterward. -Show never mutates anything. This menu item runs with -Show, so opening it from the DevKit menu gives the read-only listing without requiring admin elevation.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": {
-            "Show": true
-          }
-        }
-      ]
-    },
-    {
-      "group": "System & Workflow",
-      "folder": "workflow",
-      "name": "Workflow Tools",
-      "description": "Everyday shortcuts, most of them scoped to a linked project: open it in VS Code or Cursor, open its Git remote (GitHub, GitLab, Bitbucket, Azure DevOps) in a browser, copy a detected .env template into it, or diff .env against that template. Two items need no project at all: the offline dev-text converter, and Close Out Session - the one-action end-of-day cleanup that stops dev processes, frees dev ports, clears temp/junk, and hands memory back to the OS, offered here in three strengths (item 6 default, item 7 dry-run preview, item 8 Deep with the Recycle Bin and package-cache opt-ins already on). Project-scoped tools prompt you to pick a project first and run with their default (non-interactive, non-dry-run) flags from this menu; less common options - recent-projects picker, Cursor preference, a specific remote/branch/PR/issues/actions page, interactive value prompts, and the less-everyday Close Out Session opt-in switches (Docker, database ports, -KillAnyPortOwner, a specific -ProjectPath) - are only available via direct command-line invocation.",
-      "items": [
-        {
-          "key": "1",
-          "label": "Code Here (open VS Code/Cursor)",
-          "script": "Code-Here.ps1",
-          "help": "Opens the selected project folder in VS Code (preferred) or Cursor, whichever is detected - checks PATH, then (for Cursor, which doesn't always add itself to PATH) common per-user install folders and the Windows App Paths registry key. Use this to jump straight into an editor for a linked project instead of opening it by hand. Supports -Recent (browse a picker of recently-opened folders instead of the project path), -Cursor (prefer Cursor, falling back to VS Code with a warning if Cursor isn't found), and -Wait (block until the editor window closes) when run directly from the command line - this menu item always opens the project path with none of those switches set. Not destructive: launches a real external application, never modifies files.",
-          "caution": false,
-          "requiresProject": true,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "2",
-          "label": "Open Repo in Browser",
-          "script": "Open-Repo.ps1",
-          "help": "Opens the selected project's Git remote in your default browser. Resolves the 'origin' remote, converts SSH/ssh:// remote URLs to a browsable https:// URL (GitHub, GitLab, Bitbucket, Azure DevOps, and self-hosted equivalents), and links to the current branch when the platform is recognized; refuses to open anything that isn't a well-formed http(s) URL rather than risk launching a malformed or malicious remote. Use this to jump to a repo's web page without hand-converting the remote URL. Supports -Remote, -Branch, -PullRequest, -Issues, and -Actions when run directly from the command line to open a different remote/branch or jump straight to the PR/issues/actions page - this menu item always opens the repo root at the current branch on 'origin'. Not destructive: launches a browser tab, never modifies files.",
-          "caution": false,
-          "requiresProject": true,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "3",
-          "label": "Copy .env Template",
-          "script": "Copy-EnvTemplate.ps1",
-          "help": "Copies a detected .env template (.env.example, .env.template, .env.sample, .env.local.example, .env.development.example, .env.production.example, or env.example, checked in that order, or a specific file via -Template) to .env in the selected project, using each variable's template default value as-is. Use this to bootstrap local environment config for a project you just cloned or linked. Safety note: writes a real file into the project - if .env already exists it asks a plain y/n before overwriting (skipped, i.e. always overwrites, when -Force is passed; this is a script-local y/n prompt, not the shared Confirm-DevKitDestructiveAction gate, so it is not affected by the confirmDestructive setting). Supports -Interactive (prompt for each variable's value instead of taking the template default) and -DryRun (preview the .env content with no file written) when run directly from the command line - this menu item always writes non-interactively. Reminds you to keep .env out of Git when the source template was .env.example or .env.template.",
-          "caution": true,
-          "requiresProject": true,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "4",
-          "label": "Compare .env vs Template",
-          "script": "Compare-EnvFiles.ps1",
-          "help": "Checks the selected project's .env against its env template (same auto-detect order as Copy .env Template, or a specific file via -Template; the env file defaults to .env, override with -EnvFile) and reports drift by KEY NAME ONLY: template keys missing from .env, keys present but with an empty value, and keys that exist only in .env (informational - usually local overrides), with a green all-clear line when there's nothing to report. Use this after pulling changes to spot new required variables before the app fails at runtime. Fully read-only, and values are never printed - safe to run in a shared terminal or on a screen share.",
-          "caution": false,
-          "requiresProject": true,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "5",
-          "label": "Dev Text Converter (base64/url/jwt/guid/hash)",
-          "script": "Convert-DevText.ps1",
-          "help": "The 'google-this' converter box, with nothing leaving your machine: Base64 encode/decode, URL encode/decode, Unix timestamp (seconds or milliseconds, auto-detected) to local time, current time to Unix timestamp, new GUID, SHA-256 hash of a string, and JWT header/payload decoding (base64url only - the signature is NEVER verified and the tool says so, so never trust decoded content for authentication). Run with no -Mode for an interactive picker, or pass -Mode and -Input for scripted use; -Clipboard copies the result (the tool's only side effect). Pure .NET, no external dependencies, never touches files or the network. Note: a bare run needs the interactive mode picker, which the Control Center's headless Run dialog cannot drive - run it bare from the CLI menu or a terminal, or pass -Mode/-Input explicitly when running it any other scripted way.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "6",
-          "label": "Close Out Session (End-of-Day Cleanup)",
-          "script": "Close-OutSession.ps1",
-          "help": "Ends a work session in one action, with no project selected and none needed. A default run stops every running node.exe, frees the common dev ports (1337, 3000-3003, 4200, 5000, 5173/5174, 5500, 8000, 8080/8081, 9000) but only when a recognized dev runtime (node, bun, deno, python, dotnet, java, php, ruby, go, ...) is holding them, deletes the CONTENTS of your user TEMP folder, and trims every accessible process's working set back to the OS via psapi's EmptyWorkingSet - a trim, not a kill, so nothing loses state. It streams a per-step trail and ends with a SUMMARY of what was stopped, what was freed, how much disk and memory came back, and anything skipped and why. Idempotent: run it twice and the second run reports 'nothing to do' for nearly every step. Safety note: this really does stop processes and delete files, so it is gated by the shared Confirm-DevKitDestructiveAction prompt - the Control Center's caution dialog passes -Force for you once you confirm, and a non-interactive run without -Force declines and changes nothing. What it will NOT do: touch source files, git working trees, uncommitted changes, .env files, node_modules, or build output; empty the Recycle Bin (opt in with -IncludeRecycleBin); prune anything in Docker (-IncludeDocker, and even then only stopped containers, dangling images, and build cache - never volumes, never tagged images); clean the package manager cache (-IncludePackageCache); free the database ports 3306/5432/6379/27017 (-IncludeDatabasePorts); stop a port owner that is not a recognized dev runtime (-KillAnyPortOwner); clear a project's framework caches (-ProjectPath, which clears only .next, node_modules\\.cache, node_modules\\.vite and .turbo - never node_modules itself, never dist); or stop DevKit's own process tree, ever. Windows\\Temp and the Windows Update download cache are only cleared in an elevated session and are skipped with a notice otherwise. Run item 7 (the dry-run preview) first if you want to see exactly what a real run would touch.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "7",
-          "label": "Close Out Session - Dry Run Preview",
-          "script": "Close-OutSession.ps1",
-          "help": "The same end-of-day cleanup as item 6, in preview: it reports exactly which node processes it would stop, which dev ports it would free (and who is holding the ones it would leave alone), and how much temp/junk it would delete, then stops without stopping, deleting, or changing anything at all. Fully read-only - it only ever measures and lists, the dry-run flag overrides every other switch including -Force, and it never prompts. Use this first to decide whether to run the real thing.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": {
-            "DryRun": true
-          }
-        },
-        {
-          "key": "8",
-          "label": "Close Out Session - Deep (Recycle Bin + Package Cache)",
-          "script": "Close-OutSession.ps1",
-          "help": "The same one-action end-of-day cleanup as item 6 with the two everyday opt-ins already on: stops every running node.exe, frees the common dev ports held by recognized dev runtimes, deletes the CONTENTS of your user TEMP folder (plus Windows\\Temp and the Windows Update cache when elevated), trims every accessible process's working set - and additionally EMPTIES THE RECYCLE BIN (permanent - a file you deleted but might still want back is gone for good) and cleans the detected package manager's global cache (npm cache clean --force / pnpm store prune / yarn cache clean --all / bun pm cache rm - safe, but the next install in any project is slower while the cache refills). It still will NOT clear a project's framework caches (that needs -ProjectPath from the command line; the widget's Close-Out button adds the active project itself), prune Docker, free the database ports 3306/5432/6379/27017, or stop a port owner that is not a recognized dev runtime. Safety note: this really does stop processes, permanently empties the Recycle Bin, and deletes files, so it is gated by the shared Confirm-DevKitDestructiveAction prompt - the Control Center's caution dialog passes -Force for you once you confirm, and a non-interactive run without -Force declines and changes nothing.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": {
-            "IncludePackageCache": true,
-            "IncludeRecycleBin": true
-          }
-        }
-      ]
-    },
-    {
-      "group": "System & Workflow",
-      "folder": "diagnostics",
-      "name": "Diagnostics",
-      "description": "Read-only checks and reports on your local development environment - tool/version health checks, a system info snapshot, and a DevKit release-update check. Nothing in this category mutates real system state (System Dev Info can optionally write a JSON export file to the current directory if you pass -Export).",
-      "items": [
-        {
-          "key": "1",
-          "label": "DevKit Doctor (health check)",
-          "script": "DevKit-Doctor.ps1",
-          "help": "Checks installed dev-tool versions (Node, NPM, Yarn/PNPM/Bun, Git, Docker, VS Code, Cursor, GitHub CLI, Python, WSL), Git user.name/user.email config, Windows version, administrator rights, execution policy, disk space, and RAM, and flags anything missing, outdated, or misconfigured. Supports -Quiet to only show failed/warning checks (passing checks are hidden). Use this first when your setup 'feels broken' or before onboarding a new machine. Read-only - makes no changes, though it exits with code 1 when real issues (not just warnings) are found, which is useful when scripted.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "2",
-          "label": "System Dev Info",
-          "script": "System-DevInfo.ps1",
-          "help": "Prints a snapshot of installed tool versions (PowerShell, Node, NPM, Git, Docker, Python, VS Code), local IP/gateway, common dev ports currently in use, per-drive disk space, RAM, PATH entry count, execution policy, and admin status. -Export writes it to a timestamped JSON file in the current directory - the export includes username, computer name, and local IP/gateway, so review it before sharing, or pass -Redact alongside -Export to replace those fields with a non-reversible hash. -Clipboard copies a short text summary instead. Use this to grab a quick environment snapshot to share or compare across machines. Read-only aside from the optional -Export file write.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "3",
-          "label": "Check for Updates",
-          "script": "Test-DevKitUpdate.ps1",
-          "help": "Compares your installed DevKit version (the repo's VERSION file) against the latest GitHub Release tag via a single read-only HTTPS GET to the GitHub Releases API. Rate-limited to once per 24 hours (and gated by settings.json's preferences.updateCheckEnabled) unless -Force is passed. Use this to check whether a newer DevKit release is available. Read-only network call - by design the only one in DevKit that isn't about networking itself; the only local write is updating its own last-checked timestamp in settings.json.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        }
-      ]
-    },
-    {
-      "group": "Maintenance & Agents",
-      "folder": "maintenance",
-      "name": "Maintenance",
-      "description": "Real Windows maintenance and tuning: disk/storage cleanup, startup and service management, system file repair (SFC/DISM), Windows Update cache reset, scheduled tasks and event log review, power and visual-effects tuning, and hardware health reporting - distinct from diagnostics/, which checks dev-tool health rather than the OS itself. Most mutating tools default to a safe, non-mutating report, then offer to apply their changes right there (interactive runs only; explicit flags do the same for automation) - always behind a confirmation prompt. A few (system file repair, Windows Update reset, memory diagnostic) attempt their real action by default behind just a confirmation prompt, so check an item's Help below before running it unattended.",
-      "items": [
-        {
-          "key": "1",
-          "label": "Clear Disk Junk (temp/WU cache/Recycle Bin)",
-          "script": "Clear-DiskJunk.ps1",
-          "help": "Scans user/system temp folders, the Windows Update download cache, and the Recycle Bin, and reports how much space each is holding. Use this to see how much junk is reclaimable before deciding whether to clean it. Safety note: bare invocation reports, then (interactive runs only) asks whether to clean up right away; -Apply skips that first prompt. Either way, deleting requires typing 'CLEAN' to confirm (or -Force to skip). Cleaning also stops/restarts the Windows Update services around clearing its cache. -IncludeWinSxS additionally runs 'Dism.exe /Online /Cleanup-Image /StartComponentCleanup' and requires an elevated session.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "2",
-          "label": "Disk Usage Report (top folders by size)",
-          "script": "Show-DiskUsageReport.ps1",
-          "help": "Measures the immediate subfolders under a path (defaults to the system drive root) and lists the largest ones by size, descending. Use this to find what's eating disk space before deciding what to clean up manually or with Clear Disk Junk. By default each subfolder is measured to depth 2 (quick; sizes are estimates that exclude anything deeper) - pass -Depth to change that, or -Full for a complete recursive measure, which can take several minutes on a system drive. Fully read-only - never prompts, deletes, or modifies anything, even with custom -Path/-Top values.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "3",
-          "label": "Manage Startup Programs",
-          "script": "Manage-StartupPrograms.ps1",
-          "help": "Reports startup entries from the current-user and all-users Run registry keys plus both Startup folders (shortcuts), and can disable or re-enable one by its visible name. Use this to see what launches at sign-in and trim entries you don't want. Safety note: bare invocation reports, then (interactive runs only) offers to disable/re-enable an entry by name; -Disable/-Enable do the same for automation. Toggling mutates (a Run value is renamed to 'DevKitDisabled_<original>'; a Startup-folder shortcut is moved to a sibling 'Disabled' folder - both fully reversible, never a delete) and requires confirmation unless -Force is passed. Disabling/enabling an all-users (HKLM) entry additionally requires an elevated (Administrator) session.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "4",
-          "label": "Manage Services",
-          "script": "Manage-Services.ps1",
-          "help": "Reports the current startup type and status for a curated list of commonly-tuned, non-critical Windows services (e.g. SysMain, Windows Search, Remote Registry), and can change one service's startup type by name (not limited to the curated list). Use this to see what's currently set before deciding whether to change anything - the report itself makes no recommendation. Safety note: bare invocation reports, then (interactive runs only) offers to change a service's startup type right away; -SetStartType plus -StartTypeValue does the same for automation. Changing a startup type mutates, requires an elevated (Administrator) session, and requires confirmation unless -Force is passed.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "5",
-          "label": "Repair System Files (SFC + DISM)",
-          "script": "Repair-SystemFiles.ps1",
-          "help": "Runs System File Checker (sfc /scannow) followed by DISM's component-store repair (DISM /Online /Cleanup-Image /RestoreHealth) to find and fix corrupted system files, streaming both tools' output live. Can take 10-30+ minutes. Use this when Windows itself seems unstable or corrupted. Safety note: unlike most tools in this category, bare invocation is NOT a report - it requires an elevated (Administrator) session and a y/N confirmation (skippable with -Force), then runs the real repair. Use -DryRun to only see the command plan with no execution and no admin check.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "6",
-          "label": "Reset Windows Update Cache",
-          "script": "Reset-WindowsUpdate.ps1",
-          "help": "Classic fix for a stuck Windows Update: stops the Windows Update-related services, renames the SoftwareDistribution and catroot2 cache folders (Windows rebuilds both automatically), then restarts the services. Use this when Windows Update is failing or hanging. Safety note: unlike most tools in this category, bare invocation is NOT a report - it requires an elevated (Administrator) session and typing 'RESET' to confirm (skippable with -Force), then performs the real reset. Use -DryRun to only see the step plan with no execution and no admin check.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "7",
-          "label": "Scheduled Tasks Report",
-          "script": "Get-ScheduledTasksReport.ps1",
-          "help": "Lists Windows scheduled tasks with their state, last run time, and last result, flagging any nonzero result code, and can disable a single named task. Use -NonMicrosoftOnly to filter out the \\Microsoft\\ task-folder tree and focus on third-party tasks. Safety note: listing is read-only (no admin rights needed); after the list, an interactive run offers to disable a task by name, and -Disable does the same for automation. Disabling mutates - it requires confirmation unless -Force is passed, and may itself require an elevated session depending on the task's owning scope.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "8",
-          "label": "Recent Event Errors",
-          "script": "Get-RecentEventErrors.ps1",
-          "help": "Reports Critical and Error level events from the System and Application Windows event logs within a recent time window (-Hours, default 24; -MaxEvents, default 50). Use this to spot what's been going wrong on the machine recently before digging further. Fully read-only - never modifies anything, and has no mutating parameters at all.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "9",
-          "label": "Power Plan Manager",
-          "script": "Set-PowerPlan.ps1",
-          "help": "Lists Windows power plans (via powercfg /list) with the active one marked - this is also the bare/default behavior - switches the active plan by name via -SetPlan, and can unlock the hidden 'Ultimate Performance' plan via -UnlockUltimate. Use this to see or change which power plan is active, or to make Ultimate Performance available to switch to. Safety note: bare invocation and -List show the table, then (interactive runs only) offer to switch plans by number or name. Switching requires confirmation unless -Force is passed. -UnlockUltimate requires an elevated (Administrator) session plus confirmation unless -Force is passed.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "10",
-          "label": "Visual Effects Manager",
-          "script": "Set-VisualEffects.ps1",
-          "help": "Reports or sets the Windows 'adjust for best performance/appearance' visual effects mode (Performance, Appearance, Auto, or Custom) - the setting behind Advanced System Settings -> Performance. Use this to quickly trade visual polish for responsiveness or vice versa. Safety note: bare invocation and -Show report the current mode, then (interactive runs only) offer to change it right away; -SetMode does the same for automation. Setting mutates the current user's own HKCU registry hive (no admin rights needed) and requires confirmation unless -Force is passed; a sign-out or Explorer restart may be needed for all effects to visibly update.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "11",
-          "label": "Page File Configuration Report",
-          "script": "Test-PageFileConfig.ps1",
-          "help": "Reports current page file usage, whether Windows is managing the page file automatically, and total physical RAM, then gives a plain-language read of whether the current setup looks reasonable. Use this if you suspect memory-pressure issues or just want a sanity check on page file config. Intentionally read-only with no parameters at all - resizing a page file programmatically is finicky and reboot-dependent, so this tool only reports and recommends, never changes anything.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "12",
-          "label": "Disk Health Report",
-          "script": "Get-DiskHealthReport.ps1",
-          "help": "Reads per-physical-disk wear, temperature, and read/write error counters via Storage Reliability Counters, and separately reports classic SMART failure-prediction data where the driver stack exposes it (each section is skipped gracefully, not treated as an error, when unsupported on a given disk/system). Use this periodically to catch a failing drive before it takes data with it. Fully read-only - never modifies anything, and has no parameters at all.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "13",
-          "label": "Battery Report",
-          "script": "Get-BatteryReport.ps1",
-          "help": "Generates a Windows battery health report (powercfg /batteryreport) for laptop/tablet systems; a desktop with no battery is reported as a benign no-op, not an error. Use this to check battery wear/capacity over time. Non-destructive - it only ever writes the HTML report file, defaulting to a devkit-battery-report.html file under the Temp folder unless -OutputPath is given; -Open launches it with its default handler when done. No confirmation prompt - it never touches system configuration.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "14",
-          "label": "Memory Diagnostic",
-          "script": "Invoke-MemoryDiagnostic.ps1",
-          "help": "Launches the built-in Windows Memory Diagnostic tool (mdsched.exe), which then prompts to restart the PC now or at the next boot to run a memory test. Use this if you suspect faulty RAM and are ready to accept a restart prompt. Safety note: bare invocation actually launches mdsched.exe (the ONE tool in this category whose default is not a report) - it is gated by typing 'RESTART' to confirm, skippable with -Force. Use -DryRun to only see what would happen with nothing launched.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        }
-      ]
-    },
-    {
-      "group": "Maintenance & Agents",
-      "folder": "agents",
-      "name": "Agents & MCP",
-      "description": "Track and update installed AI/dev CLI tools (claude, gh, codex, gemini, cursor-agent, aider, supabase, vercel, railway, kimi, auggie), and manage Claude Code's MCP (Model Context Protocol) server configuration - list, add (by hand or from a built-in catalog), remove, and scan servers across both user/global and per-project scope.",
-      "items": [
-        {
-          "key": "1",
-          "label": "List Installed AI CLIs",
-          "script": "Get-InstalledAiClis.ps1",
-          "help": "Detects which AI coding-agent CLIs (claude, gh, codex, gemini, cursor-agent, aider, supabase, vercel, railway, kimi, auggie) are installed and on PATH, and reports their versions. Read-only - makes no changes. Use this first to see what's available on this machine before updating or configuring anything.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "2",
-          "label": "Update AI CLIs",
-          "script": "Update-AiClis.ps1",
-          "help": "Updates installed AI/dev CLIs (of the 11 tracked - claude, gh, codex, gemini, cursor-agent, aider, supabase, vercel, railway, kimi, auggie) that are on an automatable update channel: npm ('npm install -g PACKAGE@latest'), npm+builtin (tries the tool's own upgrade subcommand first, e.g. 'vercel upgrade', falling back to npm), or scoop ('scoop update NAME', only when installed via Scoop). Tools on a manual channel (gh, cursor-agent, aider, and kimi -- two unrelated CLIs share the 'kimi' command name, so it's report-only until there's a safe way to tell them apart) are reported only, never touched. Supports -Only <name(s)> to restrict which tools are considered, -DryRun to show current/latest versions and what would update with no changes made, and -Force to skip the confirmation prompt. Safety note: without -DryRun, confirming runs real update commands (npm install/scoop update/builtin upgrade) against globally installed packages - review the detected list before confirming.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "3",
-          "label": "List MCP Servers",
-          "script": "Get-McpServers.ps1",
-          "help": "Lists Claude Code's configured MCP servers via 'claude mcp list'. Read-only. With an active project set, splits the list into user/global scope versus project/local scope by diffing the list run from a neutral directory against the list run from the project. Use this to see what's currently configured before adding or removing anything.",
-          "caution": false,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": {
-            "UseActiveProject": true
-          }
-        },
-        {
-          "key": "4",
-          "label": "Add MCP Server",
-          "script": "Add-McpServer.ps1",
-          "help": "Registers one MCP server by hand - you supply the name and either a local (stdio) command or a remote http URL/headers, plus the scope to register it at. Use this when you already know the exact server details. Safety note: mutates real Claude Code MCP configuration (runs 'claude mcp add') - always confirms first unless -Force is passed.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "5",
-          "label": "Remove MCP Server",
-          "script": "Remove-McpServer.ps1",
-          "help": "Removes one MCP server by name via 'claude mcp remove'. Use this to clean up a server you no longer need. Safety note: mutates real Claude Code MCP configuration - always confirms first unless -Force is passed.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "6",
-          "label": "Add MCP Server (From Catalog)",
-          "script": "Add-McpServerFromCatalog.ps1",
-          "help": "Browsable picker over a curated catalog of popular MCP servers (Supabase, GitHub, Notion, Linear, Stripe, and more) - pick one, choose a variant if it offers more than one, and answer a few prompts (name, scope, API keys/headers, directories) instead of typing the full 'claude mcp add' command yourself. Use this when you want to add a well-known server without looking up its exact invocation. Note: this is an interactive picker with no non-interactive parameters, so it is not suitable for the Control Center's headless Run dialog - run it from the CLI menu or a real terminal instead. Safety note: mutates real Claude Code MCP configuration - always confirms first unless -Force is passed.",
-          "caution": true,
-          "requiresProject": false,
-          "projectArgName": null,
-          "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
-        },
-        {
-          "key": "7",
-          "label": "Scan MCP Setup (Global + Project)",
-          "script": "Scan-McpServers.ps1",
-          "help": "Checks which catalog servers are already configured, both globally/user-scope and (if an active project is set) at project scope, and reports what's missing. For each missing entry with an automatable registration, asks whether to add it now, reusing the same catalog add flow as 'Add MCP Server (From Catalog)'. Use this periodically to make sure a project (or this machine) has the MCP servers you expect. Note: the scan itself is read-only and works headlessly, but the 'add now?' step needs an interactive console - from the Control Center's headless Run dialog the scan completes and the add step is skipped. Safety note: accepting a prompt to add a missing server mutates real Claude Code MCP configuration - always confirms first unless -Force is passed.",
-          "caution": true,
           "requiresProject": false,
           "projectArgName": null,
           "requiresFile": null,

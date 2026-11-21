@@ -7,8 +7,8 @@
     stops the dev processes still running, frees the common dev ports,
     empties disposable temp/junk, and trims every process's working set back
     to the OS. It composes the same logic the individual tools use
-    (Kill-AllNode / Kill-Port / Clear-NpmCache / Clear-DiskJunk /
-    Docker-Cleanup / the widget's Free Memory) instead of reimplementing it.
+    (Kill-AllNode / Kill-Port / Clear-NpmCache / Docker-Cleanup / the
+    widget's Free Memory) instead of reimplementing it.
 
     WHAT A DEFAULT RUN TOUCHES
       - node.exe processes: stopped (SIGKILL-equivalent Stop-Process -Force).
@@ -152,10 +152,9 @@ function Format-DevKitCloseOutSize {
     .SYNOPSIS
         Byte count as a human-readable size string.
     .DESCRIPTION
-        Script-local on purpose: Clear-DiskJunk.ps1 and
-        Find-StaleNodeModules.ps1 each carry the same private copy because
-        tools/lib has never exported one, and adding a shared helper is a
-        change to a file this tool does not own.
+        Script-local on purpose: Find-StaleNodeModules.ps1 carries the same
+        private copy because tools/lib has never exported one, and adding a
+        shared helper is a change to a file this tool does not own.
     #>
     param([Parameter(Mandatory = $true)][double]$Bytes)
     if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
@@ -545,10 +544,9 @@ function Get-DevKitCloseOutPathSize {
     .SYNOPSIS
         Total bytes under a path, or 0 when it is missing or unreadable.
     .DESCRIPTION
-        Same shape as Clear-DiskJunk.ps1's private scanner: an unreadable
-        root (broken reparse point, permission wall) counts as 0 rather than
-        aborting the scan, because a junk measurement failing is never a
-        reason for a cleanup run to fail.
+        An unreadable root (broken reparse point, permission wall) counts
+        as 0 rather than aborting the scan, because a junk measurement
+        failing is never a reason for a cleanup run to fail.
     #>
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 

@@ -180,10 +180,10 @@ Describe "Get-DevKitGuiCatalog (against the real manifests)" {
         $script:catalog = Get-DevKitGuiCatalog -RootPath $script:RepoRoot
     }
 
-    It "loads all 12 tool categories in 5 groups" {
-        $script:catalog.Count | Should -Be 5
+    It "loads all 7 tool categories in 3 groups" {
+        $script:catalog.Count | Should -Be 3
         $moduleCount = ($script:catalog | ForEach-Object { $_.Modules.Count } | Measure-Object -Sum).Sum
-        $moduleCount | Should -Be 12
+        $moduleCount | Should -Be 7
     }
 
     It "every manifest item references a script that exists on disk" {
@@ -210,20 +210,14 @@ Describe "Get-DevKitGuiCatalog (against the real manifests)" {
         $none.Count | Should -Be 0
     }
 
-    It "workflow manifest's Deep Close-Out entry carries its two opt-in switches" {
-        $workflow = @($script:catalog | ForEach-Object { $_.Modules } | Where-Object { $_.Folder -eq 'workflow' })[0]
-        $deep = @($workflow.Items | Where-Object { $_.Script -eq 'Close-OutSession.ps1' -and $_.StaticArgs -and $_.StaticArgs['IncludeRecycleBin'] })
-        $deep.Count | Should -Be 1
-        $deep[0].StaticArgs['IncludePackageCache'] | Should -BeTrue
-        # And the static args survive argument resolution as the switches the
+    It "wifi manifest's Fast Mode entry carries its -Fast static switch" {
+        $wifi = @($script:catalog | ForEach-Object { $_.Modules } | Where-Object { $_.Folder -eq 'wifi' })[0]
+        $fast = @($wifi.Items | Where-Object { $_.StaticArgs -and $_.StaticArgs['Fast'] })
+        $fast.Count | Should -Be 1
+        # And the static args survive argument resolution as the switch the
         # script itself declares (StaticArgs merge last and win).
-        $rendered = ConvertTo-DevKitToolArguments -Item $deep[0] -Values @{}
-        $rendered['IncludeRecycleBin'] | Should -BeTrue
-        $rendered['IncludePackageCache'] | Should -BeTrue
-        # The dry-run preview entry must NOT have grown the deep switches.
-        $preview = @($workflow.Items | Where-Object { $_.Script -eq 'Close-OutSession.ps1' -and $_.StaticArgs -and $_.StaticArgs['DryRun'] })
-        $preview.Count | Should -Be 1
-        $preview[0].StaticArgs.Contains('IncludeRecycleBin') | Should -BeFalse
+        $rendered = ConvertTo-DevKitToolArguments -Item $fast[0] -Values @{}
+        $rendered['Fast'] | Should -BeTrue
     }
 }
 
@@ -246,9 +240,9 @@ Describe "Get-DevKitCatalogPayload loadErrors" {
     It "surfaces per-folder load errors instead of letting a category vanish silently" {
         $payload = Get-DevKitCatalogPayload -RootPath (Join-Path $TestDrive 'no-such-root')
         @($payload.modules) | Should -Be @()
-        # All 12 category folders fail to load (missing manifest) -> one
+        # All 7 category folders fail to load (missing manifest) -> one
         # recorded error each, prefixed with the folder name.
-        @($payload.loadErrors).Count | Should -Be 12
+        @($payload.loadErrors).Count | Should -Be 7
         @($payload.loadErrors)[0] | Should -Match '^\[ports\] '
     }
 }

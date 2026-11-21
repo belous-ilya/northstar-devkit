@@ -25,8 +25,6 @@ import "./ControlCenterApp.css";
 const GROUP_ICON: Record<string, string> = {
   Development: "\u{1F4BB}", // laptop
   "Version Control & Containers": "\u{1F500}", // twisted arrows
-  "System & Workflow": "\u{2699}️", // gear
-  "Maintenance & Agents": "\u{1F9F0}", // toolbox
   Network: "\u{1F4E1}", // satellite antenna
 };
 const ALL_ICON = "\u{1F5C2}️"; // card index dividers

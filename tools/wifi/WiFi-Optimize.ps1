@@ -41,8 +41,8 @@ $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "
 if (Test-Path $CommonModule) { . $CommonModule }
 
 # The DNS undo backup lives under %LOCALAPPDATA%\NorthstarDevKit\ - NOT
-# %TEMP%: DevKit's own junk wipers (Close-OutSession, Clear-DiskJunk) empty
-# TEMP, which used to destroy this backup and leave -RestoreDns with nothing
+# %TEMP%: DevKit's own junk wiper (Close-OutSession) empties TEMP, which
+# used to destroy this backup and leave -RestoreDns with nothing
 # to restore. %LOCALAPPDATA%\NorthstarDevKit\ is DevKit's persistent state
 # dir (settings.json, projects.json), so it survives cleanup.
 $DnsBackupDir = Join-Path $env:LOCALAPPDATA "NorthstarDevKit"

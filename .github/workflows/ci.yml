@@ -101,7 +101,7 @@ jobs:
           Write-Host "Version triple agrees: $($sources['VERSION'])"
 
   # --------------------------------------------------------------------
-  # PowerShell: the RPC sidecar (core/), the ~65 tool scripts (tools/), and
+  # PowerShell: the RPC sidecar (core/), the tool scripts (tools/), and
   # the Pester suite over the pure-logic layer.
   # --------------------------------------------------------------------
   validate-powershell:

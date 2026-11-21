@@ -314,11 +314,11 @@ Describe "the tool-run registry" {
 
     It "publishes a run under its runId with the identity a stop needs" {
         $me = Get-Process -Id $PID
-        $entry = Register-DevKitToolRun -Registry $script:Registry -RunId 'run-1' -Process $me -Label 'system/Repair-SystemFiles.ps1'
+        $entry = Register-DevKitToolRun -Registry $script:Registry -RunId 'run-1' -Process $me -Label 'docker/Docker-Nuke.ps1'
         $script:Registry.ContainsKey('run-1') | Should -BeTrue
         $entry['ProcessId'] | Should -Be $PID
         $entry['StartTime'] | Should -Be $me.StartTime
-        $entry['Label'] | Should -Be 'system/Repair-SystemFiles.ps1'
+        $entry['Label'] | Should -Be 'docker/Docker-Nuke.ps1'
         $entry['Stopped'] | Should -BeFalse
     }
 

@@ -171,7 +171,7 @@ install root (`%LOCALAPPDATA%\DevKit\`, since `installMode` is
 | Source | Installed as |
 | --- | --- |
 | `core/` | `<installroot>\core\` - the RPC sidecar |
-| `tools/` | `<installroot>\tools\` - the ~65 tool scripts |
+| `tools/` | `<installroot>\tools\` - the tool scripts |
 | `VERSION` | `<installroot>\VERSION` |
 
 **The `devkit` CLI is NOT bundled yet.** `release.yml` builds and stages

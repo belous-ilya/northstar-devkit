@@ -30,8 +30,6 @@ function Get-DevKitGuiCategories {
     return @(
         @{ Group = 'Development';                  Folders = @('ports', 'node', 'nextjs', 'vite') }
         @{ Group = 'Version Control & Containers'; Folders = @('git', 'docker') }
-        @{ Group = 'System & Workflow';            Folders = @('system', 'workflow', 'diagnostics') }
-        @{ Group = 'Maintenance & Agents';         Folders = @('maintenance', 'agents') }
         @{ Group = 'Network';                      Folders = @('wifi') }
     )
 }

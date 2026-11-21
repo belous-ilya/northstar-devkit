@@ -171,12 +171,10 @@ function Add-DevKitForceArgument {
         the only safe assumption is that the answer never arrives. That is
         why the gate is Test-DevKitCanPrompt (which declines up front)
         rather than a try/catch, and why a `while ($true)` menu MUST break
-        on a $null read (see tools/system/Edit-Path.ps1, which without that
-        guard spun at ~1,800 lines/second and occupied the tool lane
-        permanently).
+        on a $null read (the since-removed PATH editor, without that guard,
+        spun at ~1,800 lines/second and occupied the tool lane permanently).
 
-        Either way Docker-Nuke, Docker-Cleanup, Repair-SystemFiles,
-        Reset-WindowsUpdate, Clear-DiskJunk, Git-Cleanup, Manage-Services
+        Either way Docker-Nuke, Docker-Cleanup, Git-Cleanup, Close-OutSession
         and the rest could not proceed when run from the app - immediately
         AFTER the user had already confirmed in the app's own caution
         dialog.

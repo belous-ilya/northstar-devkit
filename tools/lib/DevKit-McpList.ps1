@@ -14,9 +14,9 @@
     config files directly, matching this module's existing philosophy (see
     AGENTS.md's "Agents & MCP" section).
 
-    Used by both Get-McpServers.ps1 (report) and Scan-McpServers.ps1
-    (report + catalog cross-reference), so there is exactly one
-    implementation of this neutral-vs-project diff logic.
+    Used by the widget's MCP Servers tray (core/DevKit-WidgetCore.ps1), so
+    there is exactly one implementation of this neutral-vs-project diff
+    logic.
 
     This file is dot-sourced by scripts; it does not produce output when
     loaded.

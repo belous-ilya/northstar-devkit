@@ -11,7 +11,7 @@ optimization.
 As of the Tauri v2 rewrite (this branch), the toolkit is fronted by a real
 desktop app - Rust + Tauri v2 with a React 19 + TypeScript UI - and a
 terminal CLI (ratatui), instead of the pure-PowerShell/WPF app it used to
-be. The ~65 tool scripts themselves (`tools/`) are still 100% PowerShell,
+be. The tool scripts themselves (`tools/`) are still 100% PowerShell,
 unchanged in logic, and are the actual implementation both new surfaces
 run - see "Technology Stack" below and the "App Architecture" section
 under Key Features by Module for how the pieces fit together. If you find
@@ -42,8 +42,9 @@ a reference to `gui/`, `DevKit.ps1`, `DevKit.bat`, `DevKit-GUI.bat`,
   (`crates/devkit-host`) that both the Tauri app and the CLI depend on -
   see "App Architecture" below for the full picture.
 - **Tool implementation:** PowerShell 5.1+ or PowerShell 7+ (pwsh
-  preferred) - unchanged from before the rewrite. `tools/` (the ~65 leaf
-  scripts across 12 categories, plus `tools/lib/` shared helpers) has no
+  preferred) - unchanged from before the rewrite. `tools/` (the leaf
+  scripts across 7 catalog categories, plus `tools/lib/` shared helpers
+  and the handful the app calls directly) has no
   external PowerShell dependencies and is not a "legacy" layer - it is
   the thing both the CLI and the Control Center execute.
 - **Build tooling:** pnpm for the frontend (`app/`), Cargo for Rust (root
@@ -142,13 +143,16 @@ DevKit/
 │   │                          # Control Center run these same scripts - see
 │   │                          # "App Architecture" below)
 │   ├── lib/                        # DevKit-Common.ps1, DevKit-UI.ps1,
-│   │                              # DevKit-McpCatalog.ps1, DevKit-McpList.ps1,
-│   │                              # DevKit-McpAddFlow.ps1
-│   ├── ports/ node/ nextjs/ vite/ git/ docker/ system/ workflow/
-│   │   diagnostics/ wifi/ maintenance/ agents/   # each: script+.bat pairs
+│   │                              # DevKit-McpList.ps1
+│   ├── ports/ node/ nextjs/ vite/ git/ docker/ wifi/   # the 7 catalog
+│   │                              # categories - each: script+.bat pairs
 │   │                              # plus one _module.psd1 manifest
 │   │                              # (per-category details: see "Key Features
 │   │                              # by Module")
+│   └── system/ workflow/ diagnostics/   # NOT catalog categories (no
+│                                  # manifest): scripts the app itself calls -
+│                                  # admin setup + shell/terminal integration,
+│                                  # Close-OutSession, DevKit-Doctor
 │
 ├── tests/
 │   └── Unit/                   # Pester tests - unchanged coverage; two files'
@@ -350,11 +354,12 @@ try {
 - Multi-container log tailing with color coding
 - Selective cleanup of dangling images and unused volumes
 
-### System Tools (`tools/system/`)
-- Uses `[Environment]::GetEnvironmentVariable` and `SetEnvironmentVariable`
-- Supports both User and Machine environment scopes
-- Interactive PATH editor with duplicate detection
-- JSON backup/restore for environment variables
+### System (`tools/system/`)
+- Not a catalog category - there is no `_module.psd1` here and nothing in
+  this folder appears in the Control Center or the CLI menu. It holds the
+  scripts the app shell calls: `Set-DevKitAdminMode.ps1` (below) and the
+  shell-integration / Windows Terminal profile install and uninstall
+  scripts.
 - **Always-elevated app** (mandatory Admin Mode - there is no un-elevated
   mode): a startup gate (`app/src-tauri/src/elevation.rs`, release builds
   only - debug builds and `DEVKIT_ALLOW_UNELEVATED=1` skip it) runs at the
@@ -394,28 +399,24 @@ try {
   (`ElevationIndicator` in `app/src/components/TitleBar.tsx`) - now
   effectively always on in release builds.
 
-### Workflow Tools (`tools/workflow/`)
-- Detects VS Code and Cursor installations
-- Opens repositories in browser (GitHub, GitLab, Bitbucket, Azure DevOps)
-- Parses `.env.example` templates for variable extraction
-- Converts SSH URLs to HTTPS for browser opening
-- Close Out Session (`Close-OutSession.ps1`): the one-action end-of-day
-  cleanup (stops node.exe, frees dev ports held by recognized dev runtimes,
-  clears temp/junk, trims every accessible working set). The manifest
-  registers it three ways - default (item 6), dry-run preview (item 7,
-  `StaticArgs DryRun`), and Deep (item 8, `StaticArgs IncludeRecycleBin` +
-  `IncludePackageCache`). The widget's Quick Actions panel does not mirror
-  the default (item 6) run - its single Close-Out tile IS item 8's
-  argument set, adding `-ProjectPath <active project>` when a project is
-  linked, and its Preview tile is that same argument set with `-DryRun` in
-  front.
+### Workflow (`tools/workflow/`)
+- Not a catalog category (no manifest). Holds one script,
+  `Close-OutSession.ps1`: the one-action end-of-day cleanup (stops
+  node.exe, frees dev ports held by recognized dev runtimes, clears
+  temp/junk, trims every accessible working set).
+- Its only caller in the app is the widget's Quick Actions panel, which
+  builds the argument list by hand: the Close-Out tile sends
+  `-IncludeRecycleBin -IncludePackageCache`, adding `-ProjectPath <active
+  project>` when a project is linked, and the Preview tile sends that same
+  argument set with `-DryRun` in front. `tests/Unit/CloseOutSession.Tests.ps1`
+  reads those switches out of the panel source and holds the script's
+  parameter block to them.
 
 ### Diagnostics (`tools/diagnostics/`)
-- Checks tool installations and versions
-- Validates Git configuration
-- Detects Docker daemon status
-- Reports disk space and memory
-- Exports system info to JSON
+- Not a catalog category (no manifest). Holds `DevKit-Doctor.ps1`, run by
+  the widget's Doctor tile: checks tool installations and versions,
+  validates Git configuration, detects Docker daemon status, reports disk
+  space and memory. Read-only.
 
 ### WiFi Tools (`tools/wifi/`)
 - Uses `netsh` commands for network operations
@@ -424,49 +425,13 @@ try {
 - Speed test via Cloudflare's speed endpoint
 - Requires administrator privileges; warns about required reboot after TCP/IP reset
 - Every interactive prompt (the y/n confirmation and each trailing "Press
-  Enter to exit") is guarded by `[Console]::IsInputRedirected` - the same
-  pattern the maintenance tools use - so a headless Control Center run ends
+  Enter to exit") is guarded by `[Console]::IsInputRedirected` - so a
+  headless Control Center run ends
   cleanly instead of throwing on `Read-Host` with stdin closed. The y/n
   confirmation is additionally skipped by `-Force`, which the caution confirm
   flow injects automatically. WiFi-Optimize ends with an explicit `exit 0`
   because WiFi-FastMode forwards `$LASTEXITCODE` (which would otherwise be
   whatever the last native netsh/ipconfig call returned)
-
-### Maintenance (`tools/maintenance/`)
-- Real Windows maintenance/tuning, distinct from `diagnostics/`'s dev-tool health check
-- Every mutating tool (disk cleanup, service/startup changes, SFC/DISM, Windows Update
-  reset, power plan, visual effects, memory diagnostic) defaults to a safe report/`-DryRun`
-  and only changes anything behind `Confirm-DevKitDestructiveAction`. Report-mode tools
-  additionally end with an interactive "apply now?" prompt (so batch-file users who can't
-  pass flags can still act) - the prompt only collects input and sets the same variables
-  the flags would have set, then falls into the existing flag code path unchanged. The
-  prompt is guarded by `-not [Console]::IsInputRedirected` so piped/automated runs keep
-  the old report-then-exit behavior; keep that guard on any future tool of this shape
-- Admin-gated actions check `Test-DevKitAdmin` and fail with a clear message rather than a
-  stack trace when not elevated
-- Startup-entry disable/enable is reversible by design (registry value rename / shortcut
-  moved to a sibling folder), not a best-effort delete
-
-### Agents & MCP (`tools/agents/`)
-- Tracks 11 AI/dev CLIs (claude, gh, codex, gemini, cursor-agent, aider, supabase, vercel,
-  railway, kimi, auggie) via `Get-DevKitWindowsExecutable` (see below) rather than a bare
-  `Get-Command`/`&` invocation; each tool carries its own update "channel" (npm / npm+builtin
-  / scoop / manual) instead of assuming everything is an npm package - e.g. Supabase updates
-  via Scoop (its CLI can't be installed globally via npm at all), Vercel/Railway prefer their
-  own builtin `upgrade` subcommand, and Kimi is manual-only because the `kimi` command name is
-  shared by two unrelated real-world tools
-- Wraps `claude mcp list/add/remove`; `Add-McpServer.ps1` supports both local stdio commands
-  and remote HTTP servers (`-Transport http -Url -Headers`); project-scoped operations resolve
-  the active project via `Get-DevKitActiveProject` (read-only) and `Push-Location`/
-  `Pop-Location` around the `claude` call, never via `Select-DevKitProject` (which can
-  prompt/mutate the active project); `Get-McpServers.ps1 -Scope` diffs a listing run from a
-  neutral directory against one run from the project directory to give a real user/global vs.
-  project/local split
-- `tools\lib\DevKit-McpCatalog.ps1` ships a 10-entry curated catalog of well-known MCP servers
-  (Supabase, Sequential Thinking, Context7, GitHub, Filesystem, Notion, Jira/Atlassian, Linear,
-  Stripe, Plaid); `Add-McpServerFromCatalog.ps1` is a browsable picker over it and
-  `Scan-McpServers.ps1` cross-references what's already configured (per scope) against the
-  catalog and offers to add anything missing
 
 ### App Architecture (`core/`, `crates/devkit-host`, `app/`, `cli/`)
 
@@ -826,7 +791,6 @@ cargo build --release -p devkit-cli
 .\tools\vite\Vite-DevFresh.ps1
 .\tools\git\Git-Cleanup.ps1 -DryRun
 .\tools\docker\Docker-Nuke.ps1 -DryRun
-.\tools\system\Edit-Path.ps1 -Show
 .\tools\diagnostics\DevKit-Doctor.ps1
 .\tools\wifi\WiFi-Optimize.ps1 -Fast
 ```
@@ -928,13 +892,13 @@ be here too" - verify the actual files exist.
 
 `tests/Unit` (Pester 5, wired into CI) covers pure-logic parsers and
 converters where this project has actually had real bugs: package-manager
-detection (`Get-DevKitPackageManager`), PATH de-duplication, the `.env`
-template parser, the git-remote-to-browsable-URL converter, the WiFi
-scan parser, the GUI/widget cores (`core/DevKit-GuiCore.ps1` /
+detection (`Get-DevKitPackageManager`), the WiFi scan parser, the
+GUI/widget cores (`core/DevKit-GuiCore.ps1` /
 `core/DevKit-WidgetCore.ps1` - argument rendering, MCP/Kimi parsers,
 nvidia-smi parser, git log parser + graph lane layout, .env key diff, the
 file-name -> icon-key/color mapping), the winnat excluded-port-ranges
-parser, the .env key extractor, the Convert-DevText converters, and the
+parser, the Close-Out planner and its contract with the Quick Actions
+panel, the sidecar's dispatch/stop/error layers, and the
 Admin Mode pure helpers (exe-candidate resolution, launcher/shortcut/
 child-argument rendering, the Run-key autostart matcher). Run
 locally with:
@@ -986,9 +950,8 @@ verified manually:
 ## Adding New Tools
 
 Adding a tool to an **existing** category (`tools/ports/`, `tools/node/`,
-`tools/nextjs/`, `tools/vite/`, `tools/git/`, `tools/docker/`, `tools/system/`,
-`tools/workflow/`, `tools/diagnostics/`, `tools/wifi/`, `tools/maintenance/`,
-`tools/agents/`) is still a manifest edit only - the CLI and the Control
+`tools/nextjs/`, `tools/vite/`, `tools/git/`, `tools/docker/`,
+`tools/wifi/`) is still a manifest edit only - the CLI and the Control
 Center both read `_module.psd1` manifests through the same `catalog.get`
 RPC method (`core/RpcMethods.ps1` -> `Get-DevKitCatalogPayload` ->
 `Get-DevKitGuiCatalog` in `core/DevKit-GuiCore.ps1`), so there's no UI
@@ -1085,3 +1048,11 @@ code to touch for this case:
   "App Architecture" section above for the full picture, and
   `CHANGELOG.md` for the authoritative dated record once this branch
   lands.
+- The 2026-11 lightening pass cut the catalog from 12 categories (67 items)
+  to 7: Maintenance, Agents & MCP, and the System, Workflow and Diagnostics
+  menu entries were deleted outright (scripts, `.bat` wrappers, manifests,
+  their Pester tests, and the two MCP helper libs only they used). What
+  survives in `tools/system/`, `tools/workflow/` and `tools/diagnostics/`
+  is only what the app shell or the widget calls directly. Anything older
+  in this file's version notes, or in `CHANGELOG.md`, that names a removed
+  tool is history, not a description of the tree.

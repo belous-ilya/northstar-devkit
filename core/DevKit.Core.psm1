@@ -39,9 +39,7 @@ $script:ToolsLibDir = Join-Path $script:RepoRoot 'tools\lib'
 $filesToLoad = @(
     (Join-Path $script:ToolsLibDir 'DevKit-UI.ps1')
     (Join-Path $script:ToolsLibDir 'DevKit-Common.ps1')
-    (Join-Path $script:ToolsLibDir 'DevKit-McpCatalog.ps1')
     (Join-Path $script:ToolsLibDir 'DevKit-McpList.ps1')
-    (Join-Path $script:ToolsLibDir 'DevKit-McpAddFlow.ps1')
     (Join-Path $script:ModuleRoot 'DevKit-WidgetCore.ps1')
     (Join-Path $script:ModuleRoot 'DevKit-GuiCore.ps1')
     (Join-Path $script:ModuleRoot 'DevKit-Errors.ps1')
