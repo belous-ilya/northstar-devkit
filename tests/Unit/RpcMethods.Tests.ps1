@@ -475,3 +475,48 @@ Describe "catalog.toolExists" {
         $checked | Should -BeGreaterThan 20
     }
 }
+
+Describe "tool.run does not start a tool once shutdown has begun" {
+
+    # The main thread marks the shared gate when shutdown starts. A run that
+    # was still queued (behind the tool lane's own start-up) would otherwise
+    # begin after the shutdown sweep had already looked for running tools,
+    # and outlive the sidecar.
+
+    BeforeAll {
+        $script:ShutdownRepo = Join-Path $TestDrive 'shutdown-repo'
+        New-Item -ItemType Directory -Path (Join-Path $script:ShutdownRepo 'tools\demo') -Force | Out-Null
+        $script:Marker = Join-Path $TestDrive 'tool-ran.txt'
+        Set-Content -LiteralPath (Join-Path $script:ShutdownRepo 'tools\demo\Mark.ps1') -Value "Set-Content -LiteralPath '$($script:Marker)' -Value ran"
+    }
+
+    BeforeEach {
+        if (Test-Path -LiteralPath $script:Marker) { Remove-Item -LiteralPath $script:Marker -Force }
+        $script:Events = [System.Collections.Generic.List[object]]::new()
+        $script:Emit = { param($EventName, $RunId, [hashtable]$Extra = @{}) $script:Events.Add($EventName) }
+        Set-Variable -Name RepoRoot -Value $script:ShutdownRepo
+        Set-Variable -Name RunRegistry -Value $null
+    }
+
+    It "refuses, starts nothing and emits nothing when the gate says shutdown" {
+        $gate = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
+        $gate['active'] = 'token-1'
+        $gate['shutdown'] = '1'
+        Set-Variable -Name ToolLaneGate -Value $gate
+        { Invoke-DevKitRpcMethod -Method 'tool.run' -Params ([pscustomobject]@{ folder = 'demo'; script = 'Mark.ps1'; args = @(); runId = 's1'; __toolLaneToken = 'token-1' }) -EmitEvent $script:Emit } |
+            Should -Throw -ExpectedMessage '*shutting down*'
+        Test-Path -LiteralPath $script:Marker | Should -BeFalse
+        $script:Events.Count | Should -Be 0
+        # ...and gives its claim on the lane back, like every other exit.
+        $gate.ContainsKey('active') | Should -BeFalse
+    }
+
+    It "runs normally when the gate does not say shutdown" {
+        $gate = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
+        $gate['active'] = 'token-2'
+        Set-Variable -Name ToolLaneGate -Value $gate
+        $result = Invoke-DevKitRpcMethod -Method 'tool.run' -Params ([pscustomobject]@{ folder = 'demo'; script = 'Mark.ps1'; args = @(); runId = 's2'; __toolLaneToken = 'token-2' }) -EmitEvent $script:Emit
+        $result.exitCode | Should -Be 0
+        Test-Path -LiteralPath $script:Marker | Should -BeTrue
+    }
+}

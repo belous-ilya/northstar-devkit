@@ -1212,6 +1212,15 @@ function Invoke-DevKitRpcMethod {
             # outside the sidecar - un-gated, like $RunRegistry).
             $gateToken = [string](Get-DevKitRpcParam $Params '__toolLaneToken' '')
             try {
+                # Shutdown has begun (the main thread marks the gate before it
+                # drains the lanes). A run that was still waiting in this
+                # lane's queue - most likely behind the lane's own start-up -
+                # must not begin now: the shutdown sweep has already looked
+                # for running tools and would never see this one, so it would
+                # outlive the sidecar holding its port.
+                if ($null -ne $ToolLaneGate -and $ToolLaneGate.ContainsKey('shutdown')) {
+                    throw 'DevKit is shutting down; the tool was not started.'
+                }
                 $folder = [string](Get-DevKitRpcParam $Params 'folder' '')
                 $script = [string](Get-DevKitRpcParam $Params 'script' '')
                 $toolArgs = @(Get-DevKitRpcParam $Params 'args' @())

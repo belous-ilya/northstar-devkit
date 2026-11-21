@@ -735,6 +735,11 @@ while (-not $shuttingDown) {
 # here is what lets the tool lane unwind and the drain finish promptly. The
 # stop routine lives in RpcMethods.ps1, which this thread has had no reason
 # to load until now; it is dot-sourced only when there is something to stop.
+# Marked before anything else: a tool.run still in the tool lane's queue
+# (waiting out that lane's start-up, now that lanes start on first use) reads
+# this and refuses to start, instead of starting after the sweep below has
+# already looked.
+$script:ToolLaneGate['shutdown'] = '1'
 if ($script:RunRegistry.Count -gt 0) {
     try {
         . $script:MethodsScriptPath
