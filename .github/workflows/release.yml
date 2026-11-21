@@ -130,10 +130,9 @@ jobs:
       # beforeBuildCommand is still plain `pnpm build` and its bundle
       # resources do not list "bin/devkit.exe", so the exe staged here is
       # simply ignored by the installer and an installed app has no
-      # <installroot>\devkit.exe. tools/system/Install-ShellIntegration.ps1
-      # and Register-DevKitTerminalProfile.ps1 both probe that path first and
-      # hard-exit when it is missing, so shell/terminal integration works
-      # only from a source checkout for now.
+      # <installroot>\devkit.exe. (The shell-integration and Windows Terminal
+      # profile scripts that needed it were deleted on 2026-11-21 for that
+      # reason; they return from git history when the CLI is bundled.)
       #
       # This step is kept because it compiles the CLI on every release tag -
       # a CLI compile error shows up as its own red step with its own log

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion, MotionConfig } from "framer-motion";
@@ -6,6 +6,8 @@ import clsx from "clsx";
 import { useSyncAnimationsAttribute } from "../../hooks/useSyncAnimationsAttribute";
 import { useAnimationsPreference } from "../../hooks/useApplyAppearance";
 import { useUpdateCheck } from "../../hooks/useUpdateCheck";
+import { useElevationTaskRepair } from "../../hooks/useElevationTaskRepair";
+import { setPollingSuspended } from "../../hooks/usePollGate";
 import { bootAppearanceHint } from "../../lib/appearance";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import type { DevKitPreferences } from "../../lib/types";
@@ -36,9 +38,15 @@ import { NotesOnDeckPanel } from "./panels/NotesOnDeckPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { QuickActionsPanel } from "./panels/QuickActionsPanel";
 import { TerminalPanel } from "./panels/TerminalPanel";
-import { ControlCenterApp } from "../control-center/ControlCenterApp";
 import { staggerContainerVariants, staggerItemVariants, slideItemVariants } from "./panels/motion";
 import "./WidgetApp.css";
+
+// The Control Center tray mounts on first open (FlyoutPaneStack), so its
+// code is loaded then too. The standalone Control Center window already
+// imports the same module on its own (main.tsx), so this is the same chunk.
+const ControlCenterApp = lazy(() =>
+  import("../control-center/ControlCenterApp").then((module) => ({ default: module.ControlCenterApp })),
+);
 
 /** Chevron pointing toward the docked edge (collapse direction). */
 function CollapseChevron({ side }: { side: "Left" | "Right" }) {
@@ -228,6 +236,13 @@ export function WidgetApp() {
   // `WidgetState::collapsed` in commands.rs is the authority, because Rust is
   // what actually parks the OS window off its edge.
   const [collapsed, setCollapsed] = useState(false);
+  // Collapsed to the sliver, every panel is parked off the edge of the
+  // monitor while the OS window stays "visible" - so tell the poll gate, or
+  // the sidecar keeps answering queries nobody can see. See usePollGate.
+  useEffect(() => {
+    setPollingSuspended(collapsed);
+    return () => setPollingSuspended(false);
+  }, [collapsed]);
   /** The Node & Ports Expander's open state - gates its 3s poll (see below). */
   const [nodePortsOpen, setNodePortsOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement | null>(null);
@@ -291,7 +306,11 @@ export function WidgetApp() {
         id: "control-center",
         label: "Control Center",
         icon: <RailIcon name="devkit" theme={iconTheme} size={15} />,
-        content: <ControlCenterApp embedded />,
+        content: (
+          <Suspense fallback={<div className="panel-empty">Loading Control Center...</div>}>
+            <ControlCenterApp embedded />
+          </Suspense>
+        ),
         fill: true,
       },
     ],
@@ -533,6 +552,8 @@ export function WidgetApp() {
   // Updates" button reads/drives useUpdaterStore directly instead of
   // calling this hook again.
   const updateCheck = useUpdateCheck();
+  // Same one-call-site rule as the update check above.
+  useElevationTaskRepair();
   const showUpdateDialog =
     updateCheck.status === "downloading" ||
     updateCheck.status === "installing" ||

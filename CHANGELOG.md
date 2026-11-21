@@ -2,6 +2,280 @@
 
 All notable changes to Northstar DevKit are documented here.
 
+## [Unreleased]
+
+The lightening pass: the tool catalog is cut to what gets used, the WiFi
+tools are rebuilt to diagnose before they change anything, and a sweep of
+the whole app fixes the first batch of what it found.
+
+### Removed
+
+- **Five tool categories are gone from the catalog and the repo** - the
+  catalog drops from 12 categories and 67 items to 7 and 33. Deleted
+  outright: Maintenance (14 tools), Agents & MCP (7), and the System
+  (PATH, environment backup/restore, shell reload, hosts file), Workflow
+  (open in editor, open repo, `.env` copy/compare, text converter) and
+  Diagnostics (System Dev Info, update check) menu entries, with their
+  `.bat` wrappers, manifests and tests, plus the two MCP helper libraries
+  only they used. Doctor and Close-Out stay as tiles on the widget; the MCP
+  Servers tray is unaffected. Every removed file is in git history.
+- The shell-integration and Windows Terminal profile scripts in
+  `tools/system/`: nothing called them, and they stopped with "devkit.exe
+  not found" on every installed copy because the installer does not ship
+  the command-line tool. They return from git history if it is ever
+  bundled.
+
+### Changed
+
+- **The WiFi optimizer now measures first and fixes only what is wrong.**
+  It used to run a full Winsock + TCP/IP reset on every use - dropping the
+  connection and asking for a restart - whatever the actual problem was,
+  and never checked the result. It now measures signal, the router, the
+  internet and DNS; reports what it finds in plain words; applies only the
+  fixes those measurements call for (clear the DNS cache, switch DNS,
+  renew the address, restart the adapter), least invasive first; then
+  measures again and shows before and after. A healthy connection gets no
+  changes at all, and problems no setting can repair (weak signal, a
+  crowded channel, an outage past the router) are reported, not "fixed".
+  The stack reset is now its own item, WiFi Deep Reset.
+- **DNS is chosen by timing real lookups** against the servers in use and
+  against Cloudflare, Google, Quad9 and OpenDNS. The old choice came from
+  two pings each to two providers and never asked whether the DNS already
+  in use was better than both. DNS is never changed behind a sign-in page,
+  and a switch that turns out slower or broken is rolled back by itself.
+- New WiFi Check item: the same measurements and diagnosis, read-only, no
+  administrator rights needed, with a download and upload speed test.
+- The WiFi scanner requests a fresh scan instead of printing Windows'
+  cached list, shows the band (2.4 / 5 / 6 GHz), marks the network you are
+  on, reports crowded channels (overlapping 2.4 GHz neighbours and the
+  airtime access points themselves report), and points out a faster or
+  stronger access point of your own network when one is in range.
+- Renewing the address is scoped to the WiFi adapter; it used to release
+  every adapter, Ethernet included.
+- **Docker Nuke keeps volumes unless you pick the item that says
+  otherwise.** One click used to delete every volume - local database data
+  included - behind a generic confirmation. There are now two items: the
+  default removes containers and images and keeps volumes; "Everything,
+  Including Volumes" is separate and says what it costs.
+- Tools that have a preview now offer it in the Run dialog (Docker Nuke,
+  Docker Cleanup, Git Cleanup), and the options their help text always
+  advertised are finally reachable there: keep images, unused volumes,
+  rebase, reinstall, port, skip install, skip build, delete-or-report.
+- Git Cleanup runs a plain `git gc`. It used to run
+  `gc --aggressive --prune=now` every time, deleting every unreachable
+  object immediately; that is now the explicit `-Aggressive` switch.
+- Clear NPM Cache and Check NPM Cache Size act on the active project's
+  package manager instead of always falling back to npm.
+- Run Package Script no longer asks "this cannot be undone" before every
+  `npm run dev`.
+- Panels stop polling while the docked widget is collapsed to its sliver,
+  and refresh once when they come back into view instead of showing
+  pre-hide data as live for a full interval.
+- The bundled logo shrank from 1,977 kB to 46 kB (it was shipped at
+  1254 px and displayed at 56).
+- **The gauges cost about a five-hundredth of what they did.** The CPU
+  reading went through WMI, which waits a full second per query, so the
+  sidecar spent half of every 2-second poll on it. CPU, memory and the
+  listening-ports table are now read straight from Windows: the system
+  poll takes about 2 ms instead of about 1,100, the Node/ports poll about
+  6 ms instead of 130, and the top-CPU list about 20 ms instead of 1,090
+  (it compares with its previous reading instead of sleeping a second).
+  WMI remains the fallback where the direct read is unavailable.
+- Run history: Stop is offered on any row that may still be running, in
+  every window, including after a reload. It used to exist only in the
+  dialog that started the run.
+- A folder in the Files panel is re-read every time it is opened (the
+  listing already on screen stays until the fresh one arrives).
+- The widget loads about a quarter of the code it used to at startup
+  (110 kB instead of 450 kB): the terminal and the embedded Control Center
+  are fetched the first time they are opened.
+- Docker previews name what holds data. Dry runs of Docker Nuke and Docker
+  Cleanup now list the volumes (and networks) they would remove; they used
+  to list containers and images only. Docker Cleanup counts only the
+  volumes it can actually remove (unused anonymous ones on Docker 23+).
+- Docker Nuke's confirmation says what that run will destroy. It used to
+  say "containers, images, volumes, and networks" even for the item that
+  keeps volumes.
+- Git Cleanup never offers `staging`, `production`, `prod`, `dev`,
+  `release`, `gh-pages` or anything under `release/` or `hotfix/` for
+  deletion (it protected only `main`, `master` and `develop`). It works
+  from a folder below the repository root, and names the repository it
+  is about to clean.
+- Every destructive tool asks through one shared prompt. Where nobody can
+  answer (a run from the Control Center without approval) it declines
+  instead of crashing. Which tools ask, and when, is unchanged.
+- The update check runs once a day in an app that stays open. It ran only
+  at startup, so a widget left running for weeks never saw a release.
+- **Switching projects no longer kills the embedded terminal.** The
+  session, and anything running in it, stays where it was started. The
+  header shows which folder it is in and offers "Move to <project>" when
+  the active project has changed.
+- The in-app updater, and every link in the app and the docs, now point
+  at `github.com/belous-ilya/northstar-devkit`. The account was renamed
+  and the old address only worked through GitHub's redirect; versions
+  before this one keep using that redirect until they update once.
+
+### Fixed
+
+- **DevKit and everything it started ran throttled.** Since 4.7.0 every
+  launch goes through a scheduled task, and that task was registered with
+  Windows' defaults for background jobs: below-normal CPU priority, low
+  disk I/O priority and low memory priority, inherited by the sidecar,
+  every tool and the embedded terminal. The task now asks for normal
+  priority. Existing installs are repaired automatically on their first
+  start with this version (in full from the start after that), and the
+  app restores normal CPU and memory priority itself at startup.
+- **Updating never removed anything.** The installer only adds and
+  overwrites, so a tool deleted from DevKit stayed on disk, and in the
+  catalog, on every install that updated. After installing, the installer
+  now removes the files earlier releases shipped under `core` and `tools`
+  that this one does not - exactly those, by name, so a file of your own
+  in the install folder is never touched. This is what makes the smaller
+  catalog above actually arrive on an existing install.
+- **Launching DevKit while it was already running did nothing.** The same
+  task ignored a second start. It now lets it through, so the running
+  window comes forward as intended.
+- **The Close-Out confirmation no longer covers the run.** The confirm
+  dialog stayed up, blurred and undismissable, until the tool finished,
+  hiding the live output it had just started. Same fix for caution tools
+  in the Control Center, where it also covered the Stop button.
+- **Saving a note could delete every other project's notes.** When the
+  notes file could not be read at the moment of a save (antivirus, a sync
+  client, a write still in flight), the save rebuilt the file with only the
+  project being saved. An unreadable file now fails the save; a corrupt one
+  is copied aside before it is rebuilt; writes are atomic. Same for On Deck.
+- **Kill Port, Kill All Node and Scan Ports could stop Windows itself.**
+  DevKit runs elevated, and the only guards were pids 0 and 4 - killing by
+  port 135 targeted a system service whose death forces a shutdown. They
+  now refuse the processes Windows needs and DevKit's own process tree,
+  the same rules Close-Out already had.
+- A kill that failed (access denied, already gone) was reported as done
+  with exit code 0; the tools now check, and the widget's kill buttons
+  show the reason instead of silently doing nothing.
+- Port tools reported "PID 0 (Idle)" as the owner of a port nothing was
+  listening on for about two minutes after a dev server stopped.
+- WiFi "Undo DNS" restored the wrong settings after a second optimizer
+  run (the undo file had been overwritten with DevKit's own choice), and
+  pinned a network's DNS as static when it had been automatic - leaving no
+  working DNS on the next network. The original settings are now kept
+  across runs, and automatic is restored as automatic.
+- The WiFi scanner credited a hidden network's access points to the
+  network listed above it, and could label an open network "best secured".
+- The Error Center listed Windows events in scrambled order once there
+  were more than about sixteen.
+- Opening another tool while a run dialog was open showed the new tool's
+  form over the old tool's console and Stop button.
+- The admin badge polled the sidecar every minute for a value that cannot
+  change while the app runs.
+- **Quitting DevKit left a running tool behind.** A tool still running at
+  exit (a dev server, a long build) survived the app, kept its port, and
+  held the exit up for 5 to 9 seconds. The background process now stops
+  its tool, and everything that tool started, before it exits.
+- **Errors from a running tool were invisible until it ended** - and for a
+  tool that never ends, never shown. A Next or Vite compile error now
+  appears in the Run dialog as it happens.
+- Non-English text in tool output (a path under `C:\Users\José`, any
+  non-Latin text) arrived as `?` or a replacement character.
+- A settings or project-list file that could not be READ for an instant
+  (another DevKit process replacing it, antivirus) was treated as corrupt:
+  quarantined and reset to defaults. And a save that could not read the
+  file first replaced it with the one setting being saved. Unreadable is
+  now told apart from corrupt, and a save that cannot see the file fails
+  instead of overwriting it.
+- **Nuke-and-Reinstall and Next.js Full Clean could leave a project with
+  neither `node_modules` nor a lock file**: they deleted both before
+  finding out the package manager was missing or the install failed. They
+  now check first, stop if `node_modules` is locked by a running process
+  (it used to be reported as "skipped"), and put the lock files back when
+  the install fails.
+- Removing a `node_modules` that is a junction emptied the folder it
+  pointed at; only the link is removed now.
+- **Sync Fork with rebase could silently overwrite commits on your fork**:
+  it fetched the fork just before force-pushing, which made
+  `--force-with-lease` protect nothing. The fork's tip is now recorded
+  before the rebase, the sync refuses when the fork has commits the
+  checkout lacks, and the push is pinned to that exact commit.
+- Build-and-Preview deleted the previous `dist` when the project builds to
+  a different folder; it now notices, restores it, and says which option
+  to set. It also refuses an output folder that holds source files.
+- **The Git panel's background refresh could make your own `git add` or
+  `git commit` fail** with "index.lock: File exists". Its `git status`
+  took the index lock every few seconds; it now reads without locking.
+- Run history disagreed between the widget and the Control Center: a run
+  that finished in one window could stay "running" in the other, and a
+  cleared or removed row came back when the other window saved. Windows
+  now merge by outcome and remember what was cleared.
+- A project picked before the sidecar was ready stayed "No linked
+  projects" for the whole session, and a folder that became a git
+  repository after it was selected stayed "not a repository" until
+  re-selected. Both now recover on their own.
+- **"Check NPM Cache Size" changed the cache.** For npm it ran
+  `npm cache verify`, which garbage-collects the cache and rewrites its
+  index (minutes on a large one). It now only measures the folder. Yarn 2+
+  projects are measured too; they used to report no cache.
+- **Docker Cleanup said "Nothing to clean up!" with build cache to
+  reclaim.** Docker prints that row without a percentage, the tool
+  required one, and the cache always counted as zero. Its "Estimated
+  reclaimable" figure also promised space that the default mode never
+  frees (images no container uses); it is now labelled as such.
+- Docker Nuke and Docker Cleanup, Git Cleanup: a step that failed still
+  ended in "COMPLETE" / "cleaned" with exit code 0. They now say so and
+  exit non-zero.
+- Docker Nuke failed outright on a machine with a few hundred volumes or
+  images (the id list overflowed the Windows command line), skipped most
+  named volumes in its output, and removed containers started after you
+  confirmed.
+- Kill Port run without a port died in PowerShell's parameter binder
+  instead of saying no port was given.
+- Files and Notes kept polling inside a closed tray when the widget
+  started with no project selected.
+- **Note and On-Deck timestamps were being rewritten, and a note that
+  looked like a timestamp was changed.** PowerShell 7 reads any
+  date-shaped text in a JSON file as a date, and DevKit wrote it back as
+  `11/21/2026 10:00:00`: the time zone was dropped, and text such as
+  `2026-11-21T10:00:00+02:00` came back shifted to local time. Text and
+  timestamps are now stored and returned exactly as written. Values
+  already rewritten stay as they are (the original cannot be recovered);
+  nothing in the app reads them.
+- **Stop pressed right after Run did nothing.** In the moment between a
+  tool being accepted and its process existing, Stop was answered "that
+  run is no longer active" and the tool then started and ran. The stop is
+  now held and applied the instant the tool has started.
+- If the tool lane failed to start, the first tool run reported it and
+  every later one was refused as "a tool is already running" until the
+  app was restarted. The lane is released properly now.
+- If the sidecar's output writer died, every panel timed out after 60
+  seconds with nothing logged. The sidecar now notices and restarts.
+
+### Security
+
+- `tool.run` executed any `.ps1` it was given a path to, elevated. It now
+  runs only scripts inside the tools folder.
+- **The Git panel's background refresh and fetch ran programs the
+  project itself named, as Administrator.** A `core.fsmonitor` hook path
+  in a project's `.git/config`, or a script dropped into `.git/hooks`,
+  was executed by DevKit's own polling with nobody clicking anything
+  (both reproduced). Those calls now run with hooks, the file-monitor
+  hook, `ext::` and `git://` remotes, a custom upload-pack program,
+  external diff and signature programs switched off. A custom `core.sshCommand` and
+  `.gitattributes` filter drivers (git-lfs) are still honoured, because
+  switching them off breaks ordinary setups.
+- Uninstalling left the scheduled task that starts DevKit as
+  Administrator behind, pointing at the now-empty install folder. The
+  uninstaller removes it, asking for administrator rights once if the
+  plain removal is refused.
+- SECURITY.md and the README now say plainly what an always-elevated
+  DevKit means: any program running as your Windows user can become
+  Administrator through it. The measures above are hardening, not a
+  boundary.
+- Dependencies. The `zip` library (one critical, one high and one medium
+  advisory) is no longer part of DevKit at all: it came in through an
+  updater feature for zip-wrapped updates, which DevKit never publishes.
+  rustls, vite, vitest and source-map-js are updated past their
+  advisories, and Tauri moves to 2.12. One advisory stays open by
+  necessity: `glib`, which belongs to the Linux build of a dependency and
+  is never compiled into DevKit.
+
 ## [4.7.0] - 2026-09-20
 
 DevKit becomes an admin-only application: a startup gate makes every
@@ -527,8 +801,8 @@ nothing. USB/ portable builds remain supported via
   CPU/MEM/GPU dialogs became carousel flyout panels (same slide machinery
   as the other tabs) instead of floating popup windows.
 - **Click-to-expand commit details** (widget GIT flyout): every commit row
-  on the graph toggles an inline details card under it - full hash, author
-  + date, the FULL multi-line message, and per-file `+/-` stats - fetched
+  on the graph toggles an inline details card under it - full hash, author +
+  date, the FULL multi-line message, and per-file `+/-` stats - fetched
   lazily via a new `CommitDetails` work-runspace job and parsed by the
   Pester-covered `ConvertFrom-DevKitGitShow`. Selection survives graph
   refreshes and resets on project switch. Also fixes the earlier

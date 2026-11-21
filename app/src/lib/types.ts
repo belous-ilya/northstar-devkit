@@ -130,6 +130,46 @@ export interface FreeMemoryResult {
   Note: string;
 }
 
+// ---------- process.kill (Stop-DevKitProcessById in
+// core/DevKit-WidgetCore.ps1) ----------
+// That function NEVER throws: a refused kill (system process), a vanished pid
+// and an access-denied all come back as a resolved { Stopped: false, Note }.
+// A caller that only handles a rejected RPC reports every one of them as
+// success - read Stopped.
+export interface ProcessKillResult {
+  Stopped: boolean;
+  Note: string;
+}
+
+// ---------- system.repairElevationTask (Repair-DevKitElevationTaskSettings
+// in tools/lib/DevKit-Common.ps1) ----------
+export interface ElevationTaskRepairResult {
+  /** `absent`: no elevation task (a dev build). `current`: nothing to do. `repaired`: changed, effective next start. */
+  status: "absent" | "current" | "repaired" | "failed";
+  priority: number | null;
+  multipleInstances: string | null;
+  message: string;
+}
+
+// ---------- tool.stop (New-DevKitToolStopResult in core/RpcMethods.ps1,
+// which is also where `message` is worded) ----------
+// `notFound` and `alreadyExited` are ordinary outcomes of the
+// click-versus-finish race, not failures: the sidecar returns them as a
+// SUCCESSFUL result precisely so the UI can report them as a fact rather
+// than as an error.
+export interface ToolStopResult {
+  runId: string;
+  stopped: boolean;
+  /** `pending`: the run was still being started - it will be stopped as soon as it has a process, and reports `tool.finished` then. */
+  reason: "stopped" | "notFound" | "alreadyExited" | "failed" | "pending";
+  processId: number;
+  killedProcessIds: number[];
+  killedCount: number;
+  /** False when the kill landed but the run still has not reported completion - something is holding its stdout pipe. */
+  laneReleased: boolean;
+  message: string;
+}
+
 // ---------- catalog.get (verified live) ----------
 export interface ToolPrompt {
   Name: string;

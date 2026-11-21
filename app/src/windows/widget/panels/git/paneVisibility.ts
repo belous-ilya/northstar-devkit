@@ -19,12 +19,27 @@ const PANE_SELECTOR = ".widget-flyout__pane";
  *
  * No pane ancestor at all - the floating widget renders these panels inline
  * in the column - means "always visible".
+ *
+ * The ref's element is tracked, not read once at mount: Files and Notes
+ * render nothing until a project is selected, so at mount there was no
+ * element to find a pane from. The hook then answered "always visible" and,
+ * with the ref object itself never changing, never looked again - those two
+ * panels kept polling inside a shut tray for the rest of the session
+ * whenever the widget started with no project selected.
  */
 export function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
   const [visible, setVisible] = useState(true);
+  const [element, setElement] = useState<HTMLElement | null>(null);
+
+  // No dependency list on purpose: a ref changing its target does not cause
+  // a render or announce itself, so this compares on every commit (one
+  // pointer comparison) and only sets state when the target really changed.
+  useEffect(() => {
+    if (ref.current !== element) setElement(ref.current);
+  });
 
   useEffect(() => {
-    const pane = ref.current?.closest(PANE_SELECTOR);
+    const pane = element?.closest(PANE_SELECTOR);
     if (!(pane instanceof HTMLElement)) {
       setVisible(true);
       return;
@@ -34,7 +49,7 @@ export function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
     const observer = new MutationObserver(read);
     observer.observe(pane, { attributes: true, attributeFilter: ["aria-hidden"] });
     return () => observer.disconnect();
-  }, [ref]);
+  }, [element]);
 
   return visible;
 }

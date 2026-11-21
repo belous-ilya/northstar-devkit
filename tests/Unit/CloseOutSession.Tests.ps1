@@ -7,13 +7,13 @@
     of their inputs - the run plan, the port list, the ancestry walk and the
     protect-or-stop predicate that decide what may be killed, the docker
     "Total reclaimed space" parser, and the SUMMARY builder - plus the
-    manifest contract (workflow/_module.psd1) that the CLI menu and the
-    Control Center both render.
+    contract with the widget's Quick Actions panel, the tool's only caller
+    in the app (it is no longer a catalog item, so there is no manifest).
 
     NOTHING HERE STOPS A PROCESS OR DELETES A REAL FILE. Dot-sourcing
     Close-OutSession.ps1 is safe: the script returns immediately after
     defining its helpers when its InvocationName is '.' (the same guard
-    WiFi-Scan.ps1 and Copy-EnvTemplate.ps1 use), so no plan is built, no
+    WiFi-Scan.ps1 uses), so no plan is built, no
     prompt is shown, and no cleanup step runs. The only filesystem test
     measures files this file creates under TestDrive.
 .NOTES
@@ -25,7 +25,7 @@
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     $script:ScriptPath = Join-Path $script:RepoRoot 'tools\workflow\Close-OutSession.ps1'
-    $script:ManifestPath = Join-Path $script:RepoRoot 'tools\workflow\_module.psd1'
+    $script:PanelPath = Join-Path $script:RepoRoot 'app\src\windows\widget\panels\QuickActionsPanel.tsx'
 
     # See Get-DevKitPackageManager.Tests.ps1 for why this load-once flag gets
     # reset when several test files share one Pester process.
@@ -508,12 +508,16 @@ Describe "Get-DevKitCloseOutRecycleItemSize" {
     }
 }
 
-Describe "workflow/_module.psd1 registration" {
+Describe "the Quick Actions panel contract" {
+
+    # Close-Out is launched from exactly one place in the app: the widget's
+    # Quick Actions panel, which builds the argument list by hand. Nothing
+    # generates one side from the other, and an argument the script does not
+    # declare is a hard parameter-binding error under `pwsh -File` - the tile
+    # would fail on every press. So this reads the switches straight out of
+    # the panel source and holds the script to them.
 
     BeforeAll {
-        $script:Manifest = Import-PowerShellDataFile -Path $script:ManifestPath
-        $script:CloseOutItems = @($script:Manifest.Items | Where-Object { $_.Script -eq 'Close-OutSession.ps1' })
-
         $parseErrors = $null
         $tokens = $null
         $script:ScriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -521,81 +525,32 @@ Describe "workflow/_module.psd1 registration" {
         $script:ParseErrors = $parseErrors
         $script:ParamNames = @($script:ScriptAst.ParamBlock.Parameters |
             ForEach-Object { $_.Name.VariablePath.UserPath })
+
+        $panelSource = Get-Content -LiteralPath $script:PanelPath -Raw
+        $script:PanelSwitches = @([regex]::Matches($panelSource, '"-([A-Z][A-Za-z]+)"') |
+            ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
     }
 
     It "parses with no syntax errors" {
         @($script:ParseErrors).Count | Should -Be 0
     }
 
-    It "registers the tool three times: the real run, the dry-run preview, and the deep variant" {
-        $script:CloseOutItems.Count | Should -Be 3
-    }
-
-    It "gives every item a unique key within the module" {
-        $keys = @($script:Manifest.Items | ForEach-Object { $_.Key })
-        @($keys | Select-Object -Unique).Count | Should -Be $keys.Count
-    }
-
-    It "does not require a project - system cleanup runs with nothing selected" {
-        foreach ($item in $script:CloseOutItems) {
-            [bool]$item.RequiresProject | Should -Be $false
-        }
-    }
-
-    It "flags the real run as caution, because it really does stop and delete things" {
-        $real = $script:CloseOutItems | Where-Object { -not $_.StaticArgs }
-        $real.Help | Should -Match 'Safety note:'
-    }
-
-    It "does NOT flag the dry-run preview as caution, because it changes nothing" {
-        $preview = $script:CloseOutItems | Where-Object { $_.StaticArgs -and $_.StaticArgs.ContainsKey('DryRun') }
-        $preview | Should -Not -BeNullOrEmpty
-        $preview.StaticArgs.DryRun | Should -Be $true
-        $preview.Help | Should -Not -Match 'Safety note:'
-    }
-
-    It "flags the deep variant as caution and turns on exactly its two opt-in switches" {
-        $deep = @($script:CloseOutItems | Where-Object { $_.StaticArgs -and $_.StaticArgs.ContainsKey('IncludeRecycleBin') })
-        $deep.Count | Should -Be 1
-        $deep[0].Help | Should -Match 'Safety note:'
-        $deep[0].StaticArgs.IncludeRecycleBin | Should -Be $true
-        $deep[0].StaticArgs.IncludePackageCache | Should -Be $true
-        # The deep variant must not sneak in the dry-run switch - it is a
-        # real run with extra scope, not a second preview.
-        $deep[0].StaticArgs.ContainsKey('DryRun') | Should -Be $false
-    }
-
-    It "declares -Force, which is what lets the Control Center's confirm dialog run it" {
+    It "declares -Force, which is what lets the app's confirm dialog run it" {
+        # Never sent literally: the panel sends `confirmed`, and the sidecar
+        # appends -Force only because the script declares it.
         $script:ParamNames | Should -Contain 'Force'
     }
 
-    It "declares -DryRun, the parameter the preview item's StaticArgs sets" {
-        $script:ParamNames | Should -Contain 'DryRun'
-    }
-
-    It "only ever declares StaticArgs the script actually has parameters for" {
-        foreach ($item in $script:CloseOutItems) {
-            if (-not $item.StaticArgs) { continue }
-            foreach ($key in $item.StaticArgs.Keys) {
-                $script:ParamNames | Should -Contain $key
-            }
+    It "finds the switches the panel sends" {
+        # Guards the extraction itself - a refactor that moves the argument
+        # list out of the panel must not leave the next test vacuously green.
+        foreach ($switchName in @('DryRun', 'IncludeRecycleBin', 'IncludePackageCache', 'ProjectPath')) {
+            $script:PanelSwitches | Should -Contain $switchName
         }
     }
 
-    It "only ever declares Prompts the script actually has parameters for" {
-        foreach ($item in $script:CloseOutItems) {
-            foreach ($prompt in @($item.Prompts)) {
-                if (-not $prompt) { continue }
-                $script:ParamNames | Should -Contain $prompt.Name
-                $prompt.Type | Should -BeIn @('Int', 'String', 'YesNo')
-            }
-        }
-    }
-
-    It "documents each opt-in switch it names in the real run's help" {
-        $real = $script:CloseOutItems | Where-Object { -not $_.StaticArgs }
-        foreach ($switchName in @('IncludeRecycleBin', 'IncludeDocker', 'IncludePackageCache', 'IncludeDatabasePorts', 'KillAnyPortOwner', 'ProjectPath')) {
-            $real.Help | Should -Match "-$switchName"
+    It "declares every switch the panel sends" {
+        foreach ($switchName in $script:PanelSwitches) {
             $script:ParamNames | Should -Contain $switchName
         }
     }

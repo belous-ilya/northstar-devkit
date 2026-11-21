@@ -74,6 +74,15 @@ if (-not $isOutDirInsideProject) {
     exit 1
 }
 
+# "Inside the project" is not enough: this tool RENAMES OutDir out of the way
+# before building, so pointing it at a folder that is not build output would
+# move the project's own source aside.
+$outDirTopLevel = ($outDirFull.Substring($projectRoot.Length).TrimStart('\', '/') -split '[\\/]')[0]
+if (@('src', 'public', 'node_modules', '.git', '.github', '.vscode') -contains $outDirTopLevel.ToLowerInvariant()) {
+    Write-DevKitError "OutDir '$OutDir' is not a build-output folder ('$outDirTopLevel' holds project files). Refusing to proceed."
+    exit 1
+}
+
 try {
     Push-Location $targetPath
 
@@ -159,11 +168,9 @@ try {
             default { $buildArgs = @("run", "build") }
         }
 
-        $buildOutput = & $manager.Command @buildArgs 2>&1
-        $buildExitCode = $LASTEXITCODE
-
-        # Show build output with formatting
-        $buildOutput | ForEach-Object {
+        # Streamed line by line, not collected and printed at the end: a
+        # long build used to show nothing at all until it finished.
+        & $manager.Command @buildArgs 2>&1 | ForEach-Object {
             if ($_ -match "\berror\b|ERR!") {
                 Write-Host "  $_" -ForegroundColor Red
             } elseif ($_ -match "\b(warning)\b") {
@@ -174,6 +181,7 @@ try {
                 Write-Host "  $_" -ForegroundColor Gray
             }
         }
+        $buildExitCode = $LASTEXITCODE
 
         if ($buildExitCode -ne 0) {
             Write-Host "`n  ERROR: Build failed with exit code $buildExitCode`n" -ForegroundColor Red
@@ -190,9 +198,24 @@ try {
             exit 1
         }
 
+        # The build ran through the project's own script, so WHERE it wrote
+        # is decided by vite.config (build.outDir), not by -OutDir. If it did
+        # not (re)create OutDir, it wrote somewhere else - and deleting the
+        # backup now would leave the project with the previous build gone
+        # and nothing in its place. Put the backup back and say so.
+        if (-not (Test-Path $outDirFull)) {
+            if ($backupPath -and (Test-Path $backupPath)) {
+                Rename-Item -Path $backupPath -NewName (Split-Path $outDirFull -Leaf)
+            }
+            Write-Host "`n  ERROR: The build succeeded but did not write to '$OutDir'." -ForegroundColor Red
+            Write-Host "  This project builds to a different folder (build.outDir in vite.config)." -ForegroundColor Yellow
+            Write-Host "  Re-run with -OutDir set to that folder. The previous '$OutDir' was left as it was.`n" -ForegroundColor Yellow
+            exit 1
+        }
+
         Write-Host "`n  DONE: Build completed successfully." -ForegroundColor Green
 
-        # Build succeeded - the backup is no longer needed.
+        # Build succeeded and landed where expected - the backup is no longer needed.
         if ($backupPath -and (Test-Path $backupPath)) {
             Remove-Item -Path $backupPath -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -262,11 +285,19 @@ try {
     Write-Host "  Press Ctrl+C to stop" -ForegroundColor Gray
     Write-Host "  ===================================`n" -ForegroundColor Cyan
 
+    # --outDir is passed so the server serves the folder this tool just
+    # verified, whatever vite.config's own default is.
     switch ($manager.Command) {
-        "pnpm" { & pnpm exec vite preview --port $Port }
-        "yarn" { & yarn vite preview --port $Port }
-        "bun"  { & bunx vite preview --port $Port }
-        default { & npx vite preview --port $Port }
+        "pnpm" { & pnpm exec vite preview --port $Port --outDir $OutDir }
+        "yarn" { & yarn vite preview --port $Port --outDir $OutDir }
+        "bun"  { & bunx vite preview --port $Port --outDir $OutDir }
+        default { & npx vite preview --port $Port --outDir $OutDir }
+    }
+    # A server that dies on start (port refused, bad config) is a failure,
+    # not a clean exit.
+    if ($LASTEXITCODE -ne 0) {
+        Write-DevKitError "The preview server exited with code $LASTEXITCODE."
+        exit $LASTEXITCODE
     }
 } catch {
     Write-DevKitError $_

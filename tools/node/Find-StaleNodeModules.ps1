@@ -171,25 +171,34 @@ try {
 
     Write-Host ""
     $deleted = 0
+    $failed = 0
     foreach ($r in $results) {
         $projectDir = Split-Path -Parent $r.Path
         Write-DevKitStep "Deleting $($r.Path)"
         try {
-            if (Remove-DevKitNodeModules -Path $projectDir) {
-                Write-DevKitDone
-                $deleted++
-            } else {
-                Write-DevKitSkip
+            switch (Remove-DevKitNodeModulesWithStatus -Path $projectDir) {
+                'Removed' { Write-DevKitDone; $deleted++ }
+                'Absent' { Write-DevKitSkip }
+                default {
+                    Write-Host " FAILED" -ForegroundColor Red
+                    Write-DevKitInfo "Files in it are in use; it was left in place."
+                    $failed++
+                }
             }
         } catch {
             Write-DevKitError $_
+            $failed++
         }
     }
 
     Write-Host ""
-    Write-Host "  Deleted $deleted of $($results.Count) folder(s)." -ForegroundColor Green
+    Write-Host "  Deleted $deleted of $($results.Count) folder(s)." -ForegroundColor $(if ($failed -gt 0) { 'Yellow' } else { 'Green' })
+    if ($failed -gt 0) {
+        Write-Host "  $failed could not be deleted (files in use)." -ForegroundColor Red
+    }
     Write-Host ""
-    exit 0
+    # A run that left folders behind is not a clean success.
+    exit $(if ($failed -gt 0) { 1 } else { 0 })
 } catch {
     Write-DevKitError "Unexpected failure: $_"
     exit 1

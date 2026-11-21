@@ -48,6 +48,12 @@ export const ConfirmDialogContext = createContext<ConfirmDialogContextValue | nu
  * mounted, falls back to running the action immediately rather than
  * silently swallowing the click.
  *
+ * The dialog stays up, busy and undismissable, until the action's promise
+ * settles - right for a short RPC (process.kill), wrong for anything that
+ * launches a streamed tool run: tool.run resolves only when the tool
+ * FINISHES, so returning that promise parks the dialog over the live
+ * console for the whole run. Launch those with `() => { void start(...) }`.
+ *
  * While settings are still loading (settings === null, briefly, right
  * after a window opens - ConfirmDialogHost kicks off the fetch on mount),
  * this defaults to confirming rather than skipping the prompt: the

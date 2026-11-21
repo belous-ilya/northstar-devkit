@@ -25,8 +25,6 @@ import "./ControlCenterApp.css";
 const GROUP_ICON: Record<string, string> = {
   Development: "\u{1F4BB}", // laptop
   "Version Control & Containers": "\u{1F500}", // twisted arrows
-  "System & Workflow": "\u{2699}️", // gear
-  "Maintenance & Agents": "\u{1F9F0}", // toolbox
   Network: "\u{1F4E1}", // satellite antenna
 };
 const ALL_ICON = "\u{1F5C2}️"; // card index dividers
@@ -93,7 +91,11 @@ export function ControlCenterApp({ embedded = false }: { embedded?: boolean }) {
   } = useQuery({
     queryKey: ["catalog.get"],
     queryFn: () => rpcCall<Catalog>("catalog.get"),
-    staleTime: 60_000,
+    // The catalog is the manifests shipped with this install: it cannot
+    // change while the app runs. A 60s staleTime re-read all of them on
+    // the sidecar every time the palette or the drawer was opened a
+    // minute after the last time. Reload (the Retry button) still refetches.
+    staleTime: Infinity,
   });
 
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
@@ -469,6 +471,13 @@ export function ControlCenterApp({ embedded = false }: { embedded?: boolean }) {
           <AnimatePresence>
             {selected && (
               <ToolRunDialog
+                // Keyed by tool: without it, picking another tool while a
+                // dialog is open (the palette opens OVER it) swapped props on
+                // the same instance - tool B's title and form on top of tool
+                // A's console, running state, Stop button and typed values.
+                // A new key unmounts A's dialog, whose cleanup already hands
+                // a live run to the background watcher.
+                key={`${selected.module.folder}/${selected.item.script}/${selected.item.key}`}
                 module={selected.module}
                 item={selected.item}
                 embedded={embedded}

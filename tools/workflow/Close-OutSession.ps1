@@ -7,8 +7,8 @@
     stops the dev processes still running, frees the common dev ports,
     empties disposable temp/junk, and trims every process's working set back
     to the OS. It composes the same logic the individual tools use
-    (Kill-AllNode / Kill-Port / Clear-NpmCache / Clear-DiskJunk /
-    Docker-Cleanup / the widget's Free Memory) instead of reimplementing it.
+    (Kill-AllNode / Kill-Port / Clear-NpmCache / Docker-Cleanup / the
+    widget's Free Memory) instead of reimplementing it.
 
     WHAT A DEFAULT RUN TOUCHES
       - node.exe processes: stopped (SIGKILL-equivalent Stop-Process -Force).
@@ -138,12 +138,9 @@ $script:DevKitCloseOutDevRuntimeNames = @(
 # Belt-and-braces on top of the allowlist: even with -KillAnyPortOwner these
 # are never stopped. Same list Get-DevKitProcessClassification calls 'System'
 # in core/DevKit-WidgetCore.ps1 - Windows misbehaves or dies without them.
-$script:DevKitCloseOutNeverKillNames = @(
-    'system', 'idle', 'registry', 'secure system', 'memory compression',
-    'smss', 'csrss', 'wininit', 'winlogon', 'services', 'svchost', 'lsass',
-    'lsaiso', 'fontdrvhost', 'dwm', 'werfault', 'sihost', 'taskhostw',
-    'runtimebroker', 'msmpeng', 'nissrv', 'searchindexer', 'spoolsv'
-)
+# The list itself lives in tools/lib/DevKit-Common.ps1 so Kill-Port,
+# Kill-AllNode and Scan-Ports refuse exactly the same processes.
+$script:DevKitCloseOutNeverKillNames = @(Get-DevKitNeverKillProcessNames)
 
 # ==================== PURE HELPERS (unit-tested) ====================
 
@@ -152,10 +149,9 @@ function Format-DevKitCloseOutSize {
     .SYNOPSIS
         Byte count as a human-readable size string.
     .DESCRIPTION
-        Script-local on purpose: Clear-DiskJunk.ps1 and
-        Find-StaleNodeModules.ps1 each carry the same private copy because
-        tools/lib has never exported one, and adding a shared helper is a
-        change to a file this tool does not own.
+        Script-local on purpose: Find-StaleNodeModules.ps1 carries the same
+        private copy because tools/lib has never exported one, and adding a
+        shared helper is a change to a file this tool does not own.
     #>
     param([Parameter(Mandatory = $true)][double]$Bytes)
     if ($Bytes -ge 1GB) { return "{0:N2} GB" -f ($Bytes / 1GB) }
@@ -218,25 +214,12 @@ function Get-DevKitCloseOutAncestry {
         [object[]]$Processes = @()
     )
 
-    $byId = @{}
-    foreach ($row in @($Processes)) {
-        if ($null -eq $row) { continue }
-        $rowId = 0
-        if (-not [int]::TryParse([string]$row.ProcessId, [ref]$rowId)) { continue }
-        if (-not $byId.ContainsKey($rowId)) { $byId[$rowId] = $row }
-    }
-
-    $chain = @()
-    $seen = @{}
-    $current = $ProcessId
-    while ($current -gt 0 -and -not $seen.ContainsKey($current)) {
-        $chain += $current
-        $seen[$current] = $true
-        if (-not $byId.ContainsKey($current)) { break }
-        $parent = 0
-        if (-not [int]::TryParse([string]$byId[$current].ParentProcessId, [ref]$parent)) { break }
-        $current = $parent
-    }
+    # One implementation for every kill tool - see Get-DevKitProcessAncestry
+    # in tools/lib/DevKit-Common.ps1.
+    # Assign, then re-emit behind a unary comma: the callee hands back the
+    # array as ONE object, and a bare `return (call)` would unroll a
+    # one-element chain into a scalar on the way out of this function.
+    $chain = Get-DevKitProcessAncestry -ProcessId $ProcessId -Processes $Processes
     return , @($chain)
 }
 
@@ -545,10 +528,9 @@ function Get-DevKitCloseOutPathSize {
     .SYNOPSIS
         Total bytes under a path, or 0 when it is missing or unreadable.
     .DESCRIPTION
-        Same shape as Clear-DiskJunk.ps1's private scanner: an unreadable
-        root (broken reparse point, permission wall) counts as 0 rather than
-        aborting the scan, because a junk measurement failing is never a
-        reason for a cleanup run to fail.
+        An unreadable root (broken reparse point, permission wall) counts
+        as 0 rather than aborting the scan, because a junk measurement
+        failing is never a reason for a cleanup run to fail.
     #>
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 

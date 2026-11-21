@@ -47,8 +47,7 @@ if (-not (Test-Path $nextPath)) {
 }
 
 if (-not $Force) {
-    $confirm = Read-Host "  Delete .next folder? (y/n)"
-    if ($confirm -ne 'y') {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete the .next folder")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

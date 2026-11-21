@@ -5,6 +5,8 @@ import clsx from "clsx";
 import { useApplyAppearance } from "../hooks/useApplyAppearance";
 import { useVisibility } from "../hooks/useVisibility";
 import { useSettingsStore } from "../stores/useSettingsStore";
+import { useProjectStore } from "../stores/useProjectStore";
+import { ensureProjectsLoaded } from "./projects/ensureProjects";
 import { sidecarRestart, sidecarStatus, isElevated } from "../lib/ipc";
 import { playSound } from "../lib/sounds";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -114,6 +116,23 @@ function SidecarHealthIndicator() {
     }
   }, []);
 
+  // The sidecar came back (Restart below, or the host's own respawn). The
+  // polled panels recover by themselves on their next tick, but settings and
+  // the project list are loaded ONCE, at mount - so if that load failed
+  // because the sidecar was not up yet, they stayed empty for good: "No
+  // linked projects", every panel "No project selected", dock settings never
+  // applied. Reload both whenever a known-dead sidecar is seen alive again,
+  // and also on the first "alive" if either load is still marked failed.
+  const previousHealth = useRef<SidecarHealth>("unknown");
+  useEffect(() => {
+    const was = previousHealth.current;
+    previousHealth.current = health;
+    if (health !== "alive") return;
+    const recovered = was === "dead";
+    if (recovered || useProjectStore.getState().loadFailed) void ensureProjectsLoaded(true);
+    if (recovered || useSettingsStore.getState().error !== null) void useSettingsStore.getState().refresh();
+  }, [health]);
+
   // Same contract as every polled panel: nothing runs while the window is
   // hidden, and the first check on becoming visible is immediate.
   useEffect(() => {
@@ -181,7 +200,7 @@ function SidecarHealthIndicator() {
   );
 }
 
-/** Slow poll: elevation is fixed at process start, so this only exists to land the first answer. */
+/** Retry cadence until the first answer lands; after that the indicator never asks again. */
 const ELEVATION_POLL_MS = 60_000;
 
 /**
@@ -206,10 +225,17 @@ function ElevationIndicator() {
     };
   }, []);
 
+  // Elevation is fixed for the life of the process, so one answer is the
+  // answer: `known` ends the retry loop below for good. Until then a failed
+  // check (sidecar still booting) is simply asked again a minute later.
+  const [known, setKnown] = useState(false);
+
   const check = useCallback(async () => {
     try {
       const value = await isElevated();
-      if (mounted.current) setElevated(value);
+      if (!mounted.current) return;
+      setElevated(value);
+      setKnown(true);
     } catch {
       // A failed check means "don't know" - and showing nothing is the
       // honest rendering of that, so there is no error state here.
@@ -217,11 +243,11 @@ function ElevationIndicator() {
   }, []);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || known) return;
     void check();
     const timer = window.setInterval(() => void check(), ELEVATION_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [visible, check]);
+  }, [visible, known, check]);
 
   if (!elevated) return null;
   return (

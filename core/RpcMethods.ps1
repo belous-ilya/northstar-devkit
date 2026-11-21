@@ -147,6 +147,44 @@ function Test-DevKitRpcConfirmedFlag {
     return (([string]$Value).Trim() -ieq 'true')
 }
 
+function Resolve-DevKitToolScriptPath {
+    <#
+    .SYNOPSIS
+        The full path of a tool script for tool.run, or a thrown error when
+        folder/script do not name a .ps1 file inside the tools folder.
+    .DESCRIPTION
+        folder and script arrive from the UI (and from persisted run-history
+        rows), and used to be joined onto the tools root and run as given -
+        so 'folder = ..\..\somewhere' executed any .ps1 on the machine,
+        elevated and with -ExecutionPolicy Bypass. The app's own callers
+        never send that, which is exactly why nothing should accept it.
+
+        The check is on the RESOLVED path, so every spelling of "up and out"
+        (.., mixed separators, an absolute path, a drive-relative one) fails
+        the same way. A directory, or a file that is not a .ps1, is refused
+        too - Test-Path alone accepted both.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ToolsRoot,
+        [AllowEmptyString()][string]$Folder = '',
+        [AllowEmptyString()][string]$ScriptName = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Folder) -or [string]::IsNullOrWhiteSpace($ScriptName)) {
+        throw 'tool.run requires a folder and a script.'
+    }
+    $root = [System.IO.Path]::GetFullPath($ToolsRoot).TrimEnd('\', '/')
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $root $Folder) $ScriptName))
+    $inside = $candidate.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+    if (-not $inside -or [System.IO.Path]::GetExtension($candidate) -ne '.ps1') {
+        throw "Not a DevKit tool: $Folder/$ScriptName"
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "Tool script not found: $candidate"
+    }
+    return $candidate
+}
+
 function Add-DevKitForceArgument {
     <#
     .SYNOPSIS
@@ -171,12 +209,10 @@ function Add-DevKitForceArgument {
         the only safe assumption is that the answer never arrives. That is
         why the gate is Test-DevKitCanPrompt (which declines up front)
         rather than a try/catch, and why a `while ($true)` menu MUST break
-        on a $null read (see tools/system/Edit-Path.ps1, which without that
-        guard spun at ~1,800 lines/second and occupied the tool lane
-        permanently).
+        on a $null read (the since-removed PATH editor, without that guard,
+        spun at ~1,800 lines/second and occupied the tool lane permanently).
 
-        Either way Docker-Nuke, Docker-Cleanup, Repair-SystemFiles,
-        Reset-WindowsUpdate, Clear-DiskJunk, Git-Cleanup, Manage-Services
+        Either way Docker-Nuke, Docker-Cleanup, Git-Cleanup, Close-OutSession
         and the rest could not proceed when run from the app - immediately
         AFTER the user had already confirmed in the app's own caution
         dialog.
@@ -347,6 +383,9 @@ function Release-DevKitToolLaneSlot {
     try {
         if ($Gate.TryGetValue('active', [ref]$current) -and [object]::Equals($current, $Token)) {
             $removed = $null
+            # 'runId' first: while 'active' is still held no new claim can
+            # exist, so this can only be removing this claim's own id.
+            [void]$Gate.TryRemove('runId', [ref]$removed)
             [void]$Gate.TryRemove('active', [ref]$removed)
         }
     } catch { }
@@ -572,7 +611,7 @@ function New-DevKitToolStopResult {
     #>
     param(
         [Parameter(Mandatory)][string]$RunId,
-        [Parameter(Mandatory)][ValidateSet('stopped', 'notFound', 'alreadyExited', 'failed')][string]$Reason,
+        [Parameter(Mandatory)][ValidateSet('stopped', 'notFound', 'alreadyExited', 'failed', 'pending')][string]$Reason,
         [int]$ProcessId = 0,
         [AllowEmptyCollection()][int[]]$KilledProcessIds = @(),
         [bool]$LaneReleased = $true,
@@ -592,6 +631,7 @@ function New-DevKitToolStopResult {
             'alreadyExited' { $Message = 'That run had already finished - nothing left to stop.' }
             'notFound' { $Message = 'That run is no longer active - it finished on its own.' }
             'failed' { $Message = "Could not stop PID $ProcessId." }
+            'pending' { $Message = 'Stop requested - the tool is still starting and will be stopped the moment it has.' }
         }
     }
 
@@ -627,6 +667,61 @@ function Wait-DevKitToolRunReleased {
         Start-Sleep -Milliseconds 40
     }
     return (-not $Registry.ContainsKey($RunId))
+}
+
+function Add-DevKitPendingToolStop {
+    <#
+    .SYNOPSIS
+        Parks a stop for a run that is being started but has no process yet.
+        Returns $true when it was parked: only when the gate names exactly
+        this run as the one holding the tool lane. A stop for any other id
+        (a row from an earlier session, a run that already ended) is not
+        parked - nothing would ever act on it.
+    #>
+    param($Gate, $PendingStops, [Parameter(Mandatory)][string]$RunId)
+
+    if ($null -eq $Gate -or $null -eq $PendingStops) { return $false }
+    $claimed = $null
+    try {
+        if (-not $Gate.TryGetValue('runId', [ref]$claimed)) { return $false }
+    } catch { return $false }
+    if (-not [object]::Equals($claimed, $RunId)) { return $false }
+    try { $PendingStops[$RunId] = [datetime]::UtcNow.Ticks } catch { return $false }
+    return $true
+}
+
+function Complete-DevKitPendingToolStop {
+    <#
+    .SYNOPSIS
+        tool.run's half of the spawn-window stop: called once the run is
+        registered. If a stop was parked for it (within the last minute),
+        stops it now and returns $true. Anything older is a leftover from a
+        run that never started, and is just cleared.
+    #>
+    param($Registry, $PendingStops, [Parameter(Mandatory)][string]$RunId, [int]$MaxAgeSeconds = 60)
+
+    if ($null -eq $PendingStops) { return $false }
+    $ticks = 0L
+    $had = $false
+    try { $had = $PendingStops.TryRemove($RunId, [ref]$ticks) } catch { $had = $false }
+    # Sweep leftovers while here, so a stop parked for a run that then
+    # failed to spawn cannot sit in the table for the life of the sidecar.
+    try {
+        $cutoff = [datetime]::UtcNow.AddSeconds(-$MaxAgeSeconds).Ticks
+        foreach ($key in @($PendingStops.Keys)) {
+            $at = 0L
+            if ($PendingStops.TryGetValue($key, [ref]$at) -and $at -lt $cutoff) {
+                $gone = 0L
+                [void]$PendingStops.TryRemove($key, [ref]$gone)
+            }
+        }
+    } catch { }
+    if (-not $had) { return $false }
+    if (([datetime]::UtcNow.Ticks - $ticks) -gt ([timespan]::FromSeconds($MaxAgeSeconds).Ticks)) { return $false }
+    # ReleaseWaitMs 0: this runs ON the tool lane, inside the run - waiting
+    # for the lane to be released would be waiting for ourselves.
+    [void](Stop-DevKitToolRun -Registry $Registry -RunId $RunId -ReleaseWaitMs 0)
+    return $true
 }
 
 function Stop-DevKitToolRun {
@@ -665,7 +760,12 @@ function Stop-DevKitToolRun {
         [Parameter(Mandatory)][string]$RunId,
         [int]$ExitWaitMs = 2000,
         [int]$ReleaseWaitMs = 1500,
-        [double]$ToleranceMs = 250
+        [double]$ToleranceMs = 250,
+        # The single-flight gate and the parked-stops table (see
+        # $script:PendingToolStops in Invoke-DevKitRpc.ps1). Both optional:
+        # without them a run that is not registered is simply "not found".
+        $Gate = $null,
+        $PendingStops = $null
     )
 
     if ($null -eq $Registry) { return (New-DevKitToolStopResult -RunId $RunId -Reason 'notFound') }
@@ -674,7 +774,21 @@ function Stop-DevKitToolRun {
     $found = $false
     try { $found = $Registry.TryGetValue($RunId, [ref]$entry) } catch { $found = $false }
     if (-not $found -or $null -eq $entry) {
-        return (New-DevKitToolStopResult -RunId $RunId -Reason 'notFound')
+        # Not registered. If the gate says THIS run is the one being
+        # started, it is in the spawn window: park the stop for tool.run to
+        # act on. Then look once more - the run may have registered (and
+        # looked for a parked stop, finding none) between the two reads, in
+        # which case it is stopped here in the ordinary way.
+        if (-not (Add-DevKitPendingToolStop -Gate $Gate -PendingStops $PendingStops -RunId $RunId)) {
+            return (New-DevKitToolStopResult -RunId $RunId -Reason 'notFound')
+        }
+        $found = $false
+        try { $found = $Registry.TryGetValue($RunId, [ref]$entry) } catch { $found = $false }
+        if (-not $found -or $null -eq $entry) {
+            return (New-DevKitToolStopResult -RunId $RunId -Reason 'pending')
+        }
+        $parked = 0L
+        try { [void]$PendingStops.TryRemove($RunId, [ref]$parked) } catch { }
     }
 
     $entry['Stopped'] = $true
@@ -725,6 +839,45 @@ function Stop-DevKitToolRun {
     return (New-DevKitToolStopResult -RunId $RunId -Reason 'stopped' -ProcessId $rootPid -KilledProcessIds @($killed.ToArray()) -LaneReleased $released)
 }
 
+function Stop-DevKitAllToolRuns {
+    <#
+    .SYNOPSIS
+        Stops every tool run still in the registry, process tree and all.
+        Returns how many were stopped.
+    .DESCRIPTION
+        For the sidecar's SHUTDOWN path. Nothing used to stop a run when the
+        app quit: the sidecar waited out its drain deadline on a tool that
+        was never going to finish (a dev server), then exited - leaving the
+        tool's pwsh and everything under it running, holding its port, with
+        no app left to stop it. Quitting DevKit must not leave DevKit's own
+        children behind.
+
+        Called on the sidecar's main thread, which is why it lives here
+        beside Stop-DevKitToolRun rather than in the dispatch table: by the
+        time it runs, no lane is taking requests any more.
+
+        Never throws - a run that will not die must not block shutdown.
+    #>
+    param(
+        $Registry,
+        [int]$ExitWaitMs = 1500
+    )
+
+    if ($null -eq $Registry) { return 0 }
+    $stopped = 0
+    foreach ($runId in @($Registry.Keys)) {
+        try {
+            # ReleaseWaitMs 0: nobody is left to tell whether the lane freed
+            # up, and shutdown should not spend time finding out.
+            $result = Stop-DevKitToolRun -Registry $Registry -RunId ([string]$runId) -ExitWaitMs $ExitWaitMs -ReleaseWaitMs 0
+            if ($result -and $result['stopped']) { $stopped++ }
+        } catch {
+            # Keep going: one stubborn run must not shield the others.
+        }
+    }
+    return $stopped
+}
+
 function Get-DevKitCatalogPayload {
     <#
     .SYNOPSIS
@@ -753,12 +906,21 @@ function Get-DevKitCatalogPayload {
             $items = @()
             foreach ($item in @($module.Items)) {
                 $help = [string]$item.Help
+                # "Safety note:" in the Help is what marks a tool caution,
+                # unless the manifest says so outright. The text match alone
+                # misfires on a tool whose note is about something other
+                # than a destructive DevKit action (Run Package Script: "it
+                # runs your own script") and put a "cannot be undone" dialog
+                # in front of every `npm run dev`. An explicit `Caution` key
+                # wins in either direction.
+                $caution = ($help -match 'Safety note:')
+                if ($item -is [System.Collections.IDictionary] -and $item.Contains('Caution')) { $caution = [bool]$item['Caution'] }
                 $items += [ordered]@{
                     key             = [string]$item.Key
                     label           = [string]$item.Label
                     script          = [string]$item.Script
                     help            = $help
-                    caution         = ($help -match 'Safety note:')
+                    caution         = $caution
                     requiresProject = [bool]$item.RequiresProject
                     projectArgName  = if ($item.ProjectArgName) { [string]$item.ProjectArgName } else { $null }
                     requiresFile    = $item.RequiresFile
@@ -852,6 +1014,14 @@ function Invoke-DevKitRpcMethod {
             # Fixed for the process's lifetime; drives the title bar's ADMIN
             # badge.
             return @{ elevated = [bool](Test-DevKitAdmin) }
+        }
+        'system.repairElevationTask' {
+            # Called once per app start (WidgetApp.tsx). Brings an elevation
+            # task registered by an older version up to the settings the
+            # app needs - see Repair-DevKitElevationTaskSettings. Never
+            # throws: 'absent' (a dev build has no task) and 'failed' are
+            # ordinary answers.
+            return Repair-DevKitElevationTaskSettings
         }
 
         # ---------- git ----------
@@ -1035,10 +1205,7 @@ function Invoke-DevKitRpcMethod {
                 # for why this is opt-in and what it fixes.
                 $confirmed = Test-DevKitRpcConfirmedFlag (Get-DevKitRpcParam $Params 'confirmed' $false)
 
-                $scriptPath = Join-Path (Join-Path $RepoRoot 'tools') (Join-Path $folder $script)
-                if (-not (Test-Path -LiteralPath $scriptPath)) {
-                    throw "Tool script not found: $scriptPath"
-                }
+                $scriptPath = Resolve-DevKitToolScriptPath -ToolsRoot (Join-Path $RepoRoot 'tools') -Folder $folder -ScriptName $script
 
                 $toolArgs = @($toolArgs | ForEach-Object { [string]$_ })
                 if ($confirmed) {
@@ -1067,6 +1234,13 @@ function Invoke-DevKitRpcMethod {
                 $psi.RedirectStandardInput = $true
                 $psi.UseShellExecute = $false
                 $psi.CreateNoWindow = $true
+                # Decode the child's pipes as UTF-8, stated rather than
+                # inherited. The tools switch their own output to UTF-8 when
+                # it is redirected (tools/lib/DevKit-Common.ps1, top), so the
+                # two ends now agree by declaration instead of by accident.
+                $utf8 = New-Object System.Text.UTF8Encoding $false
+                $psi.StandardOutputEncoding = $utf8
+                $psi.StandardErrorEncoding = $utf8
                 # The Run dialog renders output as plain text, so pwsh's styled
                 # error formatting must not reach it: in the app's clean child
                 # environment (no TERM/NO_COLOR hint) pwsh defaults $PSStyle to
@@ -1090,32 +1264,54 @@ function Invoke-DevKitRpcMethod {
 
                 & $EmitEvent 'tool.started' $runId @{ pid = $proc.Id }
 
+                # A Stop clicked while this run was still being started was
+                # parked (it had no process to kill). Honour it now; the
+                # drain below then sees the pipe close and reports the run
+                # cancelled, exactly as for a stop that arrived later.
+                [void](Complete-DevKitPendingToolStop -Registry $RunRegistry -PendingStops $PendingToolStops -RunId $runId)
+
                 $exitCode = -1
                 $cancelled = $false
                 try {
-                    # Drain stderr concurrently via an async Task so a chatty stderr
-                    # stream can never fill its pipe buffer and deadlock the child
-                    # while we're synchronously draining stdout below.
-                    $stderrTask = $proc.StandardError.ReadToEndAsync()
-
-                    # This is the read that blocks the tool lane for the whole
-                    # run, and the reason tool.stop cannot be answered here. It
-                    # unblocks on EOF, which arrives only once EVERY process
-                    # holding the child's stdout write handle is gone - hence
+                    # BOTH streams are read line by line and forwarded as they
+                    # arrive. stderr used to be collected whole and emitted
+                    # only after stdout closed - so an error from step 2 of a
+                    # tool appeared after its last line, out of context, and
+                    # for a tool that never exits (a dev server) it never
+                    # appeared at all: a Next or Vite compile error was
+                    # invisible in the Run dialog, while the buffer holding it
+                    # grew for the life of the run.
+                    #
+                    # One pending ReadLineAsync per stream, and WaitAny over
+                    # whichever are still open. A stream is finished when its
+                    # read returns $null (EOF). This loop is what blocks the
+                    # tool lane for the whole run, and the reason tool.stop
+                    # cannot be answered here; EOF arrives only once EVERY
+                    # process holding the child's pipe handles is gone - hence
                     # Stop-DevKitToolRun killing the tree rather than the child.
-                    while (-not $proc.StandardOutput.EndOfStream) {
-                        $outLine = $proc.StandardOutput.ReadLine()
-                        if ($null -ne $outLine) {
-                            & $EmitEvent 'tool.output' $runId @{ stream = 'stdout'; line = $outLine }
+                    $readers = @{
+                        stdout = $proc.StandardOutput.ReadLineAsync()
+                        stderr = $proc.StandardError.ReadLineAsync()
+                    }
+                    while ($readers.Count -gt 0) {
+                        $names = @($readers.Keys)
+                        $pending = [System.Threading.Tasks.Task[]]@($names | ForEach-Object { $readers[$_] })
+                        $index = [System.Threading.Tasks.Task]::WaitAny($pending)
+                        $name = $names[$index]
+                        # .Result rethrows a faulted read (a tree kill landing
+                        # mid-read); the catch below turns that into a
+                        # terminal result.
+                        $text = $pending[$index].Result
+                        if ($null -eq $text) {
+                            $readers.Remove($name)
+                            continue
                         }
+                        if ($name -eq 'stdout' -or $text) {
+                            & $EmitEvent 'tool.output' $runId @{ stream = $name; line = $text }
+                        }
+                        $readers[$name] = if ($name -eq 'stdout') { $proc.StandardOutput.ReadLineAsync() } else { $proc.StandardError.ReadLineAsync() }
                     }
                     $proc.WaitForExit()
-                    $stderrText = $stderrTask.GetAwaiter().GetResult()
-                    if ($stderrText) {
-                        foreach ($errLine in ($stderrText -split "`r?`n")) {
-                            if ($errLine) { & $EmitEvent 'tool.output' $runId @{ stream = 'stderr'; line = $errLine } }
-                        }
-                    }
                     $exitCode = $proc.ExitCode
                 } catch {
                     # A tree kill landing mid-read can surface as a broken-pipe
@@ -1160,7 +1356,7 @@ function Invoke-DevKitRpcMethod {
             # lane is by definition blocked inside the run being cancelled.
             $runId = [string](Get-DevKitRpcParam $Params 'runId' '')
             if ([string]::IsNullOrWhiteSpace($runId)) { throw 'tool.stop requires a runId.' }
-            return Stop-DevKitToolRun -Registry $RunRegistry -RunId $runId
+            return Stop-DevKitToolRun -Registry $RunRegistry -RunId $runId -Gate $ToolLaneGate -PendingStops $PendingToolStops
         }
 
         default {

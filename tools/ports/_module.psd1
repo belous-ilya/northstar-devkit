@@ -22,7 +22,7 @@
             Key     = '3'
             Label   = 'Kill Process by PID'
             Script  = 'Kill-Port.ps1'
-            Help    = "Kills a specific process by PID that you enter directly, with no port lookup. Refuses PID 0 and 4 (reserved system processes) and the current DevKit process's own PID. Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (a plain y/n prompt, not the shared Confirm-DevKitDestructiveAction gate), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming."
+            Help    = "Kills a specific process by PID that you enter directly, with no port lookup. Refuses PID 0 and 4 (reserved system processes) and the current DevKit process's own PID. Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (it always asks, whatever the confirmDestructive setting), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming."
             Prompts = @(
                 @{ Name = 'ProcessId'; Type = 'Int'; Prompt = 'Enter PID to kill'; Min = 1; Max = 2147483647; InvalidMessage = 'Invalid PID.' }
             )
@@ -31,7 +31,7 @@
             Key    = '4'
             Label  = 'Kill All Node Processes'
             Script = 'Kill-AllNode.ps1'
-            Help   = "Finds every running process named 'node' and kills them all. Lists each one (PID, CPU, start time) before acting. Safety note: mutates real system state - prompts 'Kill all N process(es)? (y/n)' before stopping any of them (a plain y/n prompt, not the shared Confirm-DevKitDestructiveAction gate), and re-verifies each process's identity immediately before killing it to guard against a PID being reused while you were confirming. This menu item does not pass -Force, so you'll always see the prompt; the script supports -Force directly for automation."
+            Help   = "Finds every running process named 'node' and kills them all. Lists each one (PID, CPU, start time) before acting. Safety note: mutates real system state - prompts 'Kill all N process(es)? (y/n)' before stopping any of them (it always asks, whatever the confirmDestructive setting), and re-verifies each process's identity immediately before killing it to guard against a PID being reused while you were confirming. This menu item does not pass -Force, so you'll always see the prompt; the script supports -Force directly for automation."
         }
         @{
             Key     = '5'
@@ -47,7 +47,7 @@
             Key     = '6'
             Label   = 'Kill Process by Port Number (With Confirmation)'
             Script  = 'Kill-Port.ps1'
-            Help    = "Finds the process listening on a port you enter, shows its PID/name/path, and asks for confirmation before killing it (Kill-Port.ps1 -Port X, no -Force). Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (a plain y/n prompt, not the shared Confirm-DevKitDestructiveAction gate), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming."
+            Help    = "Finds the process listening on a port you enter, shows its PID/name/path, and asks for confirmation before killing it (Kill-Port.ps1 -Port X, no -Force). Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (it always asks, whatever the confirmDestructive setting), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming."
             Prompts = @(
                 @{ Name = 'Port'; Type = 'Int'; Prompt = 'Enter port number'; Min = 1; Max = 65535; InvalidMessage = 'Invalid port number.' }
             )

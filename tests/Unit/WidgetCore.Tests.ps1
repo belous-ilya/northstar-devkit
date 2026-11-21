@@ -1065,3 +1065,149 @@ Describe "Get-DevKitFileIconInfo" {
         }
     }
 }
+
+Describe "background git calls do not run programs named in the project's git config" {
+
+    # The installed app is admin-only, so its polls run elevated inside the
+    # active project - and git obeys that project's .git/config, which
+    # anything running as the user can write. core.fsmonitor=<path> makes
+    # 'git status' run that program: without the override this was a way to
+    # be run as Administrator with no click at all.
+
+    BeforeAll {
+        $script:GitExe = Get-DevKitWindowsExecutable -Name 'git'
+        $script:HookRepo = Join-Path $TestDrive "fsmonitor-repo-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        $script:HookMarker = Join-Path $TestDrive "fsmonitor-ran-$([guid]::NewGuid().ToString('N').Substring(0, 8)).txt"
+        $hook = Join-Path $TestDrive "fsmonitor-hook-$([guid]::NewGuid().ToString('N').Substring(0, 8)).cmd"
+        if ($script:GitExe) {
+            [void](New-Item -ItemType Directory -Path $script:HookRepo)
+            & $script:GitExe.Source -C $script:HookRepo init -q -b main
+            & $script:GitExe.Source -C $script:HookRepo -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m first
+            [System.IO.File]::WriteAllText($hook, "@echo off`r`necho ran > `"$($script:HookMarker)`"`r`n")
+            & $script:GitExe.Source -C $script:HookRepo config core.fsmonitor ($hook -replace '\\', '/')
+        }
+    }
+
+    It "has git available for these tests" {
+        $script:GitExe | Should -Not -BeNullOrEmpty
+    }
+
+    It "the overview poll does not execute the configured program" {
+        if (Test-Path -LiteralPath $script:HookMarker) { Remove-Item -LiteralPath $script:HookMarker }
+        $overview = Get-DevKitRepoOverview -Path $script:HookRepo -IncludeGraph $false
+        $overview.IsRepo | Should -BeTrue
+        $overview.Error | Should -BeNullOrEmpty
+        Start-Sleep -Milliseconds 400
+        Test-Path -LiteralPath $script:HookMarker | Should -BeFalse
+    }
+
+    It "control: a plain 'git status' in that same repository DOES execute it (so the test above can fail)" {
+        if (Test-Path -LiteralPath $script:HookMarker) { Remove-Item -LiteralPath $script:HookMarker }
+        $null = & $script:GitExe.Source -C $script:HookRepo status --porcelain 2>&1
+        Start-Sleep -Milliseconds 400
+        Test-Path -LiteralPath $script:HookMarker | Should -BeTrue
+    }
+
+    It "commit details do not execute it either, and still answer" {
+        if (Test-Path -LiteralPath $script:HookMarker) { Remove-Item -LiteralPath $script:HookMarker }
+        $head = (& $script:GitExe.Source -c core.fsmonitor=false -C $script:HookRepo rev-parse HEAD | Out-String).Trim()
+        $details = Get-DevKitCommitDetails -Path $script:HookRepo -Hash $head
+        $details.Error | Should -BeNullOrEmpty
+        Start-Sleep -Milliseconds 400
+        Test-Path -LiteralPath $script:HookMarker | Should -BeFalse
+    }
+
+    It "forces both settings off for every git call the app makes on its own" {
+        $joined = $script:DevKitGitBackgroundArgs -join ' '
+        foreach ($setting in 'core.fsmonitor=false', 'protocol.ext.allow=never', 'protocol.git.allow=never', 'remote.origin.uploadpack=git-upload-pack') {
+            $joined | Should -Match ([regex]::Escape("-c $setting"))
+        }
+        $joined | Should -Match ([regex]::Escape("-c core.hooksPath=$($script:DevKitGitNoHooksPath)"))
+        # every element is a '-c' followed by one setting: nothing else rides along
+        ($script:DevKitGitBackgroundArgs.Count % 2) | Should -Be 0
+        for ($i = 0; $i -lt $script:DevKitGitBackgroundArgs.Count; $i += 2) { $script:DevKitGitBackgroundArgs[$i] | Should -Be '-c' }
+        $source = Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$null, [ref]$null)
+        foreach ($name in 'Get-DevKitRepoOverview', 'Invoke-DevKitGitAutoFetch', 'Get-DevKitCommitDetails') {
+            $function = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+            $function | Should -Not -BeNullOrEmpty
+            # every "& $git.Source ..." / "& $Git.Source ..." in the function
+            $spawns = @($function.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq 'Ampersand' -and
+                        $n.CommandElements[0].Extent.Text -match '^\$git\.Source$' }, $true))
+            $spawns.Count | Should -BeGreaterThan 0 -Because "$name spawns git"
+            foreach ($spawn in $spawns) {
+                $spawn.CommandElements[1].Extent.Text | Should -Be '@script:DevKitGitBackgroundArgs' -Because "a git call in $name must carry the override first"
+            }
+        }
+    }
+
+    It "points hooks at a folder only an administrator could create - not at '/dev/null'" {
+        # Started from PowerShell, Git for Windows reads '/dev/null' as
+        # '\dev\null' on the repository's drive: a folder any user can create
+        # at a drive root, which would have moved hooks to one place every
+        # repository on that drive shares instead of disabling them.
+        $script:DevKitGitNoHooksPath | Should -Not -Match '^/'
+        $expectedRoot = ($env:SystemRoot -replace '\\', '/') + '/System32/'
+        $script:DevKitGitNoHooksPath.StartsWith($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+        Test-Path -LiteralPath ($script:DevKitGitNoHooksPath -replace '/', '\') | Should -BeFalse
+        # ...and that is where git itself says it will look.
+        $where = (& $script:GitExe.Source @script:DevKitGitBackgroundArgs -C $script:HookRepo rev-parse --git-path hooks/reference-transaction | Out-String).Trim()
+        $where.StartsWith($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+        $where | Should -Not -Match '^/dev/'
+    }
+
+    It "never runs a diff driver, text converter or signature checker the repository configures" {
+        $text = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1'))
+        $text.Contains("'show' '--no-show-signature' '--no-ext-diff' '--no-textconv'") | Should -BeTrue
+        $text.Contains("'log' '--no-show-signature' '--all'") | Should -BeTrue
+    }
+
+    Context "a hook planted in the project's .git\hooks" {
+
+        # .git/hooks/reference-transaction runs on any fetch that moves a ref,
+        # with no configuration at all - and the app fetches in the
+        # background, elevated, about once a minute.
+
+        BeforeAll {
+            $script:HookBase = Join-Path $TestDrive "hook-probe-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+            $script:HookOrigin = Join-Path $script:HookBase 'origin.git'
+            $script:HookWork = Join-Path $script:HookBase 'work'
+            $script:HookClone = Join-Path $script:HookBase 'clone'
+            $script:HookRan = Join-Path $script:HookBase 'hook-ran.txt'
+            if ($script:GitExe) {
+                $g = $script:GitExe.Source
+                [void](New-Item -ItemType Directory -Path $script:HookBase)
+                & $g init -q --bare -b main $script:HookOrigin
+                & $g clone -q $script:HookOrigin $script:HookWork 2>$null
+                & $g -C $script:HookWork -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m one
+                & $g -C $script:HookWork push -q origin HEAD:main 2>$null
+                & $g clone -q $script:HookOrigin $script:HookClone 2>$null
+                [System.IO.File]::WriteAllText((Join-Path $script:HookClone '.git\hooks\reference-transaction'),
+                    "#!/bin/sh`necho ran > '$($script:HookRan -replace '\\', '/')'`n")
+            }
+            function Push-TestCommit {
+                $g = $script:GitExe.Source
+                & $g -C $script:HookWork -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m more
+                & $g -C $script:HookWork push -q origin HEAD:main 2>$null
+            }
+        }
+
+        It "is not executed by the background fetch, which still fetches" {
+            Push-TestCommit
+            $before = (& $script:GitExe.Source -c core.hooksPath=/dev/null -C $script:HookClone rev-parse origin/main | Out-String).Trim()
+            if (Test-Path -LiteralPath $script:HookRan) { Remove-Item -LiteralPath $script:HookRan }
+            Invoke-DevKitGitAutoFetch -Path $script:HookClone -Git $script:GitExe
+            $after = (& $script:GitExe.Source -c core.hooksPath=/dev/null -C $script:HookClone rev-parse origin/main | Out-String).Trim()
+            $after | Should -Not -Be $before          # the fetch really happened
+            Test-Path -LiteralPath $script:HookRan | Should -BeFalse
+        }
+
+        It "control: a plain 'git fetch' in that same clone DOES execute it" {
+            Push-TestCommit
+            if (Test-Path -LiteralPath $script:HookRan) { Remove-Item -LiteralPath $script:HookRan }
+            $null = & $script:GitExe.Source -C $script:HookClone fetch -q origin 2>&1
+            Test-Path -LiteralPath $script:HookRan | Should -BeTrue
+        }
+    }
+}

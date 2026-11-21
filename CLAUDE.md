@@ -23,7 +23,7 @@ enforced gate, matching `.github/workflows/ci.yml`.
 
 ```powershell
 # NOTE: cargo is not on PATH in a fresh shell here:
-#   $env:PATH = "$env:USERPROFILE\.cargoin;" + $env:PATH
+#   $env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
 
 cargo check --workspace
 cargo clippy --workspace --all-targets
@@ -66,7 +66,7 @@ means reading both sides, not assuming:
    `devkit://terminal`, `devkit://visibility`. Event names and payload shapes
    are stringly-typed across Rust and TS.
 5. **Sidecar invariants** (`core/Invoke-DevKitRpc.ps1`) — single writer
-   runspace owns stdout; three lanes route by method-name prefix. Read the
+   runspace owns stdout; six lanes route by method-name prefix. Read the
    file's threading comment before touching it.
 6. **New features go in `RpcMethods.ps1`, not new Tauri commands** — Rust
    commands are only for genuine OS-level work (windows, tray, ConPTY).
@@ -75,8 +75,10 @@ means reading both sides, not assuming:
 
 **Never execute a mutating tool script's real path to "test" it** — only its
 documented `-DryRun`/`-WhatIf`/report invocation. This applies to
-`tools/maintenance/` and `tools/agents/` especially, and to agents exactly as
-much as humans (see AGENTS.md "Security Considerations" for the incident that
+`tools/wifi/`, `tools/ports/`, `tools/docker/`, `tools/git/`, `tools/node/`,
+`tools/nextjs/` and `tools/workflow/` especially (wording updated 2026-11-21,
+when `tools/maintenance/` and `tools/agents/` were deleted), and to agents
+exactly as much as humans (see AGENTS.md "Security Considerations" for the incident that
 made this a rule). Destructive-action prompts route through
 `Confirm-DevKitDestructiveAction` (PS) / `useConfirmDestructive()` (TS) — new
 destructive paths must use those, never hand-rolled prompts.
@@ -94,6 +96,8 @@ when the file is missing, and build scripts run under `cargo check`, so from
 that moment on EVERY cargo command on a fresh clone fails until the CLI is
 built and staged. `app/src-tauri/bin/` would also need a `.gitignore` entry.
 
-Payoff when it lands: `tools/system/Install-ShellIntegration.ps1` and
-`Register-DevKitTerminalProfile.ps1` both probe `<installroot>\devkit.exe`
-first and currently hard-exit on any installed copy.
+Payoff when it lands: the shell-integration and Windows Terminal profile
+scripts (`Install-ShellIntegration.ps1`, `Register-DevKitTerminalProfile.ps1`
+and their uninstall twins) can come back from git history. They were deleted
+from `tools/system/` on 2026-11-21 because they probe
+`<installroot>\devkit.exe` first and hard-exited on every installed copy.

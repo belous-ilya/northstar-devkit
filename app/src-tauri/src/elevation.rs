@@ -433,9 +433,106 @@ fn message_box(text: &str, caption: &str, style: u32) -> i32 {
     unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), style) }
 }
 
+/// True for the two priority classes a parent hands down to its children and
+/// that this app must never run at. Pure, so it is unit-testable.
+fn is_throttled_priority_class(class: u32) -> bool {
+    use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, IDLE_PRIORITY_CLASS};
+    class == BELOW_NORMAL_PRIORITY_CLASS || class == IDLE_PRIORITY_CLASS
+}
+
+/// Puts this process back at normal CPU and memory priority when it was
+/// started below it. Call once, right after the gate and BEFORE anything is
+/// spawned: the sidecar, every tool it runs and the embedded terminal
+/// inherit whatever priority class this process has at that moment.
+///
+/// Why a GUI app would be started throttled at all: every launch goes
+/// through the `NorthstarDevKit-Admin` scheduled task, and a task registered
+/// with Task Scheduler's default priority (7) starts its process at
+/// BELOW_NORMAL CPU priority with low disk-I/O and low memory priority -
+/// measured, not assumed (see `Get-DevKitElevationTaskSettings` in
+/// `tools/lib/DevKit-Common.ps1`). The registration script now asks for
+/// priority 4 and `system.repairElevationTask` fixes tasks that already
+/// exist, but both only take effect on the NEXT start. This covers the
+/// start that is happening now, and any task the repair could not reach.
+///
+/// What it cannot undo is the low disk-I/O priority: Windows documents no
+/// call that raises it for a whole process (only the task's own priority
+/// does), so that part is fixed by the repair, one start later.
+///
+/// Best-effort and silent on failure: running a little slow is not a reason
+/// to stop the app from starting.
+pub fn restore_normal_priority() {
+    use windows_sys::Win32::System::Threading::{
+        GetPriorityClass, ProcessMemoryPriority, SetPriorityClass, SetProcessInformation,
+        MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_NORMAL, NORMAL_PRIORITY_CLASS,
+    };
+
+    unsafe {
+        let process = GetCurrentProcess();
+        let class = GetPriorityClass(process);
+        if !is_throttled_priority_class(class) {
+            return;
+        }
+        let cpu_ok = SetPriorityClass(process, NORMAL_PRIORITY_CLASS) != 0;
+        let memory = MEMORY_PRIORITY_INFORMATION {
+            MemoryPriority: MEMORY_PRIORITY_NORMAL,
+        };
+        let memory_ok = SetProcessInformation(
+            process,
+            ProcessMemoryPriority,
+            &memory as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
+        ) != 0;
+        tracing::info!(
+            started_at_class = class,
+            cpu_ok,
+            memory_ok,
+            "started below normal priority (elevation task defaults); restored to normal"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_inherited_low_classes_count_as_throttled() {
+        use windows_sys::Win32::System::Threading::{
+            ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
+            IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+        };
+        assert!(is_throttled_priority_class(BELOW_NORMAL_PRIORITY_CLASS));
+        assert!(is_throttled_priority_class(IDLE_PRIORITY_CLASS));
+        assert!(!is_throttled_priority_class(NORMAL_PRIORITY_CLASS));
+        // A user who raised the priority on purpose is left alone.
+        assert!(!is_throttled_priority_class(ABOVE_NORMAL_PRIORITY_CLASS));
+        assert!(!is_throttled_priority_class(HIGH_PRIORITY_CLASS));
+        // GetPriorityClass answers 0 when it fails: not a reason to act.
+        assert!(!is_throttled_priority_class(0));
+    }
+
+    #[test]
+    fn restoring_priority_never_leaves_the_process_throttled() {
+        use windows_sys::Win32::System::Threading::{GetPriorityClass, NORMAL_PRIORITY_CLASS};
+        // Where this test starts depends on who started it. A developer's
+        // shell runs it at normal priority, where the call must change
+        // nothing. GitHub's Windows runners start their jobs BELOW normal -
+        // the very situation the function exists for - and there it must end
+        // at normal. (The first version of this test assumed "always
+        // normal" and failed in CI by catching the function doing its job.)
+        let before = unsafe { GetPriorityClass(GetCurrentProcess()) };
+        restore_normal_priority();
+        let after = unsafe { GetPriorityClass(GetCurrentProcess()) };
+        if is_throttled_priority_class(before) {
+            assert_eq!(after, NORMAL_PRIORITY_CLASS);
+        } else {
+            assert_eq!(after, before);
+        }
+        // And it is idempotent: a second call finds nothing to do.
+        restore_normal_priority();
+        assert_eq!(unsafe { GetPriorityClass(GetCurrentProcess()) }, after);
+    }
 
     #[test]
     fn decide_action_elevated_proceeds_regardless_of_task() {

@@ -64,7 +64,11 @@ export function ensureProjectsLoaded(force = false): Promise<void> {
     .refresh()
     .finally(() => {
       inFlight = null;
-      loadedOnce = true;
+      // Only a load that actually reached the sidecar counts. A failed first
+      // load (sidecar still starting) used to latch this to true, and every
+      // later non-forced caller then trusted an empty list that was never
+      // loaded: "No linked projects" for the rest of the session.
+      loadedOnce = !useProjectStore.getState().loadFailed;
     });
   return inFlight;
 }

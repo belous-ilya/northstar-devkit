@@ -61,6 +61,42 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# Every step that reports a problem is counted, so the run cannot end on
+# "COMPLETE" (and exit 0) after printing warnings.
+$script:problems = 0
+
+function Invoke-DevKitDockerBatch {
+    <#
+    .SYNOPSIS
+        Runs one docker command over a list of ids in batches of 50 and
+        returns @{ Output = <all lines>; Failed = <bool> }. A machine with a
+        few hundred volumes (64-character names) overflows Windows' 32k
+        command-line limit when they are all passed at once, and the whole
+        step then failed without removing anything.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Command,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Ids,
+        [int]$BatchSize = 50
+    )
+    $output = @()
+    $failed = $false
+    for ($i = 0; $i -lt $Ids.Count; $i += $BatchSize) {
+        $last = [math]::Min($i + $BatchSize, $Ids.Count) - 1
+        $batch = @($Ids[$i..$last])
+        $output += @(docker @Command @batch 2>&1)
+        if ($LASTEXITCODE -ne 0) { $failed = $true }
+    }
+    return @{ Output = $output; Failed = $failed }
+}
+
+# A target that is already gone is the outcome this tool wants, not a
+# failure: 'docker stop' auto-removes any container started with --rm (and
+# its anonymous volumes), so the removal that follows is told "No such
+# container". Each removal step is therefore judged by what is still THERE
+# afterwards, and these messages are not shown as errors.
+$alreadyGone = '(?i)no such (container|volume|image)|is already in progress'
+
 # Get current state
 $containers = docker ps -aq 2>$null | Where-Object { $_ }
 $images = docker images -q 2>$null | Where-Object { $_ }
@@ -112,6 +148,20 @@ if ($DryRun) {
             ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
     
+    # Volumes are where the data lives (databases, uploads) and are the one
+    # thing here that cannot be pulled or rebuilt, so the preview names them.
+    if ($volumeCount -gt 0 -and -not $KeepVolumes) {
+        Write-Host "`n  Volumes that would be removed (their data is not recoverable):" -ForegroundColor Yellow
+        $volumes | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    } elseif ($volumeCount -gt 0) {
+        Write-Host "`n  Volumes that would be KEPT: $volumeCount" -ForegroundColor Green
+    }
+
+    if ($networkCount -gt 0) {
+        Write-Host "`n  Custom networks that would be removed:" -ForegroundColor Yellow
+        $networks | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    }
+
     Write-Host ""
     exit 0
 }
@@ -119,7 +169,20 @@ if ($DryRun) {
 # Confirm - uses the shared gate (lib/DevKit-Common.ps1) so the typed-phrase
 # comparison is guaranteed case-sensitive and this respects the user's
 # confirmDestructive setting consistently with every other destructive tool.
-if (-not (Confirm-DevKitDestructiveAction -Action "destroy ALL Docker containers, images, volumes, and networks" -TypedPhrase 'NUKE' -Force:$Force)) {
+# The sentence names exactly what this run will destroy: it used to say
+# "containers, images, volumes, and networks" even with -KeepVolumes or
+# -KeepImages, so the prompt for the volume-keeping item threatened the
+# very data it was chosen to spare.
+$doomed = @("$containerCount container(s)")
+if (-not $KeepImages) { $doomed += "$imageCount image(s)" }
+if (-not $KeepVolumes) { $doomed += "$volumeCount volume(s) AND THEIR DATA" }
+$doomed += "$networkCount custom network(s)"
+$kept = @()
+if ($KeepImages) { $kept += 'images' }
+if ($KeepVolumes) { $kept += 'volumes' }
+$actionText = "destroy ALL Docker " + ($doomed -join ', ')
+if ($kept.Count -gt 0) { $actionText += " (keeping $($kept -join ' and '))" }
+if (-not (Confirm-DevKitDestructiveAction -Action $actionText -TypedPhrase 'NUKE' -Force:$Force)) {
     Write-Host "`n  Cancelled. Wise choice!`n" -ForegroundColor Gray
     exit 0
 }
@@ -142,14 +205,16 @@ if ($containerCount -gt 0) {
     $stopHadErrors = $false
     # Reuse the container list captured before the confirmation gate instead
     # of re-listing - the same targets the counts/prompt above referred to.
-    $stopOutput = @(docker stop $containers 2>&1)
-    foreach ($line in $stopOutput) {
+    $stopResult = Invoke-DevKitDockerBatch -Command @('stop') -Ids @($containers)
+    foreach ($line in $stopResult.Output) {
         if ($line -match 'error|Error') {
             Write-Host "    ERROR: $line" -ForegroundColor Red
             $stopHadErrors = $true
         }
     }
-    if ($stopHadErrors -or $LASTEXITCODE -ne 0) {
+    if ($stopHadErrors -or $stopResult.Failed) {
+        # Not counted as a problem: the forced removal below is what
+        # decides whether a container survived.
         Write-Host "  WARNING: Some containers may not have stopped cleanly." -ForegroundColor Yellow
     } else {
         Write-Host "  DONE: All containers stopped." -ForegroundColor Green
@@ -159,17 +224,23 @@ if ($containerCount -gt 0) {
     # Step 2: Remove all containers
     Write-Host "`n  [$step/$totalSteps] Removing all containers..." -ForegroundColor Cyan
     $removeHadErrors = $false
-    $removeOutput = @(docker rm -f $(docker ps -aq) 2>&1)
-    foreach ($line in $removeOutput) {
-        if ($line -match '^[a-f0-9]') {
-            Write-Host "    Removed: $($line.Substring(0,12))" -ForegroundColor DarkGray
-        } elseif ($line -match 'error|Error') {
+    # The list captured before the confirmation, not a fresh 'docker ps':
+    # a container started after the user typed NUKE was never shown to them.
+    $removeResult = Invoke-DevKitDockerBatch -Command @('rm', '-f') -Ids @($containers)
+    foreach ($line in $removeResult.Output) {
+        if ($line -match $alreadyGone) { continue }
+        if ($line -match 'error|Error') {
             Write-Host "    ERROR: $line" -ForegroundColor Red
             $removeHadErrors = $true
+        } elseif ("$line".Trim()) {
+            Write-Host "    Removed: $line" -ForegroundColor DarkGray
         }
     }
-    if ($removeHadErrors -or $LASTEXITCODE -ne 0) {
+    $containersLeft = @(docker ps -aq 2>$null | Where-Object { $containers -contains $_ })
+    $relistFailed = ($LASTEXITCODE -ne 0)
+    if ($containersLeft.Count -gt 0 -or ($relistFailed -and ($removeHadErrors -or $removeResult.Failed))) {
         Write-Host "  WARNING: Some containers may not have been removed cleanly." -ForegroundColor Yellow
+        $script:problems++
     } else {
         Write-Host "  DONE: All containers removed." -ForegroundColor Green
     }
@@ -184,8 +255,10 @@ if (-not $KeepImages -and $imageCount -gt 0) {
     Write-Host "`n  [$step/$totalSteps] Removing all images..." -ForegroundColor Cyan
     $imagesHadErrors = $false
     # Reuse the list captured up front instead of re-querying.
-    $imagesOutput = @(docker rmi -f $images 2>&1)
-    foreach ($line in $imagesOutput) {
+    # -q repeats an id once per tag; each id is removed once.
+    $imagesResult = Invoke-DevKitDockerBatch -Command @('rmi', '-f') -Ids @($images | Select-Object -Unique)
+    foreach ($line in $imagesResult.Output) {
+        if ($line -match $alreadyGone) { continue }
         if ($line -match 'Untagged|Deleted') {
             Write-Host "    $line" -ForegroundColor DarkGray
         } elseif ($line -match 'error|Error') {
@@ -193,8 +266,11 @@ if (-not $KeepImages -and $imageCount -gt 0) {
             $imagesHadErrors = $true
         }
     }
-    if ($imagesHadErrors -or $LASTEXITCODE -ne 0) {
+    $imagesLeft = @(docker images -q 2>$null | Where-Object { $images -contains $_ })
+    $relistFailed = ($LASTEXITCODE -ne 0)
+    if ($imagesLeft.Count -gt 0 -or ($relistFailed -and ($imagesHadErrors -or $imagesResult.Failed))) {
         Write-Host "  WARNING: Some images may not have been removed cleanly." -ForegroundColor Yellow
+        $script:problems++
     } else {
         Write-Host "  DONE: All images removed." -ForegroundColor Green
     }
@@ -212,17 +288,24 @@ if (-not $KeepVolumes -and $volumeCount -gt 0) {
     Write-Host "`n  [$step/$totalSteps] Removing all volumes..." -ForegroundColor Cyan
     $volumesHadErrors = $false
     # Reuse the list captured up front instead of re-querying.
-    $volumesOutput = @(docker volume rm $volumes 2>&1)
-    foreach ($line in $volumesOutput) {
-        if ($line -match '^[a-f0-9]') {
-            Write-Host "    Removed: $($line.Substring(0,12))..." -ForegroundColor DarkGray
-        } elseif ($line -match 'error|Error') {
+    $volumesResult = Invoke-DevKitDockerBatch -Command @('volume', 'rm') -Ids @($volumes)
+    foreach ($line in $volumesResult.Output) {
+        if ($line -match $alreadyGone) { continue }
+        # Named volumes ('myapp_pgdata') are not hex ids: the old "starts
+        # with a hex digit, show 12 characters" test skipped most of them
+        # and threw on any short name that happened to start with a-f.
+        if ($line -match 'error|Error') {
             Write-Host "    ERROR: $line" -ForegroundColor Red
             $volumesHadErrors = $true
+        } elseif ("$line".Trim()) {
+            Write-Host "    Removed: $line" -ForegroundColor DarkGray
         }
     }
-    if ($volumesHadErrors -or $LASTEXITCODE -ne 0) {
+    $volumesLeft = @(docker volume ls -q 2>$null | Where-Object { $volumes -contains $_ })
+    $relistFailed = ($LASTEXITCODE -ne 0)
+    if ($volumesLeft.Count -gt 0 -or ($relistFailed -and ($volumesHadErrors -or $volumesResult.Failed))) {
         Write-Host "  WARNING: Some volumes may not have been removed cleanly." -ForegroundColor Yellow
+        $script:problems++
     } else {
         Write-Host "  DONE: All volumes removed." -ForegroundColor Green
     }
@@ -245,6 +328,7 @@ $builderPruneOutput = @(docker builder prune -f 2>&1)
 $builderPruneFailed = ($LASTEXITCODE -ne 0)
 if ($networkPruneFailed -or $builderPruneFailed) {
     Write-Host "  WARNING: Networks/build cache may not have been pruned cleanly." -ForegroundColor Yellow
+    $script:problems++
 } else {
     Write-Host "  DONE: Networks and build cache pruned." -ForegroundColor Green
 }
@@ -260,6 +344,7 @@ if ($KeepImages) {
         $anonVolumeOutput = @(docker volume prune -f 2>&1)
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  WARNING: Anonymous volume prune reported errors." -ForegroundColor Yellow
+            $script:problems++
         }
     }
 } else {
@@ -269,12 +354,19 @@ if ($KeepImages) {
     $systemPruneOutput = @(docker @pruneArgs 2>&1)
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  WARNING: Final system prune reported errors." -ForegroundColor Yellow
+        $script:problems++
     }
 }
 
 Write-Host "`n  ===================================" -ForegroundColor Cyan
-Write-Host "  DOCKER NUKE COMPLETE!" -ForegroundColor Green
-Write-Host "  All Docker resources have been destroyed." -ForegroundColor Gray
+if ($script:problems -gt 0) {
+    Write-Host "  DOCKER NUKE FINISHED WITH PROBLEMS" -ForegroundColor Red
+    Write-Host "  $($script:problems) step(s) reported errors - see the WARNING lines above." -ForegroundColor Gray
+} else {
+    Write-Host "  DOCKER NUKE COMPLETE!" -ForegroundColor Green
+    $keptNote = if ($kept.Count -gt 0) { " except $($kept -join ' and ') (kept)" } else { '' }
+    Write-Host "  All Docker resources have been destroyed$keptNote." -ForegroundColor Gray
+}
 Write-Host "  ===================================`n" -ForegroundColor Cyan
 
 # Show disk space recovered
@@ -284,3 +376,5 @@ if ($systemDf) {
     $systemDf | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 }
 Write-Host ""
+if ($script:problems -gt 0) { exit 1 }
+exit 0

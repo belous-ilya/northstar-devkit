@@ -52,6 +52,14 @@ if ($foundProcesses.Count -eq 0) {
 
 Write-Host ""
 
+if ($Kill -and -not (Test-DevKitCanPrompt)) {
+    # -Kill asks about each process in turn. With nobody to answer (the
+    # Control Center runs tools with stdin closed) Read-Host throws on the
+    # first one, so say so and stop at the report instead.
+    Write-DevKitInfo "-Kill asks about each process, which needs a terminal. Nothing was stopped; use Kill Port for a specific port."
+    $Kill = $false
+}
+
 if ($Kill) {
     Write-Host "  Kill Mode Enabled`n" -ForegroundColor Magenta
 
@@ -68,7 +76,15 @@ if ($Kill) {
     }
 
     $failed = 0
+    $protectedPids = Get-DevKitOwnProcessTreeIds
     foreach ($proc in $uniqueProcesses) {
+        # Same floor as Kill-Port: never Windows' own processes, never the
+        # tree this script runs under. Refused before asking.
+        $refusal = Get-DevKitKillRefusalReason -ProcessId ([int]$proc.PID) -Name $proc.Name -ProtectedPids $protectedPids
+        if ($refusal) {
+            Write-Host "    Leaving PID $($proc.PID) ($($proc.Name)) on port $($proc.Port) alone: $refusal." -ForegroundColor Gray
+            continue
+        }
         $confirm = Read-Host "  Kill PID $($proc.PID) ($($proc.Name)) on port $($proc.Port)? (y/n)"
         if ($confirm -eq 'y') {
             # TOCTOU guard: the confirmation prompt can take an arbitrary
@@ -87,10 +103,10 @@ if ($Kill) {
             }
 
             try {
-                Stop-Process -Id $proc.PID -Force
+                Stop-Process -Id $proc.PID -Force -ErrorAction Stop
                 Write-Host "    DONE: Killed PID $($proc.PID)" -ForegroundColor Green
             } catch {
-                Write-Host "    ERROR: Failed to kill PID $($proc.PID): $_" -ForegroundColor Red
+                Write-Host "    ERROR: Failed to kill PID $($proc.PID): $($_.Exception.Message)" -ForegroundColor Red
                 $failed++
             }
         } else {

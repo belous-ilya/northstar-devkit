@@ -62,8 +62,7 @@ if (-not $found) {
 }
 
 if (-not $Force) {
-    $confirm = Read-Host "  Delete Turbopack caches? (y/n)"
-    if ($confirm -ne 'y') {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete the Turbopack caches listed above")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

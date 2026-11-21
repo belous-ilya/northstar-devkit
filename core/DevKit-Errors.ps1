@@ -6,13 +6,11 @@
     Backs the three `errors.*` RPC methods (see core/RpcMethods.ps1) that
     feed the app's Error Center:
 
-      - errors.system      Windows Event Log Critical/Error entries. Same
-                           Get-WinEvent FilterHashtable approach - and the
-                           same defensive posture about "no matching events"
-                           being a NORMAL outcome, detected by the error
+      - errors.system      Windows Event Log Critical/Error entries, via a
+                           Get-WinEvent FilterHashtable query. "No matching
+                           events" is a NORMAL outcome, detected by the error
                            record's identity so non-English Windows stays
-                           quiet - as
-                           tools/maintenance/Get-RecentEventErrors.ps1.
+                           quiet.
                            Confirmed transient host-OS events are DEMOTED
                            to warning with a "what to do" note, never
                            dropped - see KNOWN-TRANSIENT SYSTEM EVENTS.
@@ -410,7 +408,13 @@ function Get-DevKitSystemErrors {
     }
     # Get-WinEvent already returns newest-first; sort defensively anyway so
     # the contract holds regardless of provider ordering quirks.
-    return @($entries | Sort-Object -Property timestamp -Descending)
+    #
+    # A script-block key, NOT `-Property timestamp`: the entries are ordered
+    # dictionaries, and Sort-Object's property lookup cannot see a dictionary
+    # KEY - every entry compared equal, and pwsh 7's unstable sort then
+    # shuffled any list longer than about 16 instead of ordering it.
+    # (timestamp is an ISO-8601 UTC string, so string order is time order.)
+    return @($entries | Sort-Object -Property { [string]$_['timestamp'] } -Descending)
 }
 
 # ==================== DEVKIT'S OWN TRACING LOG ====================

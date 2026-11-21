@@ -6,10 +6,14 @@
     Reports the local package manager cache location (and size, where
     discoverable) for the project at -Path. Auto-detects npm/yarn/pnpm/bun
     from lock files (same detection used across the rest of DevKit), since
-    each package manager exposes its cache info differently:
-      - npm:  npm config get cache / npm cache verify
+    each package manager exposes its cache info differently. Read-only:
+    it asks where the cache is and adds up the files there. It does NOT run
+    `npm cache verify`, which this tool used to do for npm - that command
+    garbage-collects the cache and rewrites its index, and can run for
+    minutes on a large one, behind a button labelled "check".
+      - npm:  npm config get cache
       - pnpm: pnpm store path
-      - yarn: yarn cache dir
+      - yarn: yarn cache dir (Yarn 1), yarn config get cacheFolder (Yarn 2+)
       - bun:  no programmatic "print cache path" command; falls back to
               bun's documented, fixed per-user cache location
 
@@ -52,17 +56,32 @@ if (-not (Test-DevKitCommand $manager.Command)) {
     exit 1
 }
 
+# Asked from inside the project: a project-level .npmrc / .yarnrc.yml can
+# move the cache, and a Yarn 2+ project pins its own yarn binary - from any
+# other folder these would describe a different cache than the project uses.
 $cachePath = $null
-switch ($manager.Command) {
-    "npm" { $cachePath = (npm config get cache 2>$null) }
-    "pnpm" { $cachePath = (pnpm store path 2>$null) }
-    "yarn" { $cachePath = (yarn cache dir 2>$null) }
-    "bun" {
-        # bun has no programmatic "print cache path" command; its cache
-        # lives under a fixed, documented per-user location on Windows.
-        $cachePath = Join-Path $env:USERPROFILE ".bun\install\cache"
+Push-Location $targetPath
+try {
+    switch ($manager.Command) {
+        "npm" { $cachePath = (npm config get cache 2>$null | Select-Object -Last 1) }
+        "pnpm" { $cachePath = (pnpm store path 2>$null | Select-Object -Last 1) }
+        "yarn" {
+            $cachePath = (yarn cache dir 2>$null | Select-Object -Last 1)
+            if ($LASTEXITCODE -ne 0 -or -not $cachePath -or -not (Test-Path -LiteralPath $cachePath)) {
+                # Yarn 2+ (berry) has no 'cache dir' command.
+                $cachePath = (yarn config get cacheFolder 2>$null | Select-Object -Last 1)
+            }
+        }
+        "bun" {
+            # bun has no programmatic "print cache path" command; its cache
+            # lives under a fixed, documented per-user location on Windows.
+            $cachePath = Join-Path $env:USERPROFILE ".bun\install\cache"
+        }
     }
+} finally {
+    Pop-Location
 }
+if ($cachePath) { $cachePath = ([string]$cachePath).Trim() }
 
 if ($cachePath) {
     Write-DevKitInfo "Cache Path: $cachePath"
@@ -71,9 +90,7 @@ if ($cachePath) {
 }
 Write-Host ""
 
-if ($manager.Command -eq "npm") {
-    npm cache verify
-} elseif ($cachePath -and (Test-Path $cachePath)) {
+if ($cachePath -and (Test-Path -LiteralPath $cachePath)) {
     # A pnpm store can hold 100k+ files - measure with robocopy in list-only
     # mode first (~5x faster than a Get-ChildItem walk, byte-identical,
     # long-path safe; the same fast path Find-StaleNodeModules.ps1 uses).
@@ -90,15 +107,17 @@ if ($manager.Command -eq "npm") {
     $sizeNote = ""
     if ($null -eq $size) {
         $sizeErrors = $null
-        $size = (Get-ChildItem $cachePath -Recurse -ErrorAction SilentlyContinue -ErrorVariable sizeErrors |
+        $size = (Get-ChildItem -LiteralPath $cachePath -Recurse -File -Force -ErrorAction SilentlyContinue -ErrorVariable sizeErrors |
             Measure-Object -Property Length -Sum).Sum
         if ($null -eq $size) { $size = 0 }
         if ($sizeErrors -and $sizeErrors.Count -gt 0) { $sizeNote = " (approximate)" }
     }
     $sizeMB = [math]::Round($size / 1MB, 2)
     Write-DevKitInfo "Cache Size: $sizeMB MB$sizeNote"
+} elseif ($cachePath) {
+    Write-DevKitInfo "That folder does not exist yet - nothing has been cached."
 } else {
-    Write-DevKitInfo "$($manager.Command) does not expose a cache verify/size command DevKit can call directly."
+    Write-DevKitInfo "$($manager.Command) did not report a cache location DevKit can measure."
 }
 
 Write-Host ""

@@ -21,6 +21,24 @@
 if (Get-Command Write-DevKitHeader -ErrorAction SilentlyContinue) { return }
 $global:DevKitCommonLoaded = $true
 
+# When output is piped (the app's Run dialog, a redirect to a file), write it
+# as UTF-8. A tool run headlessly gets its own hidden console, whose output
+# code page is the legacy OEM one - so a path under C:\Users\José, an em
+# dash, or any non-Latin text reached the app as "?" or U+FFFD (verified:
+# é arrived as FFFD, a Cyrillic letter as "?"). The app decodes the pipe as
+# UTF-8; this makes the tool, and every native command it starts (they
+# inherit the console), actually send that. Skipped when already UTF-8 -
+# which is always the case inside the RPC sidecar, whose single stdout
+# writer must never have its stream swapped underneath it - and never
+# touched for an interactive console, where the user's own code page stands.
+try {
+    if ([Console]::IsOutputRedirected -and [Console]::OutputEncoding.CodePage -ne 65001) {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    }
+} catch {
+    # No console at all (some hosts): nothing to configure.
+}
+
 # A process relaunched via Start-Process (e.g. the GUI's MTA->STA and
 # packaged-shell hops in gui/DevKit-GUI.ps1) can have module auto-load
 # resolve Microsoft.PowerShell.Utility to a same-named module from a
@@ -42,6 +60,90 @@ if (Test-Path $devKitUtilityManifestPath) {
 . (Join-Path $PSScriptRoot "DevKit-UI.ps1")
 
 # ==================== SETTINGS ====================
+
+function Get-DevKitJsonReadArgs {
+    <#
+    .SYNOPSIS
+        Extra arguments for every ConvertFrom-Json that reads DevKit's own
+        data (the stores, and RPC requests): @{ DateKind = 'String' } where
+        the cmdlet has that parameter, else an empty table.
+    .DESCRIPTION
+        PowerShell 7 turns any JSON string that LOOKS like an ISO date into a
+        [datetime]. DevKit's data is full of such strings (updatedAt,
+        lastUsedUtc, lastUpdateCheckUtc - and a note can simply be one), and
+        every reader then did [string]$value, which renders a DateTime as
+        "11/21/2026 10:00:00": the zone is gone, a "+02:00" stamp has been
+        shifted to local time, and the next save wrote that back for good.
+        Windows PowerShell 5.1 never converted, so the two shells disagreed
+        about the same file. -DateKind String (PowerShell 7.5+) keeps the
+        text as written. ConvertTo-DevKitStoredText covers 7.0 - 7.4.
+    #>
+    if ($null -eq $script:DevKitJsonReadArgs) {
+        $script:DevKitJsonReadArgs = @{}
+        try {
+            if ((Get-Command ConvertFrom-Json -ErrorAction Stop).Parameters.ContainsKey('DateKind')) {
+                $script:DevKitJsonReadArgs = @{ DateKind = 'String' }
+            }
+        } catch { }
+    }
+    return $script:DevKitJsonReadArgs
+}
+
+function ConvertTo-DevKitStoredText {
+    <#
+    .SYNOPSIS
+        A value read from JSON, as the text that was written. Undoes
+        PowerShell 7's date coercion where Get-DevKitJsonReadArgs could not
+        prevent it (7.0 - 7.4): a DateTime comes back as a round-trip ISO
+        string, never as the culture-style text a plain [string] cast gives.
+    #>
+    param($Value)
+    if ($Value -is [datetime] -or $Value -is [datetimeoffset]) {
+        return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    return [string]$Value
+}
+
+function Read-DevKitStoreFile {
+    <#
+    .SYNOPSIS
+        The text of one of DevKit's JSON stores (settings.json,
+        projects.json), or $null when the file does not exist. THROWS when
+        the file exists but cannot be read, after a few short retries.
+    .DESCRIPTION
+        "Could not read it" and "it is corrupt" are different facts, and the
+        store code used to treat them as one: any exception while loading -
+        including a sharing violation from another DevKit process replacing
+        the file at that instant, or antivirus holding it - sent the file to
+        quarantine as "corrupted" and reset every preference (or the whole
+        linked-projects list) to defaults. And a save that could not read
+        the file first wrote back only what the caller had passed, which for
+        the app is a one-key patch.
+
+        Callers now get the distinction: this throws for "unreadable right
+        now" (leave the file alone; fail the save), and they keep quarantine
+        for text that was read and would not parse.
+
+        ReadAllText rather than Get-Content: it decodes BOM-less UTF-8 the
+        same way under Windows PowerShell 5.1 and PowerShell 7 (5.1's
+        Get-Content reads it as ANSI, mangling any non-ASCII project path).
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $lastError = $null
+    foreach ($attempt in 1..4) {
+        try {
+            return [System.IO.File]::ReadAllText($Path)
+        } catch [System.IO.FileNotFoundException] {
+            return $null
+        } catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds 60
+        }
+    }
+    throw "Could not read ${Path}: $($lastError.Exception.Message)"
+}
 
 function Get-DevKitSettingsFile {
     $dir = Join-Path $env:LOCALAPPDATA "NorthstarDevKit"
@@ -111,10 +213,15 @@ function Get-DevKitSettings {
     $path = Get-DevKitSettingsFile
     if (-not (Test-Path $path)) { return $defaults }
 
+    # Unreadable right now is NOT corrupt: answer this one call with the
+    # defaults and leave the file exactly where it is (Read-DevKitStoreFile).
+    $raw = $null
+    try { $raw = Read-DevKitStoreFile -Path $path } catch { return $defaults }
+
     try {
-        $raw = Get-Content -Path $path -Raw -ErrorAction Stop
         if ([string]::IsNullOrWhiteSpace($raw)) { return $defaults }
-        $data = $raw | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         if (-not $data.preferences) { return $defaults }
         # Fill in any preference missing from an older/partial file rather
         # than failing outright, so adding a new setting later never breaks
@@ -150,11 +257,16 @@ function Set-DevKitSettings {
         # written by a newer build) are preserved. Best-effort: any
         # read/parse failure falls back to the caller's copy as-is.
         $toSave = $Settings
+        # Read OUTSIDE the forgiving try below, so a file that exists but
+        # cannot be read fails the save. Carrying on would write the
+        # caller's object as the whole file - and the app's caller sends a
+        # one-key patch, so every other preference would silently revert.
+        $raw = Read-DevKitStoreFile -Path $path
         try {
-            if (Test-Path $path) {
-                $raw = Get-Content -Path $path -Raw -ErrorAction Stop
+            if ($null -ne $raw) {
                 if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                    $onDisk = $raw | ConvertFrom-Json -ErrorAction Stop
+                    $jsonArgs = Get-DevKitJsonReadArgs
+                    $onDisk = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
                     if ($onDisk.preferences -and $Settings.preferences) {
                         foreach ($prop in @($Settings.preferences.PSObject.Properties.Name)) {
                             $onDisk.preferences | Add-Member -MemberType NoteProperty -Name $prop -Value $Settings.preferences.$prop -Force
@@ -203,6 +315,15 @@ function Confirm-DevKitDestructiveAction {
         confirm, e.g. 'NUKE'. If omitted, a simple y/N prompt is used.
     .PARAMETER Force
         Bypass the prompt entirely (the caller's own -Force switch).
+    .PARAMETER Always
+        Ask even when the user has turned the confirmDestructive setting
+        off. For a prompt that is the tool's whole point or a choice between
+        steps rather than a second "are you sure": "Kill Process by Port
+        (With Confirmation)" exists next to a no-confirm twin, and Git
+        Cleanup asks about each step separately. These tools asked
+        unconditionally before they used this gate; -Always keeps that,
+        while still gaining the safe refusal where nobody can answer.
+        -Force still bypasses it.
     .OUTPUTS
         [bool] $true if the action should proceed.
     #>
@@ -210,13 +331,16 @@ function Confirm-DevKitDestructiveAction {
         [Parameter(Mandatory = $true)][string]$Action,
         [string[]]$AffectedPaths = @(),
         [string]$TypedPhrase,
-        [switch]$Force
+        [switch]$Force,
+        [switch]$Always
     )
 
     if ($Force) { return $true }
 
-    $settings = Get-DevKitSettings
-    if (-not $settings.preferences.confirmDestructive) { return $true }
+    if (-not $Always) {
+        $settings = Get-DevKitSettings
+        if (-not $settings.preferences.confirmDestructive) { return $true }
+    }
 
     Write-Host "  This will: $Action" -ForegroundColor Yellow
     foreach ($p in $AffectedPaths) { Write-Host "    - $p" -ForegroundColor Gray }
@@ -263,23 +387,13 @@ function Test-DevKitCanPrompt {
     }
 }
 
-# ==================== MODULE MENU DISPATCHER ====================
+# ==================== TOOL MANIFESTS AND THE ARROW-KEY MENU ====================
 #
-# DevKit.ps1's ten tool-category submenus (Port/Node/Next.js/Vite/Git/
-# Docker/System/Workflow/Diagnostics/WiFi Tools) previously each hand-coded
-# their own Show-XMenu + Start-XTools function pair, all following the exact
-# same recipe: print numbered options, read a choice, switch on it, build a
-# script path via Join-Path, Test-Path it, invoke it. That ~33x-duplicated
-# recipe is exactly what caused two real regressions in this repo's history
-# (see commits ecfff84, 776e166). The functions below replace all ten pairs
-# with one generic implementation driven by a small "_module.psd1" manifest
-# per tool folder. (The Main Menu and the Projects menu are deliberately
-# NOT manifest-driven: Main Menu is a single hand-written function with
-# intentional category groupings, not a duplicated pattern, and Projects
-# manages the picker system itself rather than dispatching to a leaf
-# script - neither fits this generic "run a script for a chosen project"
-# shape, so forcing them into it would add risk without removing any real
-# duplication.)
+# Every tool folder describes its tools in a small "_module.psd1" manifest
+# (Get-DevKitModule loads one). The catalog the app and the CLI show is built
+# from those manifests in core/DevKit-GuiCore.ps1. Show-DevKitInteractiveMenu
+# is the arrow-key picker a tool can use for its own choices (Run Package
+# Script lists the package.json scripts with it).
 
 function Get-DevKitModule {
     <#
@@ -302,131 +416,6 @@ function Get-DevKitModule {
     return $module
 }
 
-function Read-DevKitTypedValue {
-    <#
-    .SYNOPSIS
-        Prompts for and validates one typed value from a manifest Item's
-        Prompts entry, replicating the exact validation each menu option
-        used to hand-code (e.g. Kill-Port's "ERROR: Invalid port number.").
-    .PARAMETER Spec
-        A single Prompts hashtable: @{ Name; Type ('Int'|'YesNo'|'String');
-        Prompt; Optional; Min; Max; InvalidMessage }.
-    .OUTPUTS
-        The typed value, or $null if the input was blank/invalid. For
-        Type='YesNo' this never returns $null (blank/anything-but-'y' is a
-        real, valid "no" answer, matching the original hand-coded behavior
-        of only ever adding the arg when the answer was literally 'y').
-    #>
-    param([Parameter(Mandatory = $true)][hashtable]$Spec)
-
-    switch ($Spec.Type) {
-        'Int' {
-            $promptText = $Spec.Prompt
-            $raw = Read-Host $promptText
-            if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-            if ($raw -notmatch '^\d+$') { return $null }
-            $val = [int64]$raw
-            # $null checks, not truthiness: a Min/Max of 0 is a real bound.
-            if ($null -ne $Spec.Min -and $val -lt [int64]$Spec.Min) { return $null }
-            if ($null -ne $Spec.Max -and $val -gt [int64]$Spec.Max) { return $null }
-            # Reject like any other invalid input instead of overflowing:
-            # casting a value past Int32.MaxValue to [int] throws an uncaught
-            # OverflowException that kills the whole menu loop.
-            if ($val -gt [int]::MaxValue) { return $null }
-            return [int]$val
-        }
-        'YesNo' {
-            $raw = Read-Host "$($Spec.Prompt) (y/n)"
-            return ($raw -eq 'y')
-        }
-        'String' {
-            $raw = Read-Host $Spec.Prompt
-            if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-            return $raw
-        }
-        default {
-            throw "Unknown prompt type '$($Spec.Type)' in module manifest."
-        }
-    }
-}
-
-function Invoke-DevKitTool {
-    <#
-    .SYNOPSIS
-        Generic dispatcher: resolves whatever a manifest Item needs (a
-        project path, a file path, typed prompt values, static args) and
-        invokes the item's script - replacing the hand-coded
-        Join-Path/Test-Path/prompt/invoke block that used to be repeated at
-        every single menu option across all ten tool categories.
-    .PARAMETER FolderPath
-        The tool category's folder (e.g. .../ports), containing the item's script.
-    .PARAMETER Item
-        One entry from a module manifest's Items array.
-    .PARAMETER ForceReprompt
-        Passed through to Select-DevKitProject for RequiresProject items,
-        so a menu choice like "2p" can override the active project for one
-        run without disturbing it.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$FolderPath,
-        [Parameter(Mandatory = $true)][hashtable]$Item,
-        [switch]$ForceReprompt
-    )
-
-    $callArgs = @{}
-
-    if ($Item.RequiresProject) {
-        $targetPath = Select-DevKitProject -Prompt $Item.Label -ForceReprompt:$ForceReprompt
-        if ($null -eq $targetPath) {
-            Write-Host "  Cancelled -- no project selected." -ForegroundColor Yellow
-            return
-        }
-        $argName = if ($Item.ProjectArgName) { $Item.ProjectArgName } else { 'Path' }
-        $callArgs[$argName] = $targetPath
-    } elseif ($Item.RequiresFile) {
-        Write-Host "  [B] Browse for a file..."
-        Write-Host "  [T] Type a path manually"
-        Write-Host "  [0] Cancel"
-        $pickMode = Read-Host "Select option"
-        $filePath = $null
-        if ($pickMode -eq 'B' -or $pickMode -eq 'b') {
-            $filePath = Show-DevKitFileBrowser -Description $Item.RequiresFile.Description -Filter $Item.RequiresFile.Filter
-        } elseif ($pickMode -eq 'T' -or $pickMode -eq 't') {
-            $filePath = Read-Host $Item.RequiresFile.TypePrompt
-        }
-        if ([string]::IsNullOrWhiteSpace($filePath)) {
-            Write-Host "  Cancelled -- no file selected." -ForegroundColor Yellow
-            return
-        }
-        $callArgs[$Item.RequiresFile.ParamName] = $filePath
-    }
-
-    if ($Item.Prompts) {
-        foreach ($promptSpec in $Item.Prompts) {
-            $value = Read-DevKitTypedValue -Spec $promptSpec
-            if ($null -eq $value) {
-                if ($promptSpec.Optional) { continue }
-                $msg = if ($promptSpec.InvalidMessage) { $promptSpec.InvalidMessage } else { "Invalid value for $($promptSpec.Name)." }
-                Write-Host "  ERROR: $msg" -ForegroundColor Red
-                return
-            }
-            if ($promptSpec.Type -eq 'YesNo' -and -not $value) { continue }
-            $callArgs[$promptSpec.Name] = $value
-        }
-    }
-
-    if ($Item.StaticArgs) {
-        foreach ($key in $Item.StaticArgs.Keys) { $callArgs[$key] = $Item.StaticArgs[$key] }
-    }
-
-    $scriptPath = Join-Path $FolderPath $Item.Script
-    if (-not (Test-Path $scriptPath)) {
-        Write-DevKitError "Script not found: $scriptPath"
-        return
-    }
-
-    & $scriptPath @callArgs
-}
 
 function Show-DevKitInteractiveMenu {
     <#
@@ -587,71 +576,6 @@ function Show-DevKitInteractiveMenu {
     }
 }
 
-function Show-DevKitModuleMenu {
-    param([Parameter(Mandatory = $true)]$Module)
-    Show-Header $Module.Name
-    if (-not [string]::IsNullOrWhiteSpace([string]$Module.Description)) {
-        Write-Host "  $($Module.Description)" -ForegroundColor Gray
-        Write-Host ""
-    }
-}
-
-function Start-DevKitModuleTools {
-    <#
-    .SYNOPSIS
-        Generic submenu loop for any manifest-backed tool category.
-    .PARAMETER FolderPath
-        Full path to the category folder (e.g. .../ports).
-    #>
-    param([Parameter(Mandatory = $true)][string]$FolderPath)
-
-    $module = Get-DevKitModule -FolderPath $FolderPath
-
-    while ($true) {
-        Show-DevKitModuleMenu -Module $module
-        $entries = @()
-        foreach ($item in $module.Items) { $entries += @{ Key = $item.Key; Label = $item.Label } }
-        $entries += @{ Key = '?'; Label = 'Help - what does each option do?' }
-        $entries += @{ Key = '0'; Label = 'Back' }
-        $choice = Show-DevKitInteractiveMenu -Entries $entries -PromptLabel 'Select option'
-        $trimmed = $choice.Trim()
-
-        if ($trimmed -eq '0') { return }
-
-        if ($trimmed -eq '?') {
-            Show-DevKitModuleMenu -Module $module
-            foreach ($item in $module.Items) {
-                Write-Host ("  [{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor Cyan
-                if (-not [string]::IsNullOrWhiteSpace([string]$item.Help)) {
-                    Write-Host "      $($item.Help)" -ForegroundColor Gray
-                } else {
-                    Write-Host "      (no additional help for this item)" -ForegroundColor Gray
-                }
-            }
-            Write-Host ""
-            Read-Host "Press Enter to return to the menu"
-            continue
-        }
-
-        $forceReprompt = $false
-        $keyToMatch = $trimmed
-        if ($trimmed -match '^(.+)p$') {
-            $keyToMatch = $matches[1]
-            $forceReprompt = $true
-        }
-
-        $item = $module.Items | Where-Object { $_.Key -eq $keyToMatch } | Select-Object -First 1
-        if (-not $item) {
-            Write-Host "  Invalid option. Press Enter to continue." -ForegroundColor Red
-            Read-Host
-            continue
-        }
-
-        Clear-Host
-        Invoke-DevKitTool -FolderPath $FolderPath -Item $item -ForceReprompt:$forceReprompt
-        Read-Host "Press Enter to continue"
-    }
-}
 
 # ==================== OUTPUT HELPERS ====================
 
@@ -691,6 +615,93 @@ function Write-DevKitInfo {
 function Test-DevKitAdmin {
     return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-DevKitElevationTaskSettings {
+    <#
+    .SYNOPSIS
+        The two scheduled-task settings DevKit's elevation task must carry,
+        as @{ Priority; MultipleInstances }. One definition, read by the
+        script that registers the task and by the repair for tasks that
+        were registered before these were set.
+    .DESCRIPTION
+        Both are about the DEFAULTS of New-ScheduledTaskSettingsSet, which
+        suit a background job and are wrong for an application:
+
+        Priority 7 (the default) starts the process at Below Normal CPU
+        priority, LOW disk I/O priority and low memory priority, and every
+        child inherits it - measured on Windows 11 26300: BelowNormal / I/O
+        1 / memory 2, against Normal / 2 / 5 at priority 4. DevKit is
+        launched through this task on every start, so the app, its sidecar,
+        every tool it ran and the embedded terminal were all throttled.
+
+        MultipleInstances IgnoreNew (the default) makes a second
+        "schtasks /run" do nothing at all while the first instance is alive
+        - and DevKit, being a tray application, is always alive. Launching
+        DevKit again therefore did nothing, instead of reaching the
+        single-instance handler that brings the running window forward.
+        Parallel lets the second instance start; it hands over and exits.
+    #>
+    return @{ Priority = 4; MultipleInstances = 'Parallel' }
+}
+
+function Test-DevKitElevationTaskSettingsCurrent {
+    <#
+    .SYNOPSIS
+        Pure: do a task's Priority and MultipleInstances already match
+        Get-DevKitElevationTaskSettings?
+    #>
+    param($Priority, $MultipleInstances)
+    $wanted = Get-DevKitElevationTaskSettings
+    return (("$Priority" -eq "$($wanted.Priority)") -and ("$MultipleInstances" -eq "$($wanted.MultipleInstances)"))
+}
+
+function Repair-DevKitElevationTaskSettings {
+    <#
+    .SYNOPSIS
+        Brings an EXISTING elevation task up to Get-DevKitElevationTaskSettings,
+        in place: its action, principal, triggers and every other setting are
+        left exactly as they are. Idempotent and prompt-free.
+    .DESCRIPTION
+        Changing the registration script only helps tasks registered from
+        now on; an install that updates keeps the task it already has. The
+        app calls this once per start (system.repairElevationTask). It is
+        already elevated then, which editing a highest-privileges task
+        needs; from an unelevated session the edit is refused and this
+        reports 'failed' without throwing.
+    .OUTPUTS
+        @{ status = 'absent' | 'current' | 'repaired' | 'failed'; priority;
+           multipleInstances; message } - the two values as they are AFTER
+        the call.
+    #>
+    param([string]$TaskName = 'NorthstarDevKit-Admin')
+
+    $result = [ordered]@{ status = 'absent'; priority = $null; multipleInstances = $null; message = '' }
+    $task = $null
+    try { $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch { $task = $null }
+    if ($null -eq $task) { return $result }
+
+    $result.priority = [int]$task.Settings.Priority
+    $result.multipleInstances = [string]$task.Settings.MultipleInstances
+    if (Test-DevKitElevationTaskSettingsCurrent -Priority $task.Settings.Priority -MultipleInstances $task.Settings.MultipleInstances) {
+        $result.status = 'current'
+        return $result
+    }
+
+    $wanted = Get-DevKitElevationTaskSettings
+    try {
+        $task.Settings.Priority = $wanted.Priority
+        $task.Settings.MultipleInstances = $wanted.MultipleInstances
+        [void](Set-ScheduledTask -InputObject $task -ErrorAction Stop)
+        $result.status = 'repaired'
+        $result.priority = [int]$wanted.Priority
+        $result.multipleInstances = [string]$wanted.MultipleInstances
+        $result.message = 'Takes effect the next time DevKit starts.'
+    } catch {
+        $result.status = 'failed'
+        $result.message = "$($_.Exception.Message)"
+    }
+    return $result
 }
 
 function Test-DevKitCommand {
@@ -767,20 +778,32 @@ function Invoke-DevKitInDirectory {
 
 # ==================== FILE / CACHE HELPERS ====================
 
-function Remove-DevKitNodeModules {
+function Remove-DevKitNodeModulesWithStatus {
     <#
     .SYNOPSIS
-        Deletes node_modules from the given project directory.
+        Deletes node_modules from a project directory and says which of the
+        three things happened: 'Removed', 'Absent' or 'Failed'.
     .DESCRIPTION
+        'Absent' (there was no node_modules) and 'Failed' (files in it are
+        locked and it is still there) are opposite outcomes, and the old
+        boolean returned $false for both. Every caller printed SKIP for
+        either, so a delete blocked by a running dev server was reported as
+        "nothing to do" - and Nuke-And-Reinstall then went on to delete the
+        lock files and install on top of a half-deleted tree.
+
         Long-path-safe deletion: mirrors an empty folder over node_modules
-        with robocopy, then removes the (now-empty) directory tree.
-        Robocopy is bounded with /R:2 /W:1 so a locked file cannot hang the
-        call forever. Returns $false both when node_modules never existed
-        and when the delete attempt could not fully remove it (e.g. locked
-        files); throws if robocopy itself reports a hard failure
-        (exit code >= 8), which is distinct from either $false case.
+        with robocopy, then removes the (now-empty) directory tree. Robocopy
+        is bounded with /R:2 /W:1 so a locked file cannot hang the call.
+        Throws if robocopy itself reports a hard failure (exit code >= 8).
+
+        A node_modules that is a junction or symbolic link (dev containers,
+        some monorepo setups) has only the LINK removed. Mirroring an empty
+        folder through it would empty the directory it points at - somebody
+        else's node_modules.
     .PARAMETER Path
         The project directory containing node_modules.
+    .OUTPUTS
+        [string] 'Removed' | 'Absent' | 'Failed'
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -790,8 +813,16 @@ function Remove-DevKitNodeModules {
     $resolved = Resolve-DevKitDirectory -Path $Path
     $nmPath = Join-Path $resolved "node_modules"
 
-    if (-not (Test-Path $nmPath)) {
-        return $false
+    if (-not (Test-Path -LiteralPath $nmPath)) {
+        return 'Absent'
+    }
+
+    $nmItem = Get-Item -LiteralPath $nmPath -Force
+    if ($nmItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        # Non-recursive delete of a directory link removes the link only.
+        [System.IO.Directory]::Delete($nmPath, $false)
+        if (Test-Path -LiteralPath $nmPath) { return 'Failed' }
+        return 'Removed'
     }
 
     # Long-path-safe deletion: mirror an empty folder, then remove
@@ -804,20 +835,120 @@ function Remove-DevKitNodeModules {
         if ($LASTEXITCODE -ge 8) {
             throw "robocopy failed to clear '$nmPath' (exit code $LASTEXITCODE) - files may be locked by a running process."
         }
-        Remove-Item -Path $nmPath -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $nmPath -Recurse -Force -ErrorAction SilentlyContinue
     } finally {
-        if (Test-Path $empty) {
-            Remove-Item $empty -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $empty) {
+            Remove-Item -LiteralPath $empty -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    if (Test-Path $nmPath) {
-        # Removal did not fully succeed (e.g. locked files) - report failure
-        # instead of pretending the directory is gone.
-        return $false
+    if (Test-Path -LiteralPath $nmPath) {
+        # Removal did not fully succeed (e.g. locked files) - say so instead
+        # of pretending the directory is gone.
+        return 'Failed'
     }
 
-    return $true
+    return 'Removed'
+}
+
+function Remove-DevKitNodeModules {
+    <#
+    .SYNOPSIS
+        Deletes node_modules from the given project directory. Returns $true
+        only when it existed and is now gone.
+    .DESCRIPTION
+        Kept for callers that only need yes/no. $false means EITHER "there
+        was none" OR "it could not be removed" - anything that must tell
+        those apart (every tool that goes on to do something destructive)
+        calls Remove-DevKitNodeModulesWithStatus instead.
+    .PARAMETER Path
+        The project directory containing node_modules.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+    return ((Remove-DevKitNodeModulesWithStatus -Path $Path) -eq 'Removed')
+}
+
+function Get-DevKitReinstallBlocker {
+    <#
+    .SYNOPSIS
+        Why a "delete everything and reinstall" must not start, or $null
+        when it may.
+    .DESCRIPTION
+        The reinstall tools used to delete node_modules and the lock files
+        first and discover only at the install step that the package
+        manager was not on PATH - leaving a project with neither. Asked
+        BEFORE anything is deleted.
+    .OUTPUTS
+        [string] reason, or $null.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][hashtable]$Manager
+    )
+    if (-not (Test-Path -LiteralPath (Join-Path $Path 'package.json'))) {
+        return "there is no package.json in $Path, so there is nothing to reinstall"
+    }
+    if (-not (Test-DevKitCommand $Manager.Command)) {
+        return "$($Manager.Command) is not installed or not on PATH, so the reinstall could not run"
+    }
+    return $null
+}
+
+function Move-DevKitLockFilesAside {
+    <#
+    .SYNOPSIS
+        Renames a project's lock files to "<name>.devkit-bak" so a fresh
+        install resolves from scratch, and returns what it moved.
+    .DESCRIPTION
+        Set aside, not deleted: if the install that follows fails (offline,
+        an expired registry token), Restore-DevKitLockFiles puts them back.
+        Deleting them outright left a failed run with no lock file at all -
+        and an untracked one was gone for good.
+    .OUTPUTS
+        Array of hashtables (Original, Backup) - full paths.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $moved = @()
+    foreach ($name in @("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock")) {
+        $original = Join-Path $Path $name
+        if (-not (Test-Path -LiteralPath $original)) { continue }
+        $backup = "$original.devkit-bak"
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop }
+        Move-Item -LiteralPath $original -Destination $backup -Force -ErrorAction Stop
+        $moved += @{ Original = $original; Backup = $backup }
+    }
+    return , $moved
+}
+
+function Restore-DevKitLockFiles {
+    <#
+    .SYNOPSIS
+        Puts lock files set aside by Move-DevKitLockFilesAside back, over
+        whatever a failed install may have half-written.
+    #>
+    param([AllowEmptyCollection()][array]$Moved = @())
+    foreach ($entry in @($Moved)) {
+        if (-not $entry -or -not (Test-Path -LiteralPath $entry.Backup)) { continue }
+        Move-Item -LiteralPath $entry.Backup -Destination $entry.Original -Force -ErrorAction Stop
+    }
+}
+
+function Remove-DevKitLockFileBackups {
+    <#
+    .SYNOPSIS
+        Deletes the backups once the install has succeeded and written new
+        lock files.
+    #>
+    param([AllowEmptyCollection()][array]$Moved = @())
+    foreach ($entry in @($Moved)) {
+        if ($entry -and (Test-Path -LiteralPath $entry.Backup)) {
+            Remove-Item -LiteralPath $entry.Backup -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Clear-DevKitDirectoryContents {
@@ -1103,6 +1234,142 @@ function Invoke-DevKitPackageCacheClean {
 
 # ==================== PORT / PROCESS HELPERS ====================
 
+function Get-DevKitNeverKillProcessNames {
+    <#
+    .SYNOPSIS
+        The process names no DevKit tool may ever stop (lowercase, no .exe).
+    .DESCRIPTION
+        Processes Windows misbehaves or dies without. DevKit always runs
+        elevated, so nothing else stands between a kill tool and these:
+        stopping the svchost that owns port 135 (the RPC endpoint mapper),
+        or csrss/wininit/lsass, makes Windows force a shutdown. One list for
+        every tool that stops processes - Close-OutSession.ps1 reads it too,
+        so the tools cannot drift apart on what is untouchable.
+
+        Returned from a function rather than held in a $script: variable so
+        it resolves the same way however this file was loaded (dot-sourced
+        by a tool, imported through DevKit.Core, skipped by the load guard).
+    #>
+    return @(
+        'system', 'idle', 'registry', 'secure system', 'memory compression',
+        'smss', 'csrss', 'wininit', 'winlogon', 'services', 'svchost', 'lsass',
+        'lsaiso', 'fontdrvhost', 'dwm', 'werfault', 'sihost', 'taskhostw',
+        'runtimebroker', 'msmpeng', 'nissrv', 'searchindexer', 'spoolsv'
+    )
+}
+
+function Get-DevKitProcessAncestry {
+    <#
+    .SYNOPSIS
+        A process's pid plus every ancestor pid above it.
+    .DESCRIPTION
+        Pure - it reads only $Processes - so the walk is unit-testable
+        against a synthetic process table.
+
+        Win32_Process.ParentProcessId is a number RECORDED at creation, so a
+        recycled pid can make a stranger look like an ancestor. That is the
+        harmless direction here: the only thing this list does is EXCLUDE
+        pids from being killed, so a false positive costs one un-stopped
+        process while a false negative could kill the app that launched us.
+        The visited set makes a pid-reuse cycle (A parents B, B parents A)
+        terminate instead of spinning.
+    .PARAMETER ProcessId
+        The pid to walk up from (included in the result).
+    .PARAMETER Processes
+        Rows exposing ProcessId and ParentProcessId, e.g. from
+        Get-CimInstance Win32_Process. Empty is valid: the result is then
+        just $ProcessId itself.
+    .OUTPUTS
+        [int[]] - self first, then each ancestor, nearest first.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [object[]]$Processes = @()
+    )
+
+    $byId = @{}
+    foreach ($row in @($Processes)) {
+        if ($null -eq $row) { continue }
+        $rowId = 0
+        if (-not [int]::TryParse([string]$row.ProcessId, [ref]$rowId)) { continue }
+        if (-not $byId.ContainsKey($rowId)) { $byId[$rowId] = $row }
+    }
+
+    $chain = @()
+    $seen = @{}
+    $current = $ProcessId
+    while ($current -gt 0 -and -not $seen.ContainsKey($current)) {
+        $chain += $current
+        $seen[$current] = $true
+        if (-not $byId.ContainsKey($current)) { break }
+        $parent = 0
+        if (-not [int]::TryParse([string]$byId[$current].ParentProcessId, [ref]$parent)) { break }
+        $current = $parent
+    }
+    return , @($chain)
+}
+
+function Get-DevKitOwnProcessTreeIds {
+    <#
+    .SYNOPSIS
+        This process's pid plus every ancestor's - the pids a kill tool must
+        never stop, because they are the tool itself, the sidecar that
+        spawned it, the DevKit app above that, or the terminal the user ran
+        it from.
+    .DESCRIPTION
+        One Win32_Process snapshot (two properties). If the snapshot cannot
+        be taken the result degrades to just $PID rather than failing the
+        tool - the name-based refusals in Get-DevKitKillRefusalReason still
+        apply.
+    #>
+    try {
+        $snapshot = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction Stop)
+        $chain = Get-DevKitProcessAncestry -ProcessId $PID -Processes $snapshot
+        return , @($chain)
+    } catch {
+        return , @($PID)
+    }
+}
+
+function Get-DevKitKillRefusalReason {
+    <#
+    .SYNOPSIS
+        Why a process must NOT be stopped, or $null when stopping it is fine.
+    .DESCRIPTION
+        The floor every kill path in tools/ shares. Reserved pids and
+        DevKit's own tree are refused before any name rule. An empty or
+        unknown name is allowed: these rules exist to stop a tool from
+        killing Windows or itself, not to second-guess a target the user
+        picked - a tool that wants a stricter rule (Close-OutSession only
+        stops recognized dev runtimes) layers it on top.
+    .PARAMETER ProcessId
+        The candidate's pid.
+    .PARAMETER Name
+        The candidate's process name, with or without a .exe suffix.
+    .PARAMETER ProtectedPids
+        Pids that must survive - normally Get-DevKitOwnProcessTreeIds.
+    .OUTPUTS
+        [string] reason, or $null when the process may be stopped.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [AllowEmptyString()][AllowNull()][string]$Name = '',
+        [int[]]$ProtectedPids = @()
+    )
+
+    if ($ProcessId -le 0 -or $ProcessId -eq 4) { return 'reserved system process' }
+    if (@($ProtectedPids) -contains $ProcessId) { return "DevKit's own process tree" }
+
+    $normalized = ([string]$Name).Trim().ToLowerInvariant()
+    if ($normalized.EndsWith('.exe')) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 4)
+    }
+    if ($normalized -and ((Get-DevKitNeverKillProcessNames) -contains $normalized)) {
+        return "protected system process '$normalized'"
+    }
+    return $null
+}
+
 function Get-DevKitProcessByPort {
     param(
         [Parameter(Mandatory = $true)]
@@ -1110,12 +1377,15 @@ function Get-DevKitProcessByPort {
         [int]$Port
     )
 
-    # Prefer the real listener: a stale non-Listen row (e.g. TIME_WAIT with
-    # OwningProcess 0) can sort ahead of it in the raw Get-NetTCPConnection
-    # output and would otherwise win the -First 1 pick, reporting PID 0.
+    # ONLY a real listener counts as "the process on this port". For about
+    # two minutes after a dev server stops, closed-connection leftovers
+    # (TIME_WAIT rows with OwningProcess 0) linger on its port; this used to
+    # fall back to the first row of any state, so every port tool announced
+    # "PID 0 (Idle)" as the owner of a port nothing was listening on, and
+    # Kill-Port answered "Refusing to target PID 0" where the truth was
+    # "nothing is listening".
     $connections = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue)
     $connection = $connections | Where-Object { $_.State -eq 'Listen' -and $_.OwningProcess -ne 0 } | Select-Object -First 1
-    if (-not $connection) { $connection = $connections | Select-Object -First 1 }
     if (-not $connection) {
         return $null
     }
@@ -1172,211 +1442,6 @@ function ConvertFrom-DevKitExcludedPortRanges {
     return ,$results
 }
 
-# ==================== FOLDER / FILE BROWSER ====================
-
-function Initialize-DevKitFormsInterop {
-    <#
-    .SYNOPSIS
-        One-time native interop compile for a real console-window owner (so a
-        dialog z-orders correctly above the console instead of floating
-        globally topmost). Idempotent and cheap after first use - done lazily
-        here rather than at dot-source time, because most tool runs never
-        show a dialog and shouldn't pay the WinForms/C# compile cost.
-    #>
-    if ('DevKit.NativeMethods' -as [type]) { return }
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-    Add-Type -ReferencedAssemblies 'System.Windows.Forms' -TypeDefinition @'
-using System;
-using System.Windows.Forms;
-namespace DevKit {
-    public static class NativeMethods {
-        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-        public static extern IntPtr GetConsoleWindow();
-    }
-    public class Win32Window : IWin32Window {
-        private IntPtr _handle;
-        public Win32Window(IntPtr handle) { _handle = handle; }
-        public IntPtr Handle { get { return _handle; } }
-    }
-}
-'@ -ErrorAction SilentlyContinue
-}
-
-function Show-DevKitFolderBrowser {
-    <#
-    .SYNOPSIS
-        Shows a folder-browse dialog from a console host, regardless of the
-        host's own apartment state.
-    .DESCRIPTION
-        Windows PowerShell 5.1's console host defaults to STA; pwsh's
-        console host defaults to MTA. FolderBrowserDialog is OLE-based and
-        requires STA. Rather than depend on whichever apartment state the
-        calling host happens to be in (which silently varies by which
-        PowerShell launched DevKit), this spins up a dedicated Runspace with
-        ApartmentState=STA, shows the dialog there, and marshals only the
-        resulting path string back out.
-    .PARAMETER Description
-        Text shown at the top of the dialog.
-    .PARAMETER InitialDirectory
-        Directory the dialog should start in, if it exists.
-    .OUTPUTS
-        [string] the chosen full path, or $null if the user cancelled or the
-        folder browser is unavailable on this machine.
-    #>
-    [CmdletBinding()]
-    param(
-        [string]$Description = "Select a project folder",
-        [string]$InitialDirectory
-    )
-
-    Initialize-DevKitFormsInterop   # process-wide types used inside the STA runspace below
-
-    try {
-        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
-        $rs.ApartmentState = [System.Threading.ApartmentState]::STA
-        $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
-        $rs.Open()
-    } catch {
-        Write-DevKitError "Could not start a folder-browser session: $_"
-        return $null
-    }
-
-    $ps = [System.Management.Automation.PowerShell]::Create()
-    $ps.Runspace = $rs
-
-    [void]$ps.AddScript({
-        param($Description, $InitialDirectory)
-
-        try {
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        } catch {
-            return @{ Ok = $false; Error = "Folder browser unavailable on this PowerShell install (Desktop Runtime not found). Type the path manually, or reinstall PowerShell via the official MSI/winget package." }
-        }
-
-        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-        $dialog.Description = $Description
-        $dialog.ShowNewFolderButton = $true
-        if ($InitialDirectory -and (Test-Path $InitialDirectory)) {
-            $dialog.SelectedPath = $InitialDirectory
-        }
-
-        $consoleHwnd = [DevKit.NativeMethods]::GetConsoleWindow()
-        $owner = $null
-        if ($consoleHwnd -ne [IntPtr]::Zero) {
-            $owner = New-Object DevKit.Win32Window ($consoleHwnd)
-        }
-
-        $result = if ($owner) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
-
-        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-            return @{ Ok = $true; Path = $dialog.SelectedPath }
-        }
-        return @{ Ok = $true; Path = $null }
-    }).AddArgument($Description).AddArgument($InitialDirectory)
-
-    try {
-        $outcome = ($ps.Invoke() | Select-Object -First 1)
-    } catch {
-        Write-DevKitError "Folder browser failed: $_"
-        $ps.Dispose(); $rs.Close(); $rs.Dispose()
-        return $null
-    }
-    $ps.Dispose()
-    $rs.Close()
-    $rs.Dispose()
-
-    if (-not $outcome -or -not $outcome.Ok) {
-        if ($outcome -and $outcome.Error) { Write-DevKitError $outcome.Error }
-        return $null
-    }
-    return $outcome.Path
-}
-
-function Show-DevKitFileBrowser {
-    <#
-    .SYNOPSIS
-        Shows a file-open dialog from a console host, regardless of the
-        host's own apartment state. Same STA-runspace approach as
-        Show-DevKitFolderBrowser.
-    .PARAMETER Filter
-        Standard Windows Forms file-dialog filter string, e.g.
-        "JSON files (*.json)|*.json|All files (*.*)|*.*"
-    .OUTPUTS
-        [string] the chosen full file path, or $null if cancelled/unavailable.
-    #>
-    [CmdletBinding()]
-    param(
-        [string]$Description = "Select a file",
-        [string]$InitialDirectory,
-        [string]$Filter = "All files (*.*)|*.*"
-    )
-
-    Initialize-DevKitFormsInterop   # process-wide types used inside the STA runspace below
-
-    try {
-        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
-        $rs.ApartmentState = [System.Threading.ApartmentState]::STA
-        $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
-        $rs.Open()
-    } catch {
-        Write-DevKitError "Could not start a file-browser session: $_"
-        return $null
-    }
-
-    $ps = [System.Management.Automation.PowerShell]::Create()
-    $ps.Runspace = $rs
-
-    [void]$ps.AddScript({
-        param($Description, $InitialDirectory, $Filter)
-
-        try {
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        } catch {
-            return @{ Ok = $false; Error = "File browser unavailable on this PowerShell install (Desktop Runtime not found). Type the path manually." }
-        }
-
-        $dialog = New-Object System.Windows.Forms.OpenFileDialog
-        $dialog.Title = $Description
-        $dialog.Filter = $Filter
-        $dialog.Multiselect = $false
-        if ($InitialDirectory -and (Test-Path $InitialDirectory)) {
-            $dialog.InitialDirectory = $InitialDirectory
-        }
-
-        $consoleHwnd = [DevKit.NativeMethods]::GetConsoleWindow()
-        $owner = $null
-        if ($consoleHwnd -ne [IntPtr]::Zero) {
-            $owner = New-Object DevKit.Win32Window ($consoleHwnd)
-        }
-
-        $result = if ($owner) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
-
-        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-            return @{ Ok = $true; Path = $dialog.FileName }
-        }
-        return @{ Ok = $true; Path = $null }
-    }).AddArgument($Description).AddArgument($InitialDirectory).AddArgument($Filter)
-
-    try {
-        $outcome = ($ps.Invoke() | Select-Object -First 1)
-    } catch {
-        Write-DevKitError "File browser failed: $_"
-        $ps.Dispose(); $rs.Close(); $rs.Dispose()
-        return $null
-    }
-    $ps.Dispose()
-    $rs.Close()
-    $rs.Dispose()
-
-    if (-not $outcome -or -not $outcome.Ok) {
-        if ($outcome -and $outcome.Error) { Write-DevKitError $outcome.Error }
-        return $null
-    }
-    return $outcome.Path
-}
-
 # ==================== PROJECT REGISTRY ====================
 
 function Get-DevKitProjectsFile {
@@ -1403,13 +1468,16 @@ function Save-DevKitProjectRegistry {
         # on-disk project this process never read (absent from the
         # Get-DevKitProjectRegistry baseline, i.e. a concurrent add) is kept;
         # one the caller read and deliberately dropped (e.g.
-        # Remove-DevKitLinkedProject) stays dropped. Best-effort: any
-        # read/parse failure falls back to the caller's copy as-is.
+        # Remove-DevKitLinkedProject) stays dropped. A PARSE failure falls
+        # back to the caller's copy as-is; a file that cannot be READ fails
+        # the save instead (Read-DevKitStoreFile) - writing the caller's
+        # copy over projects it could not see would drop them.
+        $raw = Read-DevKitStoreFile -Path $path
         try {
-            if (Test-Path $path) {
-                $raw = Get-Content -Path $path -Raw -ErrorAction Stop
+            if ($null -ne $raw) {
                 if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                    $onDisk = $raw | ConvertFrom-Json -ErrorAction Stop
+                    $jsonArgs = Get-DevKitJsonReadArgs
+                    $onDisk = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
                     if ($null -ne $onDisk.projects) {
                         $callerIds = @($Registry.projects | ForEach-Object { $_.id })
                         $kept = @()
@@ -1448,10 +1516,17 @@ function Get-DevKitProjectRegistry {
 
     if (-not (Test-Path $path)) { return $empty }
 
+    # Unreadable right now is NOT corrupt: answer this call with an empty
+    # registry and leave the file alone. The empty read-ids baseline set
+    # above means a save made off this answer still keeps every project on
+    # disk (Save-DevKitProjectRegistry's merge), so nothing is lost.
+    $raw = $null
+    try { $raw = Read-DevKitStoreFile -Path $path } catch { return $empty }
+
     try {
-        $raw = Get-Content -Path $path -Raw -ErrorAction Stop
         if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
-        $data = $raw | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         # ConvertFrom-Json returns a bare PSCustomObject (not a 1-item array)
         # when "projects" has exactly one element - always wrap with @().
         $projects = @($data.projects)
@@ -1625,243 +1700,6 @@ function Clear-DevKitActiveProject {
     $global:DevKitActiveProjectCache = $null
 }
 
-function Resolve-DevKitMissingActiveProject {
-    <#
-    .SYNOPSIS
-        Interactively resolves a linked/active project whose saved path no
-        longer exists on disk (moved, renamed, or deleted).
-    .OUTPUTS
-        The repaired project PSCustomObject, or $null if the caller should
-        fall through to the normal interactive picker.
-    #>
-    param([Parameter(Mandatory = $true)]$Project)
-
-    Write-Host ""
-    Write-Host "  ! Project '$($Project.name)' points to a path that no longer exists:" -ForegroundColor DarkYellow
-    Write-Host "      $($Project.path)" -ForegroundColor DarkYellow
-    Write-Host "    It may have been moved, renamed, or deleted." -ForegroundColor DarkYellow
-    Write-Host ""
-    Write-Host "    [1] Locate it now (browse to the new location and relink)"
-    Write-Host "    [2] Unlink it and pick a different project"
-    Write-Host "    [3] Type the corrected path manually"
-    Write-Host "    [0] Cancel"
-    $c = Read-Host "Select option"
-
-    switch ($c) {
-        '1' {
-            $seed = Split-Path -Path $Project.path -Parent
-            if (-not (Test-Path $seed)) { $seed = $null }
-            $newPath = Show-DevKitFolderBrowser -Description "Locate '$($Project.name)'" -InitialDirectory $seed
-            if ($newPath) {
-                Repair-DevKitLinkedProject -Id $Project.id -NewPath $newPath
-                Set-DevKitActiveProject -Id $Project.id
-                return (Get-DevKitActiveProject)
-            }
-            return $null
-        }
-        '2' {
-            Remove-DevKitLinkedProject -Id $Project.id
-            return $null
-        }
-        '3' {
-            $typed = Read-Host "Enter corrected path"
-            if (Test-Path $typed) {
-                Repair-DevKitLinkedProject -Id $Project.id -NewPath $typed
-                Set-DevKitActiveProject -Id $Project.id
-                return (Get-DevKitActiveProject)
-            }
-            Write-Host "  ERROR: Path not found: $typed" -ForegroundColor Red
-            return $null
-        }
-        default { return $null }
-    }
-}
-
-function Invoke-DevKitManageProjects {
-    <#
-    .SYNOPSIS
-        Rename / pin / unlink / relink submenu for the linked-projects list.
-    #>
-    while ($true) {
-        Clear-Host
-        Write-Host "=============================================" -ForegroundColor Cyan
-        Write-Host "  Manage Linked Projects" -ForegroundColor Cyan
-        Write-Host "=============================================" -ForegroundColor Cyan
-        Write-Host ""
-
-        $linked = @(Get-DevKitLinkedProjects | Sort-Object -Property @{Expression = 'pinned'; Descending = $true }, @{Expression = 'lastUsedUtc'; Descending = $true })
-
-        if ($linked.Count -eq 0) {
-            Write-Host "  No linked projects yet." -ForegroundColor Gray
-            Read-Host "Press Enter to go back"
-            return
-        }
-
-        for ($i = 0; $i -lt $linked.Count; $i++) {
-            $p = $linked[$i]
-            $pin = if ($p.pinned) { "*" } else { " " }
-            if ($p.Missing) {
-                Write-Host ("    [{0}] {1} {2,-22} {3,-30} !! MISSING" -f ($i + 1), $pin, $p.name, $p.path) -ForegroundColor DarkYellow
-            } else {
-                Write-Host ("    [{0}] {1} {2,-22} {3,-30} [{4}]" -f ($i + 1), $pin, $p.name, $p.path, ($p.tags -join ', '))
-            }
-        }
-        Write-Host ""
-        Write-Host "  Select a number to manage, or [0] to go back."
-        $choice = Read-Host "Select project"
-
-        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return }
-        if (-not ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $linked.Count)) { continue }
-
-        $picked = $linked[[int]$choice - 1]
-        Clear-Host
-        Write-Host "  $($picked.name)  ($($picked.path))" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "    [R] Rename"
-        Write-Host "    [P] Toggle pinned (currently: $($picked.pinned))"
-        Write-Host "    [L] Relink to a new folder"
-        Write-Host "    [U] Unlink"
-        Write-Host "    [0] Back"
-        $action = Read-Host "Select action"
-
-        switch ($action) {
-            { $_ -eq 'R' -or $_ -eq 'r' } {
-                $newName = Read-Host "New name"
-                if (-not [string]::IsNullOrWhiteSpace($newName)) {
-                    Rename-DevKitLinkedProject -Id $picked.id -NewName $newName
-                }
-            }
-            { $_ -eq 'P' -or $_ -eq 'p' } {
-                Set-DevKitProjectPinned -Id $picked.id -Pinned (-not $picked.pinned)
-            }
-            { $_ -eq 'L' -or $_ -eq 'l' } {
-                $newPath = Show-DevKitFolderBrowser -Description "Relink '$($picked.name)'"
-                if ($newPath) { Repair-DevKitLinkedProject -Id $picked.id -NewPath $newPath }
-            }
-            { $_ -eq 'U' -or $_ -eq 'u' } {
-                $confirm = Read-Host "Unlink '$($picked.name)'? (y/N)"
-                if ($confirm -eq 'y') { Remove-DevKitLinkedProject -Id $picked.id }
-            }
-        }
-    }
-}
-
-function Select-DevKitProject {
-    <#
-    .SYNOPSIS
-        The shared "which project?" picker used everywhere DevKit.ps1 needs
-        a project directory, replacing bare Read-Host path prompts.
-    .DESCRIPTION
-        Fast path: if an Active Project is set and its path still resolves,
-        returns it immediately with no prompting at all. Otherwise shows an
-        interactive picker: pick a linked project by number, browse for a
-        new folder, use the current directory, or type a path manually.
-        Whatever is chosen (other than "type manually" without linking)
-        becomes the new Active Project.
-    .PARAMETER Prompt
-        Label shown at the top of the picker (e.g. the menu option's name).
-    .PARAMETER ForceReprompt
-        Bypass the silent "use Active Project" fast path even if one is set.
-    .OUTPUTS
-        [string] resolved project path, or $null if the user cancelled.
-    #>
-    [CmdletBinding()]
-    param(
-        [string]$Prompt = "Select a project",
-        [switch]$ForceReprompt
-    )
-
-    if (-not $ForceReprompt) {
-        $active = Get-DevKitActiveProject
-        if ($active -and -not $active.Missing) {
-            Write-Host "  Using active project: $($active.name)  ($($active.path))" -ForegroundColor Green
-            Update-DevKitProjectLastUsed -Id $active.id | Out-Null
-            return $active.path
-        }
-        if ($active -and $active.Missing) {
-            $resolved = Resolve-DevKitMissingActiveProject -Project $active
-            if ($resolved) { return $resolved.path }
-            # falls through to the interactive picker below
-        }
-    }
-
-    while ($true) {
-        Clear-Host
-        Write-Host "=============================================" -ForegroundColor Cyan
-        Write-Host "  Select Project -- $Prompt" -ForegroundColor Cyan
-        Write-Host "=============================================" -ForegroundColor Cyan
-        Write-Host ""
-
-        $linked = @(Get-DevKitLinkedProjects | Sort-Object -Property @{Expression = 'pinned'; Descending = $true }, @{Expression = 'lastUsedUtc'; Descending = $true })
-
-        if ($linked.Count -gt 0) {
-            Write-Host "  Linked Projects (most recently used first):" -ForegroundColor White
-            for ($i = 0; $i -lt $linked.Count; $i++) {
-                $p = $linked[$i]
-                $pin = if ($p.pinned) { "*" } else { " " }
-                if ($p.Missing) {
-                    Write-Host ("    [{0}] {1} {2,-22} {3,-30} !! MISSING" -f ($i + 1), $pin, $p.name, $p.path) -ForegroundColor DarkYellow
-                } else {
-                    Write-Host ("    [{0}] {1} {2,-22} {3,-30} [{4}]" -f ($i + 1), $pin, $p.name, $p.path, ($p.tags -join ', '))
-                }
-            }
-            Write-Host ""
-        }
-
-        Write-Host "  ---------------------------------------------"
-        Write-Host "    [B] Browse for folder..."
-        Write-Host "    [C] Use current directory ($((Get-Location).Path))"
-        Write-Host "    [T] Type a path manually"
-        if ($linked.Count -gt 0) { Write-Host "    [M] Manage list (rename / pin / unlink / relink)" }
-        Write-Host "    [0] Cancel"
-        Write-Host "  ---------------------------------------------"
-        $choice = Read-Host "Select project"
-
-        if ($choice -eq '0' -or [string]::IsNullOrWhiteSpace($choice)) { return $null }
-
-        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $linked.Count) {
-            $picked = $linked[[int]$choice - 1]
-            if ($picked.Missing) {
-                $picked = Resolve-DevKitMissingActiveProject -Project $picked
-                if (-not $picked) { continue }
-            }
-            Set-DevKitActiveProject -Id $picked.id
-            return $picked.path
-        }
-
-        if ($choice -eq 'B' -or $choice -eq 'b') {
-            $chosenPath = Show-DevKitFolderBrowser -Description "Select a project folder"
-            if (-not $chosenPath) { continue }
-            $project = Add-DevKitLinkedProject -Path $chosenPath
-            Set-DevKitActiveProject -Id $project.id
-            return $project.path
-        }
-
-        if ($choice -eq 'C' -or $choice -eq 'c') {
-            $cur = (Get-Location).Path
-            $project = Add-DevKitLinkedProject -Path $cur
-            Set-DevKitActiveProject -Id $project.id
-            return $project.path
-        }
-
-        if ($choice -eq 'T' -or $choice -eq 't') {
-            $typed = Read-Host "Enter project path"
-            if ([string]::IsNullOrWhiteSpace($typed) -or -not (Test-Path $typed)) {
-                Write-Host "  ERROR: Path not found: $typed" -ForegroundColor Red
-                Read-Host "Press Enter to continue"
-                continue
-            }
-            $project = Add-DevKitLinkedProject -Path $typed
-            Set-DevKitActiveProject -Id $project.id
-            return $project.path
-        }
-
-        if (($choice -eq 'M' -or $choice -eq 'm') -and $linked.Count -gt 0) {
-            Invoke-DevKitManageProjects
-            continue
-        }
-    }
-}
 
 function Stop-DevKitNodeProcesses {
     <#

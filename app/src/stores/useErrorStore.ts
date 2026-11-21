@@ -5,8 +5,8 @@ import { create } from "zustand";
  *
  * Two distinct streams share one shape so a single UI can render both:
  * - "system": Windows Event Log Critical/Error entries, fetched from the
- *   sidecar's errors.system RPC (see core/ - backed by the same
- *   Get-WinEvent approach as tools/maintenance/Get-RecentEventErrors.ps1).
+ *   sidecar's errors.system RPC (a Get-WinEvent query - see
+ *   core/DevKit-Errors.ps1).
  * - "app": DevKit's own failures - Rust/sidecar lines parsed out of
  *   %LOCALAPPDATA%\NorthstarDevKit\logs\devkit.log via errors.app, PLUS
  *   frontend faults captured live in-process (window.onerror, unhandled

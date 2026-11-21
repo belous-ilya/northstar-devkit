@@ -23,7 +23,11 @@
     .\Kill-Port.ps1 -Port 3000 -Force
     .\Kill-Port.ps1 -Port 3000 -InfoOnly
 #>
-[CmdletBinding()]
+# DefaultParameterSetName: with two sets and no default, running this with
+# neither -Port nor -ProcessId (or with only -Force / -InfoOnly) died in
+# the parameter binder with "Parameter set cannot be resolved" before the
+# script's own "No PID specified or found" message could run.
+[CmdletBinding(DefaultParameterSetName='ByPort')]
 param(
     [Parameter(ParameterSetName='ByPort')]
     [ValidateRange(1, 65535)]
@@ -53,7 +57,7 @@ if ($Port) {
     $procInfo = Get-DevKitProcessByPort -Port $Port
 
     if (-not $procInfo) {
-        Write-DevKitError "No process found on port $Port"
+        Write-DevKitError "Nothing is listening on port $Port"
         exit 1
     }
 
@@ -104,11 +108,21 @@ try {
     exit 1
 }
 
+# DevKit runs elevated, so this tool CAN stop anything - which is exactly why
+# it must refuse the processes Windows dies without (kill the svchost on port
+# 135 and Windows forces a shutdown) and its own tree (this script, the
+# sidecar that spawned it, the DevKit app above that). Checked before the
+# prompt: there is no point asking about a kill that will be refused.
+$refusal = Get-DevKitKillRefusalReason -ProcessId $ProcessId -Name $process.ProcessName -ProtectedPids (Get-DevKitOwnProcessTreeIds)
+if ($refusal) {
+    Write-DevKitError "Refusing to stop $($process.ProcessName) (PID $ProcessId): $refusal."
+    exit 1
+}
+
 Write-Host ""
 
 if (-not $Force) {
-    $confirm = Read-Host "Kill process $($process.ProcessName) (PID: $ProcessId)? (y/n)"
-    if ($confirm -ne 'y') {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "stop $($process.ProcessName) (PID $ProcessId)")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }
@@ -134,9 +148,24 @@ if ($verifyProcess.ProcessName -ne $initialName -or $verifyStart -ne $initialSta
 }
 
 try {
-    Stop-Process -Id $ProcessId -Force
-    Write-Host "  DONE: Process killed.`n" -ForegroundColor Green
+    # -ErrorAction Stop: Stop-Process failures (access denied, already gone)
+    # are non-terminating by default, so without it this catch never ran and
+    # a failed kill still printed DONE and exited 0.
+    Stop-Process -Id $ProcessId -Force -ErrorAction Stop
 } catch {
-    Write-DevKitError "Failed to kill process: $_"
+    Write-DevKitError "Failed to kill process: $($_.Exception.Message)"
     exit 1
 }
+
+# Believe the process table, not the absence of an exception.
+$survivor = $null
+foreach ($attempt in 1..10) {
+    $survivor = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $survivor -or $survivor.HasExited) { $survivor = $null; break }
+    Start-Sleep -Milliseconds 100
+}
+if ($survivor) {
+    Write-DevKitError "PID $ProcessId is still running a second after the kill."
+    exit 1
+}
+Write-Host "  DONE: Process killed.`n" -ForegroundColor Green

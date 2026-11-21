@@ -161,8 +161,7 @@ try {
 
     # Confirm
     if (-not $Force) {
-        $confirm = Read-Host "  Sync $Branch with $UpstreamRemote/$Branch? (y/n)"
-        if ($confirm -ne 'y') {
+        if (-not (Confirm-DevKitDestructiveAction -Always -Action "sync $Branch with $UpstreamRemote/$Branch (rewrites the fork branch when rebasing)")) {
             Write-Host "`n  Cancelled.`n" -ForegroundColor Gray
             exit 0
         }
@@ -189,6 +188,42 @@ try {
         exit 1
     }
     Write-Host "  DONE: On branch $Branch." -ForegroundColor Green
+
+    # A rebase ends in a force-push, so pin down - BEFORE history is rewritten -
+    # exactly what the fork holds, and refuse if it has commits this checkout
+    # lacks. The sha recorded here is the lease for the push in step 4.
+    #
+    # The old order (rebase, THEN fetch the fork, then --force-with-lease)
+    # protected nothing: a bare --force-with-lease compares against the
+    # remote-tracking ref, and the fetch had just moved that ref to whatever
+    # was on the fork - including a commit pushed from another machine, which
+    # the push then silently overwrote.
+    $originLeaseSha = $null
+    if ($Rebase) {
+        Write-Host "`n  Checking $OriginRemote/$Branch before rewriting history..." -ForegroundColor Cyan
+        $originFetchOutput = git fetch $OriginRemote $Branch 2>&1
+        $originFetchExit = $LASTEXITCODE
+        $originFetchOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        $originLeaseSha = git rev-parse --verify --quiet "refs/remotes/$OriginRemote/$Branch" 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $originLeaseSha) {
+            if ($originFetchExit -ne 0) {
+                Write-Host "`n  ERROR: Could not check $OriginRemote/$Branch, so a force-push would be blind. Nothing was changed.`n" -ForegroundColor Red
+                exit 1
+            }
+            # The branch does not exist on the fork yet: nothing to protect.
+            $originLeaseSha = $null
+        } else {
+            $originLeaseSha = ([string]$originLeaseSha).Trim()
+            git merge-base --is-ancestor $originLeaseSha HEAD 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "`n  ERROR: $OriginRemote/$Branch has commits this checkout does not have." -ForegroundColor Red
+                Write-Host "  A rebase and force-push would delete them from your fork." -ForegroundColor Yellow
+                Write-Host "  Bring them in first (git pull --rebase $OriginRemote $Branch), then run the sync again." -ForegroundColor Yellow
+                Write-Host "  Nothing was changed.`n" -ForegroundColor Yellow
+                exit 1
+            }
+        }
+    }
 
     # Step 3: Merge or Rebase
     Write-Host "`n  [3/4] Syncing with $UpstreamRemote/$Branch..." -ForegroundColor Cyan
@@ -218,20 +253,15 @@ try {
     # Step 4: Push to origin
     Write-Host "`n  [4/4] Pushing to $OriginRemote..." -ForegroundColor Cyan
     if ($Rebase) {
-        # We never fetched $OriginRemote before this point (only $UpstreamRemote),
-        # so refresh our view of it now - --force-with-lease needs a fresh
-        # remote-tracking ref to compare against before it will allow the push.
-        Write-Host "  Fetching latest $OriginRemote/$Branch before force-pushing..." -ForegroundColor Cyan
-        $originFetchOutput = git fetch $OriginRemote $Branch 2>&1
-        $originFetchExit = $LASTEXITCODE
-        $originFetchOutput | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-        if ($originFetchExit -ne 0) {
-            Write-Host "`n  ERROR: Failed to fetch $OriginRemote/$Branch before force-pushing.`n" -ForegroundColor Red
-            exit 1
-        }
-
+        # No fetch here on purpose - see the lease comment above step 3. The
+        # push is allowed only if the fork still holds exactly the commit that
+        # was checked before the rebase.
         Write-Host "  WARNING: Force-pushing rebased branch (using --force-with-lease)!" -ForegroundColor Yellow
-        $pushOutput = git push "$OriginRemote" "$Branch" --force-with-lease 2>&1
+        if ($originLeaseSha) {
+            $pushOutput = git push "$OriginRemote" "$Branch" "--force-with-lease=${Branch}:$originLeaseSha" 2>&1
+        } else {
+            $pushOutput = git push "$OriginRemote" "$Branch" --force-with-lease 2>&1
+        }
     } else {
         $pushOutput = git push "$OriginRemote" "$Branch" 2>&1
     }

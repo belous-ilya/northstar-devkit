@@ -259,10 +259,8 @@ async fn run_tool_flow(
     let project_line = format_project_line(active_project);
 
     if item.requires_project {
-        // Fast path: an active, present project is used silently - matches
-        // Select-DevKitProject's behavior. Otherwise force the picker,
-        // same as Select-DevKitProject falling through to its interactive
-        // picker when there is no usable Active Project.
+        // Fast path: an active, present project is used silently.
+        // Otherwise force the picker: there is no usable Active Project.
         let usable = active_project.as_ref().filter(|p| !p.missing).cloned();
         let project = match usable {
             Some(p) => p,
@@ -281,8 +279,8 @@ async fn run_tool_flow(
             .unwrap_or_else(|| "Path".to_string());
         values.insert(arg_name, PromptRawValue::Text(project.path.clone()));
     } else if let Some(rf) = &item.requires_file {
-        // A genuine native Windows file dialog, not a typed-path prompt -
-        // matches Show-DevKitFileBrowser's own OpenFileDialog. Suspend the
+        // A genuine native Windows file dialog (OpenFileDialog), not a
+        // typed-path prompt. Suspend the
         // TUI first (same pattern as the tool-run spawn below) so the
         // hidden pwsh process showing it isn't fighting the alternate
         // screen for the console.
@@ -396,7 +394,7 @@ const PICKER_TIMEOUT: Duration = Duration::from_secs(120);
 /// Shells out to a hidden `pwsh` process that shows a native
 /// `System.Windows.Forms.OpenFileDialog` and reads the chosen path back
 /// from its stdout - the CLI has no console-native file picker of its own,
-/// so (like `Show-DevKitFileBrowser` in the old PowerShell TUI) this
+/// so (as the old PowerShell TUI did) this
 /// borrows a real Win32 dialog instead of a typed-path prompt. `title` is
 /// the item's own label, so the user sees why a picker popped up; `filter`
 /// is `RequiresFile.Filter` verbatim (already a standard Windows Forms
@@ -518,8 +516,8 @@ fn ps_single_quote(s: &str) -> String {
 // ==================== project picker ====================
 
 /// Shared "which project?" flow for both the header's `p` switcher and a
-/// tool that `requiresProject` with no usable Active Project - mirrors
-/// `Select-DevKitProject`'s interactive picker (linked projects sorted
+/// tool that `requiresProject` with no usable Active Project: an
+/// interactive picker (linked projects sorted
 /// pinned-first/most-recent-first, plus add-new and clear-active).
 /// `forced` just changes the title/copy and whether "Clear active
 /// project" is offered (clearing would defeat the point of a forced pick).
@@ -606,8 +604,9 @@ fn format_project_line(active: &Option<LinkedProject>) -> String {
 
 // ==================== prompt collection ====================
 //
-// Validation here mirrors Read-DevKitTypedValue (tools/lib/DevKit-Common.ps1)
-// exactly: Int only accepts digits and is range/overflow-checked, blank or
+// The validation contract, shared with the app's Run dialog
+// (app/src/windows/control-center/ToolRunDialog.tsx - change both
+// together): Int only accepts digits and is range/overflow-checked, blank or
 // invalid input is "no value" rather than a re-prompt loop; YesNo is a
 // single y/n keypress ('y'/'Y' -> true, anything else -> false, never "no
 // value"); String is free text, blank -> "no value". What "no value" (vs
@@ -650,8 +649,8 @@ fn prompt_int(
             return Ok(PromptOutcome::Value(PromptRawValue::None));
         }
     }
-    // Read-DevKitTypedValue rejects casting past Int32.MaxValue rather
-    // than overflowing.
+    // Reject anything past Int32.MaxValue rather than overflowing (the
+    // script's parameter is an [int]).
     if val > i32::MAX as i64 {
         return Ok(PromptOutcome::Value(PromptRawValue::None));
     }

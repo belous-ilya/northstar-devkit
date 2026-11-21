@@ -3,6 +3,8 @@ import { useSettingsStore } from "../stores/useSettingsStore";
 import { useUpdaterStore } from "../stores/useUpdaterStore";
 
 const AUTO_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** How often a running app asks itself whether the last check has gone stale. */
+const STALENESS_RECHECK_MS = 60 * 60 * 1000;
 
 function isStale(lastUpdateCheckUtc: string | null): boolean {
   if (!lastUpdateCheckUtc) return true;
@@ -20,9 +22,14 @@ function isStale(lastUpdateCheckUtc: string | null): boolean {
  * select from useUpdaterStore directly instead of calling this hook again,
  * which would arm a second independent 24h-staleness check.
  *
- * On mount, once settings have loaded: if
- * settings.preferences.updateCheckEnabled is true and lastUpdateCheckUtc
- * is null or more than 24h old, silently kicks off a background check.
+ * Once settings have loaded, and then once an hour for as long as the app
+ * runs: if settings.preferences.updateCheckEnabled is true and
+ * lastUpdateCheckUtc is null or more than 24h old, silently kicks off a
+ * background check. The hourly look exists because this is an always-on
+ * widget: checked only at mount, an app left running for weeks never
+ * learned about a release until it was restarted, and turning the
+ * preference on did nothing until then either. The look itself reads two
+ * values from memory; it reaches the network at most once a day.
  * Never installs anything on its own - checkNow() only ever surfaces
  * that an update exists (see useUpdaterStore.checkNow); installation is a
  * separate, explicit user action via installAndRestart().
@@ -44,16 +51,26 @@ export function useUpdateCheck() {
   const dismiss = useUpdaterStore((s) => s.dismiss);
 
   const triggered = useRef(false);
+  const settingsLoaded = settings !== null;
 
   useEffect(() => {
-    if (triggered.current || !settings) return;
-    triggered.current = true;
-
-    if (!settings.preferences.updateCheckEnabled) return;
-    if (isStale(settings.preferences.lastUpdateCheckUtc)) {
-      void checkNow();
+    if (!settingsLoaded) return;
+    const checkIfStale = () => {
+      // Read at call time, not from this render: the timer outlives it.
+      const preferences = useSettingsStore.getState().settings?.preferences;
+      if (!preferences?.updateCheckEnabled) return;
+      // An update already found stays as it is: checking again would only
+      // bring back a banner the user dismissed.
+      if (useUpdaterStore.getState().status === "available") return;
+      if (isStale(preferences.lastUpdateCheckUtc)) void checkNow();
+    };
+    if (!triggered.current) {
+      triggered.current = true;
+      checkIfStale();
     }
-  }, [settings, checkNow]);
+    const timer = window.setInterval(checkIfStale, STALENESS_RECHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [settingsLoaded, checkNow]);
 
   return { status, update, error, progress, dismissed, checkNow, installAndRestart, dismiss };
 }

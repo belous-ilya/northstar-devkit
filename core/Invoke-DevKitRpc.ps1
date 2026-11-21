@@ -180,6 +180,24 @@ $script:RunRegistry = [System.Collections.Concurrent.ConcurrentDictionary[string
 # lanes exactly as RunRegistry is.
 $script:ToolLaneGate = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
 
+# Stops asked for in the spawn window. Between the main thread claiming the
+# gate for a tool.run and the tool lane registering the started process
+# (50-150ms normally, seconds while that lane is still importing after a
+# boot or respawn) the run exists nowhere tool.stop can find it, and a Stop
+# clicked then was answered "that run is no longer active" while the tool
+# went on to start. The gate carries the claimed run's id under 'runId'; a
+# tool.stop for exactly that id is parked here, and tool.run acts on it the
+# moment it has a process to stop. runId -> UTC ticks of the request.
+$script:PendingToolStops = [System.Collections.Concurrent.ConcurrentDictionary[string, long]]::new()
+
+# Extra arguments for the ConvertFrom-Json that parses each request line:
+# -DateKind String where this PowerShell has it (7.5+), nothing elsewhere
+# (5.1 never converts; 7.0 - 7.4 cannot be told not to, and the store
+# writers put such values back as ISO text - see ConvertTo-DevKitStoredText
+# in tools/lib/DevKit-Common.ps1, which documents the failure).
+$script:RequestJsonArgs = @{}
+if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $script:RequestJsonArgs = @{ DateKind = 'String' } }
+
 # ==================== WRITER RUNSPACE ====================
 # The only code in this process allowed to touch [Console]::Out.
 
@@ -222,6 +240,7 @@ function Start-DevKitRpcLane {
     $rs.SessionStateProxy.SetVariable('ImportLock', $script:ImportLock)
     $rs.SessionStateProxy.SetVariable('RunRegistry', $script:RunRegistry)
     $rs.SessionStateProxy.SetVariable('ToolLaneGate', $script:ToolLaneGate)
+    $rs.SessionStateProxy.SetVariable('PendingToolStops', $script:PendingToolStops)
 
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
@@ -264,6 +283,24 @@ function Start-DevKitRpcLane {
             [Console]::Error.WriteLine("[devkit-rpc][$LaneName] FAILED to initialize after $($sw.Elapsed.TotalMilliseconds)ms: $($importError.Exception.Message)")
             [Console]::Error.WriteLine($importError.ScriptStackTrace)
             foreach ($request in $InQueue.GetConsumingEnumerable()) {
+                # The main thread claimed the single-flight tool gate for
+                # this request before enqueueing it, and the only code that
+                # gives it back is tool.run's own finally - which never runs
+                # here, because RpcMethods.ps1 is exactly what failed to
+                # load. Without this the first tool.run was answered
+                # LaneInitFailed and every later one "a tool is already
+                # running", for the life of the sidecar. Inline (not
+                # Release-DevKitToolLaneSlot): that function lives in the
+                # file that did not load. Ownership-checked the same way.
+                try {
+                    $claim = [string]$request.params.__toolLaneToken
+                    $held = $null
+                    if ($claim -and $ToolLaneGate.TryGetValue('active', [ref]$held) -and [object]::Equals($held, $claim)) {
+                        $dropped = $null
+                        [void]$ToolLaneGate.TryRemove('runId', [ref]$dropped)
+                        [void]$ToolLaneGate.TryRemove('active', [ref]$dropped)
+                    }
+                } catch { }
                 $line = ConvertTo-DevKitRpcLine (New-DevKitRpcFailure -Id $request.id -Kind 'LaneInitFailed' -Message "The '$LaneName' lane failed to initialize: $($importError.Exception.Message)")
                 # Same shutdown-race guard as the healthy path's Add.
                 try { $OutQueue.Add($line) } catch { }
@@ -311,6 +348,15 @@ function Start-DevKitRpcLane {
                 $reqSw.Stop()
                 $line = ConvertTo-DevKitRpcLine (New-DevKitRpcFailure -Id $request.id -Message $_.Exception.Message -Detail $_.ScriptStackTrace)
             }
+            # Safety net for the single-flight tool gate. tool.run releases
+            # its own claim in a finally; this covers a tool.run that threw
+            # before reaching it (a bad parameter, a method-table error).
+            # The run is over either way by the time control is back here,
+            # and the release is ownership-checked, so a second release of
+            # the same claim is a no-op and can never clear a newer one.
+            if ($request.method -eq 'tool.run') {
+                try { Release-DevKitToolLaneSlot -Gate $ToolLaneGate -Token ([string]$request.params.__toolLaneToken) } catch { }
+            }
             # Guarded: during shutdown the main thread closes $OutQueue after
             # a drain deadline; a method still in flight past that deadline
             # (observed: a multi-second mcp.report racing an immediate
@@ -330,7 +376,7 @@ function Start-DevKitRpcLane {
 function Get-DevKitRpcLaneForMethod {
     param([Parameter(Mandatory)][string]$Method)
     if ($Method -like 'metrics.*') { return 'metrics' }
-    # process.topCpu/topMemory ride the metrics lane, not 'work': each
+    # process.topCpu/topMemory ride the metrics lane, not 'work': a first
     # top-CPU call samples a ~1s window and the gauges flyout polls both every
     # 3s - on 'work' they would stack up in front of tool.stop, settings.set,
     # notes.save and process.kill, the interactions a click on a gauge makes.
@@ -541,6 +587,15 @@ while (-not $shuttingDown) {
         if ($signaled) { continue }
         if (-not $shuttingDown -and ([DateTime]::UtcNow - $lastLaneProbeAt) -ge $laneProbeInterval) {
             $lastLaneProbeAt = [DateTime]::UtcNow
+            # The writer first: it is the one runspace allowed to touch
+            # stdout. If its loop ended (a failed write to a broken pipe),
+            # every lane keeps answering into a queue nobody drains - each
+            # call then times out after 60s with nothing in the log, and
+            # the lane checks below all still pass.
+            if ($writer.Handle.IsCompleted) {
+                Write-DevKitRpcDiag "writer runspace died unexpectedly; exiting non-zero so the host respawns a healthy sidecar"
+                exit 1
+            }
             foreach ($lane in $lanes.Values) {
                 if ($lane.Handle.IsCompleted) {
                     # A completed handle mid-life means the runspace thread is
@@ -568,7 +623,12 @@ while (-not $shuttingDown) {
     if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
 
     try {
-        $request = $rawLine | ConvertFrom-Json -ErrorAction Stop
+        # @RequestJsonArgs: keep date-looking strings as strings. Without it
+        # PowerShell 7 hands every handler a [datetime] for a note, an On-Deck
+        # item or a tool argument that happens to read like an ISO timestamp
+        # (and for every updatedAt the UI sends), and their [string] casts
+        # then store "11/21/2026 10:00:00" in place of what was typed.
+        $request = $rawLine | ConvertFrom-Json @script:RequestJsonArgs -ErrorAction Stop
     } catch {
         Write-DevKitRpcDiag "malformed request line, ignored: $rawLine"
         continue
@@ -615,6 +675,12 @@ while (-not $shuttingDown) {
                             Add-Member -InputObject $request -Force -NotePropertyName 'params' -NotePropertyValue ([PSCustomObject]@{})
                         }
                         Add-Member -InputObject $request.params -Force -NotePropertyName '__toolLaneToken' -NotePropertyValue $slot
+                        # Which run holds the claim - see $script:PendingToolStops.
+                        # A request without a runId gets one minted inside the
+                        # lane, which nobody could have asked to stop yet.
+                        $claimedRunId = ''
+                        try { $claimedRunId = [string]$request.params.runId } catch { }
+                        if ($claimedRunId) { $script:ToolLaneGate['runId'] = $claimedRunId }
                     }
                 }
             }
@@ -634,6 +700,23 @@ while (-not $shuttingDown) {
 # returns - no Stop() race with a request that's mid-write), THEN close
 # the output queue once every lane has actually finished writing.
 
+# FIRST: stop any tool still running. A tool.run sits in its lane until the
+# child's stdout closes, so a run that never ends by itself (a dev server)
+# used to hold the drain below for its whole deadline - and then survive the
+# sidecar, keeping its port with no app left to stop it. Killing its tree
+# here is what lets the tool lane unwind and the drain finish promptly. The
+# stop routine lives in RpcMethods.ps1, which this thread has had no reason
+# to load until now; it is dot-sourced only when there is something to stop.
+if ($script:RunRegistry.Count -gt 0) {
+    try {
+        . $script:MethodsScriptPath
+        $stoppedRuns = Stop-DevKitAllToolRuns -Registry $script:RunRegistry
+        Write-DevKitRpcDiag "stopped $stoppedRuns tool run(s) still in flight at shutdown"
+    } catch {
+        Write-DevKitRpcDiag "could not stop in-flight tool runs at shutdown: $($_.Exception.Message)"
+    }
+}
+
 Write-DevKitRpcDiag "draining lanes"
 foreach ($lane in $lanes.Values) { $script:LaneQueues[$lane.Name].CompleteAdding() }
 
@@ -651,6 +734,11 @@ while (-not $writer.Handle.IsCompleted -and (Get-Date) -lt $writerDeadline) {
 }
 
 foreach ($lane in $lanes.Values) {
+    # Only a lane that actually finished is disposed. Dispose() on a pipeline
+    # still running first tries to stop it, and blocks for as long as that
+    # takes - a lane stuck in a native call would hold this process open
+    # until the host force-killed it. The exit below ends such a lane anyway.
+    if (-not $lane.Handle.IsCompleted) { continue }
     try { $lane.PS.Dispose() } catch {}
     try { $lane.Runspace.Close() } catch {}
 }

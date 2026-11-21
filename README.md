@@ -4,7 +4,7 @@ A Windows desktop app — an always-on widget plus a searchable Control Center �
 PowerShell tools with their output streaming live, so you never go hunting for a terminal.
 Ships with `devkit`, a terminal CLI over the same tool catalog.
 
-[![Latest release](https://img.shields.io/github/v/release/st3adyp1ck/northstar-devkit?style=flat-square&color=00b4d8)](https://github.com/st3adyp1ck/northstar-devkit/releases)
+[![Latest release](https://img.shields.io/github/v/release/belous-ilya/northstar-devkit?style=flat-square&color=00b4d8)](https://github.com/belous-ilya/northstar-devkit/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 <!-- TODO: capture and commit these two images, then uncomment. Create docs/images/ first.
@@ -30,7 +30,7 @@ Pick a project once in the picker and it becomes your **Active Project**, shared
 ## Install
 
 Download the latest `DevKit_x.y.z_x64-setup.exe` from
-[Releases](https://github.com/st3adyp1ck/northstar-devkit/releases) and run it. The install is
+[Releases](https://github.com/belous-ilya/northstar-devkit/releases) and run it. The install is
 per-user — no admin rights — and uninstalls from Settings > Apps like any other Windows app.
 
 Two things worth knowing before you click:
@@ -44,7 +44,7 @@ Two things worth knowing before you click:
 ### Build from source
 
 ```powershell
-git clone https://github.com/st3adyp1ck/northstar-devkit.git
+git clone https://github.com/belous-ilya/northstar-devkit.git
 cd northstar-devkit/app
 pnpm install
 pnpm tauri build
@@ -78,12 +78,10 @@ cargo build --release -p devkit-cli
 | Vite | Fresh dev server, preview builds |
 | Git | Cleanup, status across all repos, sync forks, standup log |
 | Docker | Nuke containers and images, cleanup, tail logs |
-| System | Edit PATH, back up and restore env vars, hosts file |
-| Workflow | Open editor/repo, copy `.env` templates, `.env` drift check, end-of-day close-out |
-| Diagnostics | Environment health check, system info export |
-| WiFi | Optimize DNS, scan networks, speed test |
-| Maintenance | Disk cleanup, startup/services tuning, SFC/DISM repair, Windows Update reset, power and hardware health |
-| Agents & MCP | Detect and update AI CLIs, add MCP servers from a catalog or by hand, scan for missing ones |
+| WiFi | Measure and diagnose a connection, fix only what is wrong, scan networks, speed test |
+
+Two more live on the widget itself rather than in the catalog: **Doctor** (an environment health
+check) and **Close-Out** (the end-of-day cleanup, with a dry-run **Preview** beside it).
 
 Every tool is a plain PowerShell script under `tools/` — the widget, the Control Center and the
 CLI all run these exact files, and so can you:
@@ -107,16 +105,23 @@ mostly support `-DryRun` — preview first.
 - **Network access**, in full: the updater checks GitHub Releases (throttled to once per 24h, plus
   a manual **Check for Updates** button) and, when an update exists, downloads it, verifies its
   minisign signature, installs and relaunches in place; the widget's GitHub panel shells out to
-  your own authenticated `gh` CLI to list pull requests and issues; the AI CLI updater queries the
-  GitHub Releases API for the tools it manages; the installer fetches the Microsoft WebView2
-  runtime if it is absent. No telemetry is collected.
+  your own authenticated `gh` CLI to list pull requests and issues; the WiFi tools, when you run
+  them, ping your router and 1.1.1.1, time lookups against public DNS servers, fetch Microsoft's
+  connectivity probe, and run a speed test against Cloudflare; the
+  installer fetches the Microsoft WebView2 runtime if it is absent. No telemetry is collected.
 - **DevKit always runs as Administrator** — there is no un-elevated mode. A startup
   gate redirects every launch through a `NorthstarDevKit-Admin` scheduled task (the same
   mechanism MSI Afterburner uses), so you see exactly one UAC prompt in the app's life,
   at first-run setup; after that, DevKit starts elevated automatically. The trade-offs,
   stated plainly: while elevated, every tool and the embedded terminal run as
   Administrator, and an elevated window cannot accept drag-and-drop from Explorer (a
-  Windows UIPI restriction). Uninstalling removes the task and its shortcuts.
+  Windows UIPI restriction). It also means that **any program running as your Windows
+  user can become Administrator through DevKit without a prompt** - an elevated DevKit
+  is equivalent to leaving an Administrator terminal open. Fine on your own development
+  machine; do not install it on a shared PC or one where you run software you do not
+  trust. [SECURITY.md](SECURITY.md) explains why and what DevKit does about it.
+  Uninstalling removes the task (asking for administrator rights once if needed) and
+  its shortcuts.
 
 ## Requirements
 
@@ -139,11 +144,11 @@ To build from source: Rust (stable toolchain), Node.js and pnpm.
 ## Support
 
 - Bugs and feature requests:
-  [open an issue](https://github.com/st3adyp1ck/northstar-devkit/issues/new/choose)
+  [open an issue](https://github.com/belous-ilya/northstar-devkit/issues/new/choose)
 - Questions and ideas:
-  [Discussions](https://github.com/st3adyp1ck/northstar-devkit/discussions)
+  [Discussions](https://github.com/belous-ilya/northstar-devkit/discussions)
 - Security vulnerabilities: see [SECURITY.md](SECURITY.md) — please don't file a public issue
-- Anything else: [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com)
+- Anything else: [Discussions](https://github.com/belous-ilya/northstar-devkit/discussions)
 
 ## License
 

@@ -4,9 +4,9 @@
     Pure-logic core for the DevKit desktop GUI - Northstar DevKit
 .DESCRIPTION
     Dot-sourceable, UI-free functions backing gui/DevKit-GUI.ps1: loading the
-    twelve tool-category manifests as one catalog, searching it, turning a
+    tool-category manifests (one per tools/ folder) as one catalog, searching it, turning a
     manifest item plus resolved dialog values into a script argument table
-    (mirroring Invoke-DevKitTool in lib/DevKit-Common.ps1), and building the
+    (the same rules the CLI applies in cli/src/catalog.rs), and building the
     terminal command line used to launch a tool in Windows Terminal or a
     classic console window.
 
@@ -30,8 +30,6 @@ function Get-DevKitGuiCategories {
     return @(
         @{ Group = 'Development';                  Folders = @('ports', 'node', 'nextjs', 'vite') }
         @{ Group = 'Version Control & Containers'; Folders = @('git', 'docker') }
-        @{ Group = 'System & Workflow';            Folders = @('system', 'workflow', 'diagnostics') }
-        @{ Group = 'Maintenance & Agents';         Folders = @('maintenance', 'agents') }
         @{ Group = 'Network';                      Folders = @('wifi') }
     )
 }
@@ -118,7 +116,7 @@ function ConvertTo-DevKitToolArguments {
     .SYNOPSIS
         Turns a manifest item plus the values collected from the GUI's
         dialogs into the argument hashtable splatted to the tool's script.
-        Mirrors Invoke-DevKitTool (lib/DevKit-Common.ps1) semantics exactly:
+        The rules, shared with the CLI (build_arguments in cli/src/catalog.rs):
         RequiresProject uses ProjectArgName or 'Path'; a YesNo prompt only
         becomes an argument when true; missing non-optional prompt values are
         an error; StaticArgs merge last and win. The result is [ordered] so
@@ -185,7 +183,7 @@ function ConvertTo-DevKitToolArguments {
             }
 
             # YesNo only ever adds the arg when the answer is true - a false
-            # answer means "leave the switch off", matching Invoke-DevKitTool.
+            # answer means "leave the switch off", on every surface.
             if ($promptSpec.Type -eq 'YesNo' -and -not [bool]$value) { continue }
             if ($promptSpec.Type -eq 'YesNo') { $value = $true }
 

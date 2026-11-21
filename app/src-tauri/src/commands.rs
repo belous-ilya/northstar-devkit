@@ -26,10 +26,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, S
 /// data query, plus headroom for the cold `DevKit.Core.psm1` import on first
 /// launch". That is the right number for `git.*`, `mcp.*`, `metrics.*` and
 /// friends - but `tool.run` shells out to catalog scripts the docs
-/// themselves describe as "10-30+ minutes": `Repair-SystemFiles` runs
-/// `sfc /scannow` and then DISM, `Reset-WindowsUpdate` stops services and
-/// re-registers components, `Docker-Nuke` prunes whole image stores,
-/// `Update-AiClis` npm-installs a pile of CLIs.
+/// can legitimately run for many minutes: `Docker-Nuke` prunes whole image
+/// stores, `Nuke-And-Reinstall` and `Next-FullClean` delete `node_modules`
+/// and reinstall it, and a fresh dev server never exits by itself at all.
 ///
 /// Timing those out at 60s was not merely cosmetic: the call errored, the UI
 /// reported failure and unsubscribed from the run's events, but the tool

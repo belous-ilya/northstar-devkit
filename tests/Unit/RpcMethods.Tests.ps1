@@ -308,3 +308,105 @@ Describe "ConvertTo-DevKitQuotedArgument" {
         ConvertTo-DevKitQuotedArgument -Value '' | Should -Be '""'
     }
 }
+
+Describe "Resolve-DevKitToolScriptPath" {
+
+    BeforeAll {
+        $script:ToolsRoot = Join-Path $TestDrive 'tools'
+        New-Item -ItemType Directory -Path (Join-Path $script:ToolsRoot 'ports') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:ToolsRoot 'ports\Scan.ps1') -Value 'Write-Host scan'
+        Set-Content -LiteralPath (Join-Path $script:ToolsRoot 'ports\notes.txt') -Value 'not a script'
+        New-Item -ItemType Directory -Path (Join-Path $script:ToolsRoot 'ports\sub.ps1') -Force | Out-Null
+        # A real .ps1 OUTSIDE the tools folder: the thing tool.run must never reach.
+        Set-Content -LiteralPath (Join-Path $TestDrive 'outside.ps1') -Value 'Write-Host escaped'
+    }
+
+    It "resolves a tool inside the tools folder" {
+        Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder 'ports' -ScriptName 'Scan.ps1' |
+            Should -Be (Join-Path $script:ToolsRoot 'ports\Scan.ps1')
+    }
+
+    It "refuses to leave the tools folder - <case>" -ForEach @(
+        @{ case = 'parent folder'; folder = '..'; name = 'outside.ps1' }
+        @{ case = 'climbing out through a real folder'; folder = 'ports\..\..'; name = 'outside.ps1' }
+        @{ case = 'forward slashes'; folder = 'ports/../..'; name = 'outside.ps1' }
+        @{ case = 'traversal in the script name'; folder = 'ports'; name = '..\..\outside.ps1' }
+    ) {
+        { Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder $folder -ScriptName $name } |
+            Should -Throw -ExpectedMessage 'Not a DevKit tool*'
+    }
+
+    It "refuses an absolute path smuggled in as the script" {
+        # Join-Path glues an absolute child onto the tools folder rather than
+        # honouring it, so this lands on a path that cannot exist - refused
+        # either way, which is the property that matters.
+        { Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder 'ports' -ScriptName (Join-Path $TestDrive 'outside.ps1') } |
+            Should -Throw
+    }
+
+    It "refuses a file that is not a .ps1, and a directory named like one" {
+        { Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder 'ports' -ScriptName 'notes.txt' } | Should -Throw -ExpectedMessage 'Not a DevKit tool*'
+        { Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder 'ports' -ScriptName 'sub.ps1' } | Should -Throw -ExpectedMessage 'Tool script not found*'
+    }
+
+    It "says 'not found' for a missing tool, and requires both parts" {
+        { Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder 'ports' -ScriptName 'Gone.ps1' } | Should -Throw -ExpectedMessage 'Tool script not found*'
+        { Resolve-DevKitToolScriptPath -ToolsRoot $script:ToolsRoot -Folder '' -ScriptName 'Scan.ps1' } | Should -Throw -ExpectedMessage '*requires a folder and a script*'
+    }
+}
+
+Describe "tool.run streams both of the tool's output streams as they happen" {
+
+    BeforeAll {
+        # tool.run resolves scripts under $RepoRoot\tools; point it at a
+        # throwaway tree holding one harmless script.
+        $script:FakeRepo = Join-Path $TestDrive 'repo'
+        New-Item -ItemType Directory -Path (Join-Path $script:FakeRepo 'tools\demo') -Force | Out-Null
+        $accented = "caf$([char]0x00E9)"
+        Set-Content -LiteralPath (Join-Path $script:FakeRepo 'tools\demo\Talk.ps1') -Encoding UTF8 -Value @"
+if ([Console]::IsOutputRedirected -and [Console]::OutputEncoding.CodePage -ne 65001) { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding `$false }
+Write-Host 'first'
+[Console]::Error.WriteLine('early-error')
+Start-Sleep -Milliseconds 1500
+Write-Host 'last $accented'
+exit 3
+"@
+    }
+
+    It "delivers an early error BEFORE later output, with the right exit code and intact text" {
+        $events = [System.Collections.Generic.List[object]]::new()
+        $emit = { param($EventName, $RunId, [hashtable]$Extra = @{}) $events.Add([pscustomobject]@{ Name = $EventName; Stream = $Extra['stream']; Line = $Extra['line']; Exit = $Extra['exitCode'] }) }.GetNewClosure()
+        # Invoke-DevKitRpcMethod reads these three from the scope it is called
+        # in - in a lane runspace they are session variables the sidecar sets.
+        Set-Variable -Name RepoRoot -Value $script:FakeRepo
+        Set-Variable -Name RunRegistry -Value $null
+        Set-Variable -Name ToolLaneGate -Value $null
+
+        $result = Invoke-DevKitRpcMethod -Method 'tool.run' -Params ([pscustomobject]@{ folder = 'demo'; script = 'Talk.ps1'; args = @(); runId = 'r1' }) -EmitEvent $emit
+
+        $result.exitCode | Should -Be 3
+        $lines = @($events | Where-Object { $_.Name -eq 'tool.output' })
+        $errorAt = [array]::IndexOf(@($lines | ForEach-Object { $_.Line }), 'early-error')
+        $lastAt = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) { if ([string]$lines[$i].Line -like 'last*') { $lastAt = $i } }
+        $errorAt | Should -BeGreaterOrEqual 0
+        $lastAt | Should -BeGreaterThan $errorAt -Because 'stderr used to be held back until stdout closed'
+        ($lines | Where-Object { $_.Line -eq 'early-error' }).Stream | Should -Be 'stderr'
+        $lines[$lastAt].Line | Should -Be "last caf$([char]0x00E9)"
+        ($events | Where-Object { $_.Name -eq 'tool.finished' }).Exit | Should -Be 3
+    }
+
+    It "refuses a script outside the tools folder before starting anything" {
+        Set-Content -LiteralPath (Join-Path $script:FakeRepo 'outside.ps1') -Value 'Write-Host escaped'
+        $events = [System.Collections.Generic.List[object]]::new()
+        $emit = { param($EventName, $RunId, [hashtable]$Extra = @{}) $events.Add($EventName) }.GetNewClosure()
+        # Invoke-DevKitRpcMethod reads these three from the scope it is called
+        # in - in a lane runspace they are session variables the sidecar sets.
+        Set-Variable -Name RepoRoot -Value $script:FakeRepo
+        Set-Variable -Name RunRegistry -Value $null
+        Set-Variable -Name ToolLaneGate -Value $null
+        { Invoke-DevKitRpcMethod -Method 'tool.run' -Params ([pscustomobject]@{ folder = '..'; script = 'outside.ps1'; args = @(); runId = 'r2' }) -EmitEvent $emit } |
+            Should -Throw -ExpectedMessage 'Not a DevKit tool*'
+        $events.Count | Should -Be 0
+    }
+}

@@ -12,7 +12,7 @@ import { Button } from "../../../components/primitives/Button";
 import { ToolConsole } from "../../../components/ToolConsole";
 import { PulseIcon } from "./icons";
 import { startWidgetToolRun, stopWatchingWidgetRun, useWidgetToolRun } from "./widgetToolRun";
-import type { NodeProcessInfo, NodeSnapshot } from "../../../lib/types";
+import type { NodeProcessInfo, NodeSnapshot, ProcessKillResult } from "../../../lib/types";
 import "./NodePortsPanel.css";
 
 /**
@@ -157,7 +157,10 @@ export function NodePortsPanel({ active = true }: { active?: boolean } = {}) {
       async () => {
         setKillError(null);
         try {
-          await rpcCall("process.kill", { pid: proc.Pid });
+          // process.kill resolves even when nothing was stopped - the
+          // outcome is in the result, not in a rejection.
+          const result = await rpcCall<ProcessKillResult>("process.kill", { pid: proc.Pid });
+          if (!result?.Stopped) setKillError(result?.Note || `Could not stop ${proc.Name} (pid ${proc.Pid}).`);
           refetch();
         } catch (err) {
           setKillError(err instanceof RpcClientError ? err.message : `Could not stop ${proc.Name} (pid ${proc.Pid}).`);

@@ -6,8 +6,11 @@
             Key             = '1'
             Label           = 'Git Cleanup (prune, gc, etc.)'
             Script          = 'Git-Cleanup.ps1'
+            Prompts         = @(
+                @{ Name = 'DryRun'; Type = 'YesNo'; Prompt = 'Preview only - show what would change and change nothing?'; Optional = $true }
+            )
             RequiresProject = $true
-            Help            = "Fetches the remote, deletes local branches already merged into the repo's default branch, prunes stale remote-tracking refs, and can run 'git gc --aggressive --prune=now' and clear the reflog (-ClearReflog) to shrink repo size. Shows pack size before/after. Use this periodically on a repo with a lot of merged/stale branch history. Safety note: mutates real repository state - fetching and remote-tracking prune run automatically (skipped under -DryRun); deleting merged branches, running gc, and clearing the reflog each require a 'y/n' confirmation unless -Force is passed. -DryRun previews every step with zero changes made."
+            Help            = "Fetches the remote, deletes local branches already merged into the repo's default branch, prunes stale remote-tracking refs, and runs 'git gc' (a plain one: objects that became unreachable in the last two weeks are kept, so a commit orphaned by mistake can still be rescued). The irreversible strengths are command-line only: -Aggressive runs 'git gc --aggressive --prune=now', and -ClearReflog clears the reflog first. Shows pack size before/after. Use this periodically on a repo with a lot of merged/stale branch history. Safety note: mutates real repository state - fetching and remote-tracking prune run automatically (skipped under -DryRun); deleting merged branches, running gc, and clearing the reflog each require a 'y/n' confirmation unless -Force is passed. Answer yes to the preview question (-DryRun) to see every step with zero changes made."
         }
         @{
             Key             = '2'
@@ -20,6 +23,9 @@
             Key             = '3'
             Label           = 'Sync Fork with Upstream'
             Script          = 'Git-SyncFork.ps1'
+            Prompts         = @(
+                @{ Name = 'Rebase'; Type = 'YesNo'; Prompt = 'Rebase onto upstream instead of merging?'; Optional = $true }
+            )
             RequiresProject = $true
             Help            = "Fetches a named upstream remote (default 'upstream'), checks out the target branch (defaults to the current branch, falling back to 'main' or 'master'), merges or rebases (-Rebase) in the upstream changes, and pushes the result to origin - using --force-with-lease after a rebase. Refuses to run if there are uncommitted changes or a merge/rebase already in progress. Use this to keep a personal fork current with its upstream repository. Safety note: mutates real repository state and pushes to a real remote - prompts 'Sync <branch> with <upstream>/<branch>? (y/n)' before starting unless -Force is passed, but has no -DryRun/preview mode, so answering 'y' runs checkout, merge-or-rebase, and push immediately."
         }

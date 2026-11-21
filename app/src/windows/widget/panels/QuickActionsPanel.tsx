@@ -298,8 +298,8 @@ export function QuickActionsPanel() {
             {closeOutProject
               ? ", and clears the active project's framework caches (.next, .turbo, node_modules/.cache, node_modules/.vite - never node_modules itself, never dist)"
               : ""}
-            . Anything unsaved in the stopped processes is lost, DevKit cannot cancel a tool once it starts, and none of
-            it can be undone.
+            . Anything unsaved in the stopped processes is lost, and none of it can be undone - stopping the run part-way
+            (its row in Run history has a Stop) does not put back what it has already done.
             <br />
             Not sure? Cancel and hit <strong>Preview</strong> first - the same run, dry, nothing touched.
           </>
@@ -307,8 +307,15 @@ export function QuickActionsPanel() {
         confirmLabel: "Close out",
         danger: true,
       },
-      () =>
-        startWidgetToolRun({
+      // Fired, NOT returned. ConfirmDialogHost keeps the dialog up (busy,
+      // undismissable, over a full-window blurred overlay) until the
+      // action's promise settles, and startWidgetToolRun's promise settles
+      // only when tool.run does - which is when the tool FINISHES. Returning
+      // it parked the dialog on top of the live console for the entire
+      // Close-Out run. The dialog's job ends at "yes"; the tile's spinner,
+      // the header badge and the console report the run from there.
+      () => {
+        void startWidgetToolRun({
           surface: "quick-actions",
           folder: CLOSE_OUT.folder,
           script: CLOSE_OUT.script,
@@ -318,7 +325,8 @@ export function QuickActionsPanel() {
           // The user just came through the caution dialog, which is the only
           // thing that earns -Force. See widgetToolRun's WidgetRunSpec.
           confirmed: true,
-        }),
+        });
+      },
     );
   }
 
@@ -443,7 +451,7 @@ export function QuickActionsPanel() {
                 <ToolConsole lines={lines} className="tool-console--compact" />
                 {degraded && (
                   <span className="quick-actions-panel__degraded">
-                    Run request errored - still watching. DevKit can&apos;t cancel a running tool.
+                    Run request errored - still watching. To end the run, use Stop on its row in Run history.
                   </span>
                 )}
                 <div className="quick-actions-panel__console-footer">

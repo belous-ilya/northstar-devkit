@@ -155,7 +155,7 @@ The build succeeding is not the finish line. Confirm all three:
 
 ```powershell
 gh release view vX.Y.Z    # draft: false, marked Latest, 3 assets (setup.exe, .sig, latest.json)
-curl -sL https://github.com/st3adyp1ck/northstar-devkit/releases/latest/download/latest.json
+curl -sL https://github.com/belous-ilya/northstar-devkit/releases/latest/download/latest.json
 ```
 
 `latest.json` must report the NEW version — that URL is exactly what
