@@ -7,7 +7,7 @@ import { useSyncExternalStore } from "react";
  * The case this exists for is the docked widget collapsed to its sliver.
  * The OS window is still visible (that 18px strip IS the window), so
  * useVisibility says "visible" and every panel kept polling the sidecar at
- * full rate - metrics.system's two CIM queries every 2s, env.drift, the
+ * full rate - metrics.system every 2s, env.drift, the
  * error feed - to redraw gauges parked off the edge of the monitor.
  *
  * Deliberately NOT folded into useVisibility: that hook also drives

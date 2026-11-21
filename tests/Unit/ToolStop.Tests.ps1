@@ -495,7 +495,7 @@ Describe "Get-DevKitRpcLaneForMethod (lifted from Invoke-DevKitRpc.ps1)" {
     }
 
     It "routes the 3s-polled gauge top-process collectors to the metrics lane" {
-        # Get-DevKitTopCpuProcesses samples a ~1s window and the gauges flyout
+        # A first Get-DevKitTopCpuProcesses call samples a ~1s window and the gauges flyout
         # polls both every 3s - on 'work' they would starve tool.stop,
         # settings.set, notes.save and process.kill behind them.
         Get-DevKitRpcLaneForMethod -Method 'process.topCpu' | Should -Be 'metrics'

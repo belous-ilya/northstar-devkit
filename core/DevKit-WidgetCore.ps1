@@ -138,36 +138,249 @@ function Get-DevKitCpuTempReading {
     return $reading
 }
 
+$script:NativeMetricsState = 'Untried'   # 'Untried' | 'Ready' | 'Unavailable'
+$script:CpuTimesPrevious = $null
+$script:BootTimeCache = $null
+
+function Initialize-DevKitNativeMetrics {
+    <#
+    .SYNOPSIS
+        Compiles the native calls the polled collectors read (kernel32
+        GetSystemTimes and GlobalMemoryStatusEx for the gauges, iphlpapi
+        GetExtendedTcpTable for the listening-ports table) once per process.
+        Returns $true when the type is
+        usable. A host that cannot compile (Constrained Language Mode, a
+        locked-down temp folder) answers $false once and is not asked again;
+        the caller then falls back to WMI.
+    #>
+    if ($script:NativeMetricsState -eq 'Ready') { return $true }
+    if ($script:NativeMetricsState -eq 'Unavailable') { return $false }
+    if (-not ('DevKit.NativeMetrics' -as [type])) {
+        try {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+namespace DevKit {
+    public static class NativeMetrics {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MEMORYSTATUSEX {
+            public uint dwLength; public uint dwMemoryLoad;
+            public ulong ullTotalPhys; public ulong ullAvailPhys;
+            public ulong ullTotalPageFile; public ulong ullAvailPageFile;
+            public ulong ullTotalVirtual; public ulong ullAvailVirtual;
+            public ulong ullAvailExtendedVirtual;
+        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX buffer);
+
+        // { idle, kernel (which includes idle), user } in 100 ns ticks, or null.
+        public static long[] CpuTimes() {
+            long idle, kernel, user;
+            if (!GetSystemTimes(out idle, out kernel, out user)) return null;
+            return new long[] { idle, kernel, user };
+        }
+        // { total physical bytes, available physical bytes }, or null.
+        public static ulong[] Memory() {
+            MEMORYSTATUSEX m = new MEMORYSTATUSEX();
+            m.dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
+            if (!GlobalMemoryStatusEx(ref m)) return null;
+            return new ulong[] { m.ullTotalPhys, m.ullAvailPhys };
+        }
+
+        [DllImport("iphlpapi.dll", SetLastError = true)]
+        private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int family, int tableClass, uint reserved);
+
+        // Every listening TCP socket as a flat { port, pid, port, pid, ... }
+        // list, IPv4 then IPv6. Null when the IPv4 table cannot be read.
+        public static int[] TcpListeners() {
+            List<int> found = new List<int>();
+            // MIB_TCPROW_OWNER_PID: 24 bytes, local port at 8, owning pid at 20.
+            if (!ReadListeners(2, 24, 8, 20, found)) return null;
+            // MIB_TCP6ROW_OWNER_PID: 56 bytes, local port at 20, owning pid at 52.
+            // A machine with IPv6 switched off has no such table: not an error.
+            ReadListeners(23, 56, 20, 52, found);
+            return found.ToArray();
+        }
+
+        private static bool ReadListeners(int family, int rowSize, int portOffset, int pidOffset, List<int> into) {
+            const int TCP_TABLE_OWNER_PID_LISTENER = 3;
+            const uint ERROR_INSUFFICIENT_BUFFER = 122;
+            int size = 0;
+            GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+            // The table can grow between the size probe and the read.
+            for (int attempt = 0; attempt < 4; attempt++) {
+                if (size <= 0) return false;
+                IntPtr buffer = Marshal.AllocHGlobal(size);
+                try {
+                    uint rc = GetExtendedTcpTable(buffer, ref size, false, family, TCP_TABLE_OWNER_PID_LISTENER, 0);
+                    if (rc == ERROR_INSUFFICIENT_BUFFER) continue;
+                    if (rc != 0) return false;
+                    int count = Marshal.ReadInt32(buffer);
+                    for (int i = 0; i < count; i++) {
+                        int row = 4 + (i * rowSize);
+                        // The port is stored in network byte order.
+                        int port = (Marshal.ReadByte(buffer, row + portOffset) << 8) | Marshal.ReadByte(buffer, row + portOffset + 1);
+                        into.Add(port);
+                        into.Add(Marshal.ReadInt32(buffer, row + pidOffset));
+                    }
+                    return true;
+                } finally {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            return false;
+        }
+    }
+}
+'@
+        } catch { }
+    }
+    # Another runspace of this process may have compiled it between the test
+    # and the Add-Type (the loser of that race throws); the type is what counts.
+    if ('DevKit.NativeMetrics' -as [type]) { $script:NativeMetricsState = 'Ready'; return $true }
+    $script:NativeMetricsState = 'Unavailable'
+    return $false
+}
+
+function Get-DevKitCpuPercentFromTimes {
+    <#
+    .SYNOPSIS
+        Whole-machine CPU percent between two GetSystemTimes samples, each
+        { idle, kernel, user } in ticks. Kernel time INCLUDES idle time, so
+        busy = (kernel + user) - idle. $null when the samples cannot give an
+        answer: no time passed, or a counter went backwards.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][long[]]$Previous,
+        [Parameter(Mandatory = $true)][long[]]$Current
+    )
+    if ($Previous.Count -lt 3 -or $Current.Count -lt 3) { return $null }
+    $idle = $Current[0] - $Previous[0]
+    $total = ($Current[1] - $Previous[1]) + ($Current[2] - $Previous[2])
+    if ($total -le 0 -or $idle -lt 0) { return $null }
+    $percent = (1 - ($idle / $total)) * 100
+    if ($percent -lt 0) { $percent = 0 }
+    if ($percent -gt 100) { $percent = 100 }
+    return [math]::Round($percent, 1)
+}
+
+function Get-DevKitNativeCpuPercent {
+    <#
+    .SYNOPSIS
+        CPU percent since the previous call in this runspace, from
+        GetSystemTimes: microseconds per poll, and an average over the whole
+        poll interval rather than WMI's last second. The first call has no
+        earlier sample, so it takes two a quarter of a second apart. $null
+        when the native type is unavailable.
+    #>
+    if (-not (Initialize-DevKitNativeMetrics)) { return $null }
+    try {
+        $now = [DevKit.NativeMetrics]::CpuTimes()
+        if ($null -eq $now) { return $null }
+        if ($null -eq $script:CpuTimesPrevious) {
+            $script:CpuTimesPrevious = $now
+            Start-Sleep -Milliseconds 250
+            $now = [DevKit.NativeMetrics]::CpuTimes()
+            if ($null -eq $now) { return $null }
+        }
+        $percent = Get-DevKitCpuPercentFromTimes -Previous $script:CpuTimesPrevious -Current $now
+        # Two polls landing inside one timer tick give no elapsed time: keep
+        # the older sample so the next poll has a real window to measure.
+        if ($null -ne $percent) { $script:CpuTimesPrevious = $now }
+        return $percent
+    } catch { return $null }
+}
+
+function Get-DevKitNativeMemory {
+    <#
+    .SYNOPSIS
+        Physical memory totals from GlobalMemoryStatusEx as
+        @{ TotalBytes; AvailableBytes }, or $null when unavailable.
+    #>
+    if (-not (Initialize-DevKitNativeMetrics)) { return $null }
+    try {
+        $m = [DevKit.NativeMetrics]::Memory()
+        if ($null -eq $m -or $m[0] -eq 0) { return $null }
+        return @{ TotalBytes = [double]$m[0]; AvailableBytes = [double]$m[1] }
+    } catch { return $null }
+}
+
+function Get-DevKitTcpListenRows {
+    <#
+    .SYNOPSIS
+        Every listening TCP socket as rows with LocalPort and OwningProcess
+        (the two fields the widget reads). Straight from iphlpapi, which
+        answers in about a millisecond; Get-NetTCPConnection, the fallback
+        when the native type is unavailable, goes through WMI and costs
+        about 120 ms on every 3-second poll.
+    #>
+    if (Initialize-DevKitNativeMetrics) {
+        try {
+            $flat = [DevKit.NativeMetrics]::TcpListeners()
+            if ($null -ne $flat) {
+                $rows = @()
+                for ($i = 0; $i + 1 -lt $flat.Length; $i += 2) {
+                    $rows += [PSCustomObject]@{ LocalPort = [int]$flat[$i]; OwningProcess = [int]$flat[$i + 1] }
+                }
+                return , $rows
+            }
+        } catch { }
+    }
+    $fallback = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+    return , $fallback
+}
+
 function Get-DevKitSystemMetrics {
     <#
     .SYNOPSIS
         One snapshot of the metrics the widget displays. Any individual
         collector may yield $null; callers render "n/a" for those.
     #>
-    # CPU load: Win32_Processor.LoadPercentage first - the PDH '% Processor
-    # Time' counter needs two samples from the SAME query handle, and this
-    # function opens a fresh one per poll, so its first (only) sample reads
-    # ~0% forever. LoadPercentage is a ready-made 1-second average.
-    $cpuPercent = $null
-    try {
-        $load = (Get-CimInstance Win32_Processor -ErrorAction Stop | Measure-Object -Property LoadPercentage -Average).Average
-        if ($null -ne $load) { $cpuPercent = [math]::Round([double]$load, 1) }
-    } catch { }
+    # CPU and memory come straight from kernel32 (see Get-DevKitNativeCpuPercent
+    # for why). The WMI queries below are the fallback for a host where the
+    # native type cannot be compiled, and they are what this function used to
+    # run on every poll: Win32_Processor.LoadPercentage waits out a full
+    # second inside WMI, so the metrics lane was busy for half of every
+    # 2-second cycle.
+    $cpuPercent = Get-DevKitNativeCpuPercent
     if ($null -eq $cpuPercent) {
         try {
-            $cpuPercent = [math]::Round((Get-Counter '\Processor(_Total)\% Processor Time' -ErrorAction Stop).CounterSamples[0].CookedValue, 1)
+            $load = (Get-CimInstance Win32_Processor -Property LoadPercentage -ErrorAction Stop | Measure-Object -Property LoadPercentage -Average).Average
+            if ($null -ne $load) { $cpuPercent = [math]::Round([double]$load, 1) }
         } catch { }
     }
 
     $memPercent = $null; $memUsedGB = $null; $memTotalGB = $null; $uptimeDays = $null
-    try {
-        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-        $memTotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
-        $memFreeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+    $memory = Get-DevKitNativeMemory
+    if ($null -ne $memory) {
+        $memTotalGB = [math]::Round($memory.TotalBytes / 1GB, 1)
+        $memFreeGB = [math]::Round($memory.AvailableBytes / 1GB, 1)
+    } else {
+        try {
+            $os = Get-CimInstance Win32_OperatingSystem -Property TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction Stop
+            $memTotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+            $memFreeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+        } catch { }
+    }
+    if ($null -ne $memTotalGB) {
         $memUsedGB = [math]::Round($memTotalGB - $memFreeGB, 1)
         if ($memTotalGB -gt 0) { $memPercent = [math]::Round(($memUsedGB / $memTotalGB) * 100, 1) }
-        if ($os.LastBootUpTime) { $uptimeDays = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalDays, 1) }
-    } catch { }
+    }
+
+    # The boot time cannot change while this process is alive (a reboot ends
+    # it), so it is asked for once per runspace, not on every poll.
+    if ($null -eq $script:BootTimeCache) {
+        try {
+            $boot = (Get-CimInstance Win32_OperatingSystem -Property LastBootUpTime -ErrorAction Stop).LastBootUpTime
+            if ($boot) { $script:BootTimeCache = [datetime]$boot }
+        } catch { }
+    }
+    if ($null -ne $script:BootTimeCache) {
+        $uptimeDays = [math]::Round(((Get-Date) - $script:BootTimeCache).TotalDays, 1)
+    }
 
     # Every READY fixed/removable drive: pure .NET, microseconds. A full disk
     # breaks builds with symptoms that look like everything except disk space,
@@ -665,7 +878,7 @@ function Get-DevKitNodeSnapshot {
         truncated CommandLine so two `node` rows are tellable apart.
     #>
     $nodeProcesses = @(Get-Process -Name node -ErrorAction SilentlyContinue)
-    $listenRows = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)
+    $listenRows = Get-DevKitTcpListenRows
     $portsByPid = Group-DevKitPortsByProcess -ListenRows $listenRows
     $now = Get-Date
 
@@ -796,55 +1009,104 @@ function Get-DevKitProcessClassification {
     return 'Caution'
 }
 
+$script:TopCpuPrevious = $null
+
+function Get-DevKitProcessCpuRows {
+    <#
+    .SYNOPSIS
+        Pure half of the top-CPU list: turns one process snapshot plus the
+        CPU-seconds table of an earlier one into rows. Percent = delta CPU
+        seconds / (window * logical cores) * 100, capped at 100. A process
+        missing from the earlier table (started since) is skipped, and so is
+        a negative delta (its PID was recycled between the snapshots).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Processes,
+        [Parameter(Mandatory = $true)][hashtable]$Earlier,
+        [Parameter(Mandatory = $true)][double]$WindowSeconds,
+        [int]$Cores = 1
+    )
+    if ($Cores -lt 1) { $Cores = 1 }
+    $rows = @()
+    if ($WindowSeconds -le 0) { return , $rows }
+    foreach ($p in $Processes) {
+        if ($null -eq $p.Cpu -or -not $Earlier.ContainsKey($p.Id)) { continue }
+        $delta = [double]$p.Cpu - [double]$Earlier[$p.Id]
+        if ($delta -lt 0) { continue }
+        $pct = ($delta / ($WindowSeconds * $Cores)) * 100
+        if ($pct -gt 100) { $pct = 100 }
+        $rows += [PSCustomObject]@{
+            Name           = $p.Name
+            Pid            = $p.Id
+            CpuPercent     = [math]::Round($pct, 1)
+            MemoryMB       = $p.MemoryMB
+            Classification = (Get-DevKitProcessClassification -Name $p.Name)
+        }
+    }
+    return , $rows
+}
+
+function Get-DevKitProcessCpuSnapshot {
+    <#
+    .SYNOPSIS
+        One reading of every process: Id, Name, Cpu (total CPU seconds, $null
+        for the few protected processes that refuse to say) and MemoryMB.
+        Never throws; a failed enumeration yields an empty list.
+    #>
+    $list = @()
+    try {
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+            $cpu = $null
+            try { $cpu = $p.CPU } catch { }
+            $memMB = 0
+            try { $memMB = [math]::Round($p.WorkingSet64 / 1MB, 0) } catch { }
+            $list += [PSCustomObject]@{ Id = $p.Id; Name = $p.ProcessName; Cpu = $cpu; MemoryMB = $memMB }
+        }
+    } catch { }
+    return , $list
+}
+
 function Get-DevKitTopCpuProcesses {
     <#
     .SYNOPSIS
-        The $Count busiest processes by current CPU usage: two Get-Process
-        snapshots $SampleSeconds apart, percent = delta CPU seconds /
-        (sample window * logical core count) * 100, capped at 100. Processes
-        that exited between the snapshots (or whose PID got recycled, seen
-        as a negative delta) are skipped. Never throws - a failed snapshot
-        just yields fewer/zero rows.
+        The $Count busiest processes by current CPU usage, from two process
+        snapshots. The gauges flyout polls this every 3 seconds, so the
+        earlier snapshot is normally the one the previous poll took: no
+        waiting, and the percentages cover the whole gap between polls. Only
+        a first call (or one after a long pause) has nothing to compare with
+        and samples $SampleSeconds apart itself. Never throws - a failed
+        snapshot just yields fewer/zero rows.
     #>
     param([int]$Count = 15, [double]$SampleSeconds = 1)
 
     if ($SampleSeconds -lt 0.2) { $SampleSeconds = 0.2 }
-    $cores = [Environment]::ProcessorCount
-    if ($cores -lt 1) { $cores = 1 }
+    $frequency = [double][System.Diagnostics.Stopwatch]::Frequency
 
-    $first = @{}
-    try {
-        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
-            $cpu = $null
-            try { $cpu = $p.CPU } catch { }   # .CPU throws for a few protected processes
-            if ($null -ne $cpu) { $first[$p.Id] = [double]$cpu }
-        }
-    } catch { }
+    $earlier = $null; $earlierStamp = 0
+    $previous = $script:TopCpuPrevious
+    if ($null -ne $previous) {
+        $age = ([System.Diagnostics.Stopwatch]::GetTimestamp() - $previous.Stamp) / $frequency
+        # Younger than half a second is too short a window to trust; older
+        # than ten is an average over time nobody is looking at any more.
+        if ($age -ge 0.5 -and $age -le 10) { $earlier = $previous.Cpu; $earlierStamp = $previous.Stamp }
+    }
+    if ($null -eq $earlier) {
+        $earlier = @{}
+        $earlierStamp = [System.Diagnostics.Stopwatch]::GetTimestamp()
+        $firstSnapshot = Get-DevKitProcessCpuSnapshot
+        foreach ($p in $firstSnapshot) { if ($null -ne $p.Cpu) { $earlier[$p.Id] = [double]$p.Cpu } }
+        Start-Sleep -Milliseconds ([int]($SampleSeconds * 1000))
+    }
 
-    Start-Sleep -Seconds $SampleSeconds
+    $nowStamp = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    $snapshot = Get-DevKitProcessCpuSnapshot
+    $window = ($nowStamp - $earlierStamp) / $frequency
+    $rows = Get-DevKitProcessCpuRows -Processes $snapshot -Earlier $earlier -WindowSeconds $window -Cores ([Environment]::ProcessorCount)
 
-    $rows = @()
-    try {
-        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
-            if (-not $first.ContainsKey($p.Id)) { continue }   # started after the first snapshot
-            $cpuNow = $null
-            try { $cpuNow = $p.CPU } catch { continue }        # exited between snapshots
-            if ($null -eq $cpuNow) { continue }
-            $delta = [double]$cpuNow - $first[$p.Id]
-            if ($delta -lt 0) { continue }                     # PID recycled mid-sample
-            $pct = ($delta / ($SampleSeconds * $cores)) * 100
-            if ($pct -gt 100) { $pct = 100 }
-            $memMB = 0
-            try { $memMB = [math]::Round($p.WorkingSet64 / 1MB, 0) } catch { }
-            $rows += [PSCustomObject]@{
-                Name           = $p.ProcessName
-                Pid            = $p.Id
-                CpuPercent     = [math]::Round($pct, 1)
-                MemoryMB       = $memMB
-                Classification = (Get-DevKitProcessClassification -Name $p.ProcessName)
-            }
-        }
-    } catch { }
+    $nowCpu = @{}
+    foreach ($p in $snapshot) { if ($null -ne $p.Cpu) { $nowCpu[$p.Id] = [double]$p.Cpu } }
+    if ($nowCpu.Count -gt 0) { $script:TopCpuPrevious = @{ Stamp = $nowStamp; Cpu = $nowCpu } }
+
     return @($rows | Sort-Object CpuPercent -Descending | Select-Object -First $Count)
 }
 
@@ -852,19 +1114,25 @@ function Get-DevKitTopMemoryProcesses {
     <#
     .SYNOPSIS
         The $Count largest processes by working set, plus the machine-wide
-        memory totals (from Win32_OperatingSystem - the same source
-        Get-DevKitSystemMetrics uses) for the memory gauge window's header.
-        Never throws.
+        memory totals (the same source Get-DevKitSystemMetrics uses:
+        kernel32 first, WMI when that is unavailable) for the memory gauge
+        window's header. Never throws.
     #>
     param([int]$Count = 15)
 
     $result = [PSCustomObject]@{ Processes = @(); TotalGB = $null; UsedGB = $null; FreeGB = $null }
-    try {
-        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-        $result.TotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
-        $result.FreeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
-        $result.UsedGB = [math]::Round($result.TotalGB - $result.FreeGB, 1)
-    } catch { }
+    $memory = Get-DevKitNativeMemory
+    if ($null -ne $memory) {
+        $result.TotalGB = [math]::Round($memory.TotalBytes / 1GB, 1)
+        $result.FreeGB = [math]::Round($memory.AvailableBytes / 1GB, 1)
+    } else {
+        try {
+            $os = Get-CimInstance Win32_OperatingSystem -Property TotalVisibleMemorySize, FreePhysicalMemory -ErrorAction Stop
+            $result.TotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+            $result.FreeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+        } catch { }
+    }
+    if ($null -ne $result.TotalGB) { $result.UsedGB = [math]::Round($result.TotalGB - $result.FreeGB, 1) }
 
     $rows = @()
     try {
@@ -1881,7 +2149,12 @@ function Get-DevKitRepoOverview {
         }
 
         # Ambient work-in-progress counts for the project badge.
-        $dirty = (& $git.Source '-C' $Path 'status' '--porcelain' 2>$null | Out-String)
+        # --no-optional-locks: a plain 'git status' refreshes the index and
+        # takes index.lock to write it back. This poll runs every few seconds
+        # in the background, so without the flag it could hold that lock at
+        # the moment the user's own 'git add' or 'git commit' wanted it, and
+        # theirs failed with "index.lock: File exists".
+        $dirty = (& $git.Source '--no-optional-locks' '-C' $Path 'status' '--porcelain' 2>$null | Out-String)
         $result.DirtyFiles = ConvertFrom-DevKitGitStatusOutput -Raw $dirty
         $result.DirtyCount = @($result.DirtyFiles).Count
         $stashes = (& $git.Source '-C' $Path 'stash' 'list' 2>$null | Out-String)

@@ -330,7 +330,7 @@ function Start-DevKitRpcLane {
 function Get-DevKitRpcLaneForMethod {
     param([Parameter(Mandatory)][string]$Method)
     if ($Method -like 'metrics.*') { return 'metrics' }
-    # process.topCpu/topMemory ride the metrics lane, not 'work': each
+    # process.topCpu/topMemory ride the metrics lane, not 'work': a first
     # top-CPU call samples a ~1s window and the gauges flyout polls both every
     # 3s - on 'work' they would stack up in front of tool.stop, settings.set,
     # notes.save and process.kill, the interactions a click on a gauge makes.
