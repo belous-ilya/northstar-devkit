@@ -91,18 +91,19 @@ the whole app fixes the first batch of what it found.
   are fetched the first time they are opened.
 - Docker previews name what holds data. Dry runs of Docker Nuke and Docker
   Cleanup now list the volumes (and networks) they would remove; they used
-  to list containers and images only.
+  to list containers and images only. Docker Cleanup counts only the
+  volumes it can actually remove (unused anonymous ones on Docker 23+).
 - Docker Nuke's confirmation says what that run will destroy. It used to
   say "containers, images, volumes, and networks" even for the item that
   keeps volumes.
 - Git Cleanup never offers `staging`, `production`, `prod`, `dev`,
   `release`, `gh-pages` or anything under `release/` or `hotfix/` for
-  deletion (it protected only `main`, `master` and `develop`), and works
-  from a folder below the repository root.
-- Every destructive tool asks through one shared prompt. It honours the
-  "confirm destructive actions" setting, and where nobody can answer (a
-  run from the Control Center without approval) it declines instead of
-  crashing.
+  deletion (it protected only `main`, `master` and `develop`). It works
+  from a folder below the repository root, and names the repository it
+  is about to clean.
+- Every destructive tool asks through one shared prompt. Where nobody can
+  answer (a run from the Control Center without approval) it declines
+  instead of crashing. Which tools ask, and when, is unchanged.
 - The update check runs once a day in an app that stays open. It ran only
   at startup, so a widget left running for weeks never saw a release.
 - The in-app updater, and every link in the app and the docs, now point
@@ -214,6 +215,15 @@ the whole app fixes the first batch of what it found.
   timestamps are now stored and returned exactly as written. Values
   already rewritten stay as they are (the original cannot be recovered);
   nothing in the app reads them.
+- **Stop pressed right after Run did nothing.** In the moment between a
+  tool being accepted and its process existing, Stop was answered "that
+  run is no longer active" and the tool then started and ran. The stop is
+  now held and applied the instant the tool has started.
+- If the tool lane failed to start, the first tool run reported it and
+  every later one was refused as "a tool is already running" until the
+  app was restarted. The lane is released properly now.
+- If the sidecar's output writer died, every panel timed out after 60
+  seconds with nothing logged. The sidecar now notices and restarts.
 
 ### Security
 
