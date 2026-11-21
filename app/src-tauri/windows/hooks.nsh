@@ -23,9 +23,9 @@
 ; - and therefore the script itself - is already gone, so the cleanup is
 ; inlined here instead of calling Set-DevKitAdminMode.ps1 -Off.
 ;
-; The uninstall cleanup is best-effort: a leftover shortcut is inert, and a
-; leftover task points at a deleted exe (the gate re-runs setup on
-; reinstall). One known gap, accepted deliberately: if Start-with-Windows had
+; The uninstall cleanup of shortcuts and markers is best-effort (a leftover
+; shortcut is inert). The task is not: see the macro. One known gap,
+; accepted deliberately: if Start-with-Windows had
 ; been MOVED onto the task's logon trigger, uninstalling removes that
 ; autostart instead of restoring the Run-key value (the marker that
 ; remembered it is deleted with the app-data folder by the standard
@@ -51,13 +51,29 @@
   ; prompt. The template skips its own shortcut and app-data removal in
   ; that mode for the same reason.
   ${If} $UpdateMode <> 1
-    ; Remove the elevation scheduled task. 'schtasks /delete' from the
-    ; user's filtered token succeeds for tasks in their own task library; if
-    ; it does not, the task is left behind (see header).
+    ; Remove the elevation scheduled task. It MUST go: it starts whatever
+    ; exe sits at the old install path as Administrator, with no prompt, for
+    ; anyone who can run 'schtasks /run' as this user - and after an
+    ; uninstall that path is an empty slot in a user-writable folder.
+    ;
+    ; The task was registered by an elevated process, and this uninstaller
+    ; is not elevated, so the plain delete below is normally refused. It is
+    ; tried first anyway (no prompt when it works), then the task is looked
+    ; for again, and only if it is still there is the delete repeated
+    ; elevated - the one UAC prompt of an uninstall. Declining it leaves the
+    ; task in place; nothing else here depends on it.
     nsExec::ExecToStack 'schtasks /delete /tn "NorthstarDevKit-Admin" /f'
     Pop $0
-    Pop $0
-    DetailPrint "Removed NorthstarDevKit-Admin elevation task (if present)"
+    Pop $1
+    nsExec::ExecToStack 'schtasks /query /tn "NorthstarDevKit-Admin"'
+    Pop $0 ; exit code of the query: 0 means the task still exists
+    Pop $1
+    ${If} $0 == 0
+      DetailPrint "Removing the NorthstarDevKit-Admin elevation task needs administrator rights"
+      ExecShellWait "runas" "$SYSDIR\schtasks.exe" '/delete /tn "NorthstarDevKit-Admin" /f' SW_HIDE
+    ${Else}
+      DetailPrint "Removed NorthstarDevKit-Admin elevation task (if present)"
+    ${EndIf}
 
     ; The hidden WSH launcher and the state marker live in the app-data folder.
     Delete "$LOCALAPPDATA\NorthstarDevKit\DevKit-Admin.vbs"

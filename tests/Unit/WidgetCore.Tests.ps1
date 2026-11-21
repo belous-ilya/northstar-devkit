@@ -1065,3 +1065,78 @@ Describe "Get-DevKitFileIconInfo" {
         }
     }
 }
+
+Describe "background git calls do not run programs named in the project's git config" {
+
+    # The installed app is admin-only, so its polls run elevated inside the
+    # active project - and git obeys that project's .git/config, which
+    # anything running as the user can write. core.fsmonitor=<path> makes
+    # 'git status' run that program: without the override this was a way to
+    # be run as Administrator with no click at all.
+
+    BeforeAll {
+        $script:GitExe = Get-DevKitWindowsExecutable -Name 'git'
+        $script:HookRepo = Join-Path $TestDrive "fsmonitor-repo-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+        $script:HookMarker = Join-Path $TestDrive "fsmonitor-ran-$([guid]::NewGuid().ToString('N').Substring(0, 8)).txt"
+        $hook = Join-Path $TestDrive "fsmonitor-hook-$([guid]::NewGuid().ToString('N').Substring(0, 8)).cmd"
+        if ($script:GitExe) {
+            [void](New-Item -ItemType Directory -Path $script:HookRepo)
+            & $script:GitExe.Source -C $script:HookRepo init -q -b main
+            & $script:GitExe.Source -C $script:HookRepo -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m first
+            [System.IO.File]::WriteAllText($hook, "@echo off`r`necho ran > `"$($script:HookMarker)`"`r`n")
+            & $script:GitExe.Source -C $script:HookRepo config core.fsmonitor ($hook -replace '\\', '/')
+        }
+    }
+
+    It "has git available for these tests" {
+        $script:GitExe | Should -Not -BeNullOrEmpty
+    }
+
+    It "the overview poll does not execute the configured program" {
+        if (Test-Path -LiteralPath $script:HookMarker) { Remove-Item -LiteralPath $script:HookMarker }
+        $overview = Get-DevKitRepoOverview -Path $script:HookRepo -IncludeGraph $false
+        $overview.IsRepo | Should -BeTrue
+        $overview.Error | Should -BeNullOrEmpty
+        Start-Sleep -Milliseconds 400
+        Test-Path -LiteralPath $script:HookMarker | Should -BeFalse
+    }
+
+    It "control: a plain 'git status' in that same repository DOES execute it (so the test above can fail)" {
+        if (Test-Path -LiteralPath $script:HookMarker) { Remove-Item -LiteralPath $script:HookMarker }
+        $null = & $script:GitExe.Source -C $script:HookRepo status --porcelain 2>&1
+        Start-Sleep -Milliseconds 400
+        Test-Path -LiteralPath $script:HookMarker | Should -BeTrue
+    }
+
+    It "commit details do not execute it either, and still answer" {
+        if (Test-Path -LiteralPath $script:HookMarker) { Remove-Item -LiteralPath $script:HookMarker }
+        $head = (& $script:GitExe.Source -c core.fsmonitor=false -C $script:HookRepo rev-parse HEAD | Out-String).Trim()
+        $details = Get-DevKitCommitDetails -Path $script:HookRepo -Hash $head
+        $details.Error | Should -BeNullOrEmpty
+        Start-Sleep -Milliseconds 400
+        Test-Path -LiteralPath $script:HookMarker | Should -BeFalse
+    }
+
+    It "forces both settings off for every git call the app makes on its own" {
+        $script:DevKitGitBackgroundArgs -join ' ' | Should -Be '-c core.fsmonitor=false -c protocol.ext.allow=never'
+        $source = Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$null, [ref]$null)
+        foreach ($name in 'Get-DevKitRepoOverview', 'Invoke-DevKitGitAutoFetch', 'Get-DevKitCommitDetails') {
+            $function = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+            $function | Should -Not -BeNullOrEmpty
+            # every "& $git.Source ..." / "& $Git.Source ..." in the function
+            $spawns = @($function.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.CommandAst] -and $n.InvocationOperator -eq 'Ampersand' -and
+                        $n.CommandElements[0].Extent.Text -match '^\$git\.Source$' }, $true))
+            $spawns.Count | Should -BeGreaterThan 0 -Because "$name spawns git"
+            foreach ($spawn in $spawns) {
+                $spawn.CommandElements[1].Extent.Text | Should -Be '@script:DevKitGitBackgroundArgs' -Because "a git call in $name must carry the override first"
+            }
+        }
+    }
+
+    It "never runs a diff driver or text converter the repository configures when showing a commit" {
+        $text = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1'))
+        $text.Contains("'show' '--no-ext-diff' '--no-textconv'") | Should -BeTrue
+    }
+}

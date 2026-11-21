@@ -246,6 +246,18 @@ Describe "the installer runs the cleanup after installing" {
         $script:Hooks | Should -Not -Match 'RMDir /r "\$INSTDIR'
     }
 
+    It "removes the elevation task elevated when the plain delete was refused" {
+        # The task starts whatever exe is at the old install path as
+        # Administrator; left behind after an uninstall it points at an empty
+        # slot in a user-writable folder.
+        $plain = $script:Hooks.IndexOf("nsExec::ExecToStack 'schtasks /delete /tn ""NorthstarDevKit-Admin"" /f'")
+        $query = $script:Hooks.IndexOf("nsExec::ExecToStack 'schtasks /query /tn ""NorthstarDevKit-Admin""'")
+        $elevated = $script:Hooks.IndexOf('ExecShellWait "runas" "$SYSDIR\schtasks.exe"')
+        $plain | Should -BeGreaterThan -1
+        $query | Should -BeGreaterThan $plain
+        $elevated | Should -BeGreaterThan $query
+    }
+
     It "keeps the elevation task when the uninstaller runs as part of an update" {
         $guard = $script:Hooks.IndexOf('${If} $UpdateMode <> 1')
         $delete = $script:Hooks.IndexOf('schtasks /delete /tn "NorthstarDevKit-Admin"')

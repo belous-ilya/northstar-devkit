@@ -115,7 +115,13 @@ mostly support `-DryRun` — preview first.
   at first-run setup; after that, DevKit starts elevated automatically. The trade-offs,
   stated plainly: while elevated, every tool and the embedded terminal run as
   Administrator, and an elevated window cannot accept drag-and-drop from Explorer (a
-  Windows UIPI restriction). Uninstalling removes the task and its shortcuts.
+  Windows UIPI restriction). It also means that **any program running as your Windows
+  user can become Administrator through DevKit without a prompt** - an elevated DevKit
+  is equivalent to leaving an Administrator terminal open. Fine on your own development
+  machine; do not install it on a shared PC or one where you run software you do not
+  trust. [SECURITY.md](SECURITY.md) explains why and what DevKit does about it.
+  Uninstalling removes the task (asking for administrator rights once if needed) and
+  its shortcuts.
 
 ## Requirements
 

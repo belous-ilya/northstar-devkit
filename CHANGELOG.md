@@ -250,6 +250,19 @@ the whole app fixes the first batch of what it found.
 
 - `tool.run` executed any `.ps1` it was given a path to, elevated. It now
   runs only scripts inside the tools folder.
+- **The Git panel's background refresh ran a program named in the
+  project's own git settings, as Administrator.** A `core.fsmonitor` hook
+  path (or an `ext::` remote, for the background fetch) in a project's
+  `.git/config` was executed by DevKit's own polling, with nobody
+  clicking anything. Those calls now force both off.
+- Uninstalling left the scheduled task that starts DevKit as
+  Administrator behind, pointing at the now-empty install folder. The
+  uninstaller removes it, asking for administrator rights once if the
+  plain removal is refused.
+- SECURITY.md and the README now say plainly what an always-elevated
+  DevKit means: any program running as your Windows user can become
+  Administrator through it. The measures above are hardening, not a
+  boundary.
 
 ## [4.7.0] - 2026-09-20
 

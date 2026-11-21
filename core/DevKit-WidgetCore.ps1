@@ -1873,6 +1873,30 @@ function ConvertFrom-DevKitGitStatusOutput {
 # only caller, so no cross-lane locking is needed.
 $script:DevKitGitAutoFetchLastAttempt = @{}
 
+# Prepended to every git call the app makes ON ITS OWN - the overview poll
+# and the background fetch, which run every few seconds with nobody asking.
+#
+# The installed app is admin-only, so these calls run elevated, inside
+# whatever folder is the active project, and git obeys that project's own
+# .git/config - a file anything running as the user can write. Two settings
+# there name a program for git to run during exactly these commands:
+#
+#   core.fsmonitor = <path>   run by 'git status' (and any index refresh).
+#                             Proven: a scratch repository with this set
+#                             made the overview poll execute the program.
+#   remote.origin.url = ext::<command>   run by 'git fetch'.
+#
+# Left alone, either is a way for an unprivileged program to be run as
+# Administrator without a click. Forced off here: a command-line -c beats
+# the repository's config. The cost is small and deliberate - a repository
+# that uses git's built-in file monitor (core.fsmonitor=true) gets an
+# ordinary full status scan from these polls, as if the monitor were off.
+#
+# This is hardening, not a boundary. Git actions the user clicks (fetch,
+# pull, push) and every tool the app runs still honour the project's
+# configuration and its scripts - that is what they are for. See SECURITY.md.
+$script:DevKitGitBackgroundArgs = @('-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never')
+
 # Repo path (lowercased) -> @{ Stamp = <the auto-fetch attempt this was
 # learned under>; Tips = @{ sha -> $true } }. Which extra tips turned out
 # not to be in this clone AT ALL, so the log window is not grown looking for
@@ -1947,7 +1971,7 @@ function Invoke-DevKitGitAutoFetch {
         # give up once throughput sits under 1 KB/s for 10s. git applies no
         # time bound of its own, and this call holds the shared 'slow' lane
         # that every git.* and github.* method queues behind.
-        [void](& $Git.Source '-c' 'credential.helper=' '-c' 'credential.interactive=false' `
+        [void](& $Git.Source @script:DevKitGitBackgroundArgs '-c' 'credential.helper=' '-c' 'credential.interactive=false' `
             '-c' 'http.lowSpeedLimit=1000' '-c' 'http.lowSpeedTime=10' `
             '-C' $Path 'fetch' '--prune' 'origin' 2>&1 | Out-String)
     } catch {
@@ -2056,7 +2080,7 @@ function Get-DevKitRepoOverview {
         return $result
     }
     try {
-        $insideRaw = (& $git.Source '-C' $Path 'rev-parse' '--is-inside-work-tree' 2>&1 | Out-String)
+        $insideRaw = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'rev-parse' '--is-inside-work-tree' 2>&1 | Out-String)
         $inside = $insideRaw.Trim()
         if ($inside -ne 'true') {
             if ($insideRaw -match '(?i)dubious ownership') {
@@ -2076,11 +2100,11 @@ function Get-DevKitRepoOverview {
             Invoke-DevKitGitAutoFetch -Path $Path -Git $git
         }
 
-        $branch = (& $git.Source '-C' $Path 'branch' '--show-current' 2>$null | Out-String).Trim()
+        $branch = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'branch' '--show-current' 2>$null | Out-String).Trim()
         $result.Branch = if ($branch) { $branch } else { '(detached HEAD)' }
 
         # Ahead/behind vs upstream (skipped entirely when no upstream is set).
-        $ab = (& $git.Source '-C' $Path 'rev-list' '--count' '--left-right' '@{upstream}...HEAD' 2>$null | Out-String).Trim()
+        $ab = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'rev-list' '--count' '--left-right' '@{upstream}...HEAD' 2>$null | Out-String).Trim()
         if ($ab -match '^(\d+)\s+(\d+)$') {
             $result.Behind = [int]$Matches[1]
             $result.Ahead = [int]$Matches[2]
@@ -2129,7 +2153,7 @@ function Get-DevKitRepoOverview {
             $commits = @()
             $loaded = @{}
             foreach ($windowSize in $windowSizes) {
-                $log = (& $git.Source '-C' $Path 'log' '--all' '--topo-order' '-n' ([string]$windowSize) '--pretty=format:%x1e%H%x1f%P%x1f%an%x1f%ar%x1f%d%x1f%s' 2>$null | Out-String)
+                $log = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'log' '--all' '--topo-order' '-n' ([string]$windowSize) '--pretty=format:%x1e%H%x1f%P%x1f%an%x1f%ar%x1f%d%x1f%s' 2>$null | Out-String)
                 $commits = ConvertFrom-DevKitGitLogOutput -Output $log
                 if ($wantedTips.Count -eq 0) { break }
                 $loaded = @{}
@@ -2154,13 +2178,13 @@ function Get-DevKitRepoOverview {
         # in the background, so without the flag it could hold that lock at
         # the moment the user's own 'git add' or 'git commit' wanted it, and
         # theirs failed with "index.lock: File exists".
-        $dirty = (& $git.Source '--no-optional-locks' '-C' $Path 'status' '--porcelain' 2>$null | Out-String)
+        $dirty = (& $git.Source @script:DevKitGitBackgroundArgs '--no-optional-locks' '-C' $Path 'status' '--porcelain' 2>$null | Out-String)
         $result.DirtyFiles = ConvertFrom-DevKitGitStatusOutput -Raw $dirty
         $result.DirtyCount = @($result.DirtyFiles).Count
-        $stashes = (& $git.Source '-C' $Path 'stash' 'list' 2>$null | Out-String)
+        $stashes = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'stash' 'list' 2>$null | Out-String)
         $result.StashCount = @($stashes -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
 
-        $remote = (& $git.Source '-C' $Path 'config' '--get' 'remote.origin.url' 2>$null | Out-String).Trim()
+        $remote = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'config' '--get' 'remote.origin.url' 2>$null | Out-String).Trim()
         if ($remote) { $result.RemoteUrl = $remote }
     } catch {
         $result.Error = "$_"
@@ -2318,7 +2342,7 @@ function Get-DevKitCommitDetails {
     $git = Get-DevKitWindowsExecutable -Name 'git'
     if (-not $git) { $result.Error = 'git not found on PATH.'; return $result }
     try {
-        $out = (& $git.Source '-C' $Path 'show' '--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%B%x1e' '--numstat' '--shortstat' $Hash 2>&1 | Out-String)
+        $out = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'show' '--no-ext-diff' '--no-textconv' '--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%B%x1e' '--numstat' '--shortstat' $Hash 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
             # bad object / unknown revision: the classic "commit vanished
             # after a rebase while the graph still showed it" case.
