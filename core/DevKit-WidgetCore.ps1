@@ -2368,6 +2368,121 @@ function Get-DevKitProjectNotes {
     } catch { return @() }
 }
 
+function Read-DevKitProjectStoreText {
+    <#
+    .SYNOPSIS
+        Raw text of a per-project JSON store (notes.json, ondeck.json) for a
+        read-modify-write, or $null when the file does not exist.
+    .DESCRIPTION
+        THROWS when the file exists but cannot be read, after a few short
+        retries. That is the whole point of this function: the save paths
+        used to swallow a failed read and carry on as if the store were
+        empty, then write back ONLY the project being saved - so one
+        transient sharing violation (antivirus, a sync client, a write still
+        in flight) permanently deleted every other project's notes. A save
+        that cannot see what it is about to replace must fail instead, and
+        the panel reports "Could not save".
+
+        A separate function so the read can be faulted in a unit test.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $lastError = $null
+    foreach ($attempt in 1..4) {
+        try {
+            return [System.IO.File]::ReadAllText($Path)
+        } catch [System.IO.FileNotFoundException] {
+            return $null
+        } catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds 60
+        }
+    }
+    throw "Could not read $Path, so nothing was saved (saving now would replace every other project's entries): $($lastError.Exception.Message)"
+}
+
+function Get-DevKitProjectStoreOthers {
+    <#
+    .SYNOPSIS
+        Every project's entries in a per-project JSON store EXCEPT one key -
+        the "everything this save must carry forward untouched" half of a
+        read-modify-write.
+    .DESCRIPTION
+        Missing file: empty. Unreadable file: throws (see
+        Read-DevKitProjectStoreText). Unparseable file (truncated by a kill
+        mid-write, mangled by an editor): the store is rebuilt around the
+        new save, as before - but the bytes being replaced are first copied
+        to "<file>.corrupt-<timestamp>", so a rebuild can never be the
+        moment data silently stops existing.
+    .OUTPUTS
+        [ordered] hashtable of project key -> entry array.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExceptKey
+    )
+
+    $projects = [ordered]@{}
+    $text = Read-DevKitProjectStoreText -Path $Path
+    if ([string]::IsNullOrWhiteSpace($text)) { return $projects }
+
+    $data = $null
+    try {
+        $data = $text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmssfff')
+        [System.IO.File]::WriteAllText("$Path.corrupt-$stamp", $text, (New-Object System.Text.UTF8Encoding $false))
+        return $projects
+    }
+
+    if ($data -and $data.projects) {
+        foreach ($p in $data.projects.PSObject.Properties) {
+            # @(...) so a one-entry project stays a JSON ARRAY on the way
+            # back out - member access unrolls single-element arrays, and
+            # without this a lone note would round-trip into a bare object.
+            if ($p.Name -ne $ExceptKey) { $projects[$p.Name] = @($p.Value) }
+        }
+    }
+    return $projects
+}
+
+function Write-DevKitProjectStore {
+    <#
+    .SYNOPSIS
+        Writes a per-project JSON store through a temp file and an atomic
+        replace, so a kill or power loss mid-write leaves either the old
+        complete file or the new complete file - never a truncated one.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Projects
+    )
+
+    $dir = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $store = [ordered]@{ schemaVersion = 1; projects = $Projects }
+    # -InputObject, not pipeline: piping would unroll and serialize only the
+    # store's properties one at a time instead of the object itself.
+    $json = (ConvertTo-Json -InputObject $store -Depth 6) + [Environment]::NewLine
+
+    $temp = "$Path.tmp-$PID-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+    try {
+        [System.IO.File]::WriteAllText($temp, $json, (New-Object System.Text.UTF8Encoding $false))
+        if (Test-Path -LiteralPath $Path) {
+            # File.Replace, not Move-with-overwrite: it exists on the .NET
+            # Framework the powershell.exe 5.1 fallback runs on, too.
+            # [NullString]::Value, not $null: PowerShell hands a .NET string
+            # parameter "" for $null, and Replace rejects an empty backup path.
+            [System.IO.File]::Replace($temp, $Path, [NullString]::Value)
+        } else {
+            [System.IO.File]::Move($temp, $Path)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Save-DevKitProjectNotes {
     <#
     .SYNOPSIS
@@ -2375,9 +2490,9 @@ function Save-DevKitProjectNotes {
         whole store, so every other project's notes are untouched. $Notes is
         the full replacement list for this project; an empty list removes
         the project's entry entirely rather than leaving empty stubs behind.
-        A corrupt store is silently rebuilt (same forgiving posture as
-        Get-DevKitSettings) - the notes being saved right now matter more
-        than a file some editor mangled.
+        An unparseable store is rebuilt around the new save (after being
+        copied aside); an UNREADABLE one makes the save throw - see
+        Get-DevKitProjectStoreOthers.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ProjectPath,
@@ -2387,21 +2502,7 @@ function Save-DevKitProjectNotes {
     if (-not $NotesFile) { $NotesFile = Get-DevKitNotesFile }
     $key = Get-DevKitNotesProjectKey -ProjectPath $ProjectPath
 
-    $projects = [ordered]@{}
-    if (Test-Path -LiteralPath $NotesFile) {
-        try {
-            $data = Get-Content -LiteralPath $NotesFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-            if ($data.projects) {
-                foreach ($p in $data.projects.PSObject.Properties) {
-                    # @(...) so a one-note project stays a JSON ARRAY on the
-                    # way back out - member access unrolls single-element
-                    # arrays, and without this a lone note would round-trip
-                    # into a bare object.
-                    if ($p.Name -ne $key) { $projects[$p.Name] = @($p.Value) }
-                }
-            }
-        } catch { }
-    }
+    $projects = Get-DevKitProjectStoreOthers -Path $NotesFile -ExceptKey $key
 
     $list = @()
     foreach ($n in $Notes) {
@@ -2415,12 +2516,7 @@ function Save-DevKitProjectNotes {
     }
     if ($list.Count -gt 0) { $projects[$key] = $list }
 
-    $dir = Split-Path -Parent $NotesFile
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $store = [ordered]@{ schemaVersion = 1; projects = $projects }
-    # -InputObject, not pipeline: piping would unroll and serialize only the
-    # store's properties one at a time instead of the object itself.
-    Set-Content -LiteralPath $NotesFile -Value (ConvertTo-Json -InputObject $store -Depth 6) -Encoding UTF8
+    Write-DevKitProjectStore -Path $NotesFile -Projects $projects
 }
 
 function Get-DevKitNoteTitle {
@@ -2514,8 +2610,9 @@ function Save-DevKitProjectOnDeck {
         whole store, so every other project's list is untouched. $Items is
         the full replacement list for this project; an empty list removes
         the project's entry entirely rather than leaving empty stubs behind.
-        A corrupt store is silently rebuilt (same forgiving posture as
-        Save-DevKitProjectNotes).
+        Same store-safety rules as Save-DevKitProjectNotes: an unparseable
+        store is copied aside and rebuilt, an unreadable one makes the save
+        throw.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ProjectPath,
@@ -2525,21 +2622,7 @@ function Save-DevKitProjectOnDeck {
     if (-not $OnDeckFile) { $OnDeckFile = Get-DevKitOnDeckFile }
     $key = Get-DevKitNotesProjectKey -ProjectPath $ProjectPath
 
-    $projects = [ordered]@{}
-    if (Test-Path -LiteralPath $OnDeckFile) {
-        try {
-            $data = Get-Content -LiteralPath $OnDeckFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-            if ($data.projects) {
-                foreach ($p in $data.projects.PSObject.Properties) {
-                    # @(...) so a one-item project stays a JSON ARRAY on the
-                    # way back out - member access unrolls single-element
-                    # arrays, and without this a lone item would round-trip
-                    # into a bare object.
-                    if ($p.Name -ne $key) { $projects[$p.Name] = @($p.Value) }
-                }
-            }
-        } catch { }
-    }
+    $projects = Get-DevKitProjectStoreOthers -Path $OnDeckFile -ExceptKey $key
 
     $list = @()
     foreach ($i in $Items) {
@@ -2553,12 +2636,7 @@ function Save-DevKitProjectOnDeck {
     }
     if ($list.Count -gt 0) { $projects[$key] = $list }
 
-    $dir = Split-Path -Parent $OnDeckFile
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $store = [ordered]@{ schemaVersion = 1; projects = $projects }
-    # -InputObject, not pipeline: piping would unroll and serialize only the
-    # store's properties one at a time instead of the object itself.
-    Set-Content -LiteralPath $OnDeckFile -Value (ConvertTo-Json -InputObject $store -Depth 6) -Encoding UTF8
+    Write-DevKitProjectStore -Path $OnDeckFile -Projects $projects
 }
 
 function Group-DevKitOnDeckItems {

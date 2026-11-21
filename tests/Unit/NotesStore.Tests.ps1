@@ -131,4 +131,77 @@ Describe "Save-DevKitProjectNotes round-trip" {
         Save-DevKitProjectNotes -ProjectPath 'D:\Work\MyApp' -Notes @((New-TestNote 'deep')) -NotesFile $nested
         Test-Path -LiteralPath $nested | Should -BeTrue
     }
+
+    It "keeps a copy of a corrupt store before rebuilding it" {
+        # A rebuild throws away every OTHER project's notes. That is only
+        # acceptable when the bytes it replaces are still on disk somewhere.
+        Set-Content -LiteralPath $script:StoreFile -Value 'garbage {{{{'
+        Save-DevKitProjectNotes -ProjectPath 'D:\Work\MyApp' -Notes @((New-TestNote 'fresh')) -NotesFile $script:StoreFile
+        $copies = @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:StoreFile) -Filter ((Split-Path -Leaf $script:StoreFile) + '.corrupt-*'))
+        $copies.Count | Should -Be 1
+        (Get-Content -LiteralPath $copies[0].FullName -Raw) | Should -Match 'garbage'
+    }
+
+    It "refuses to overwrite a store it cannot read, so other projects' notes survive" {
+        # The data-loss path this guards: the store exists but the read fails
+        # (antivirus or a sync client holding it, a write still in flight).
+        # Treating that like "empty store" and saving rewrote the file with
+        # ONLY the project being saved - every other project's notes gone.
+        #
+        # The READ is faulted through its seam rather than with a real file
+        # lock: a lock would block the write too, and the test would pass
+        # against the broken code for the wrong reason.
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @((New-TestNote 'a-note')) -NotesFile $script:StoreFile
+        $before = [System.IO.File]::ReadAllText($script:StoreFile)
+        Mock Read-DevKitProjectStoreText { throw [System.IO.IOException]::new('being used by another process') }
+        { Save-DevKitProjectNotes -ProjectPath 'D:\B' -Notes @((New-TestNote 'b-note')) -NotesFile $script:StoreFile } | Should -Throw
+        [System.IO.File]::ReadAllText($script:StoreFile) | Should -Be $before
+        $a = @(Get-DevKitProjectNotes -ProjectPath 'D:\A' -NotesFile $script:StoreFile)
+        $a.Count | Should -Be 1
+        $a[0].Text | Should -Be 'a-note'
+    }
+
+    It "leaves no temp file behind after a save" {
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @((New-TestNote 'one')) -NotesFile $script:StoreFile
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @((New-TestNote 'two')) -NotesFile $script:StoreFile
+        $leaf = Split-Path -Leaf $script:StoreFile
+        $siblings = @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:StoreFile) | Where-Object { $_.Name -like "$leaf*" })
+        $siblings.Count | Should -Be 1
+    }
+}
+
+Describe "Save-DevKitProjectOnDeck store safety" {
+
+    BeforeEach {
+        $script:DeckFile = Join-Path $TestDrive "ondeck-$([guid]::NewGuid().ToString('N')).json"
+        $script:DeckItem = [PSCustomObject]@{ Id = 'i1'; Text = 'ship it'; Status = 'todo'; UpdatedAt = [DateTime]::UtcNow.ToString('o') }
+    }
+
+    It "refuses to overwrite a store it cannot read, so other projects' items survive" {
+        Save-DevKitProjectOnDeck -ProjectPath 'D:\A' -Items @($script:DeckItem) -OnDeckFile $script:DeckFile
+        $before = [System.IO.File]::ReadAllText($script:DeckFile)
+        Mock Read-DevKitProjectStoreText { throw [System.IO.IOException]::new('being used by another process') }
+        { Save-DevKitProjectOnDeck -ProjectPath 'D:\B' -Items @($script:DeckItem) -OnDeckFile $script:DeckFile } | Should -Throw
+        [System.IO.File]::ReadAllText($script:DeckFile) | Should -Be $before
+    }
+
+    It "really does retry and then throw when the file stays locked" {
+        # The un-mocked read, against a genuine exclusive lock.
+        Save-DevKitProjectOnDeck -ProjectPath 'D:\A' -Items @($script:DeckItem) -OnDeckFile $script:DeckFile
+        $lock = [System.IO.File]::Open($script:DeckFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        try {
+            { Read-DevKitProjectStoreText -Path $script:DeckFile } | Should -Throw -ExpectedMessage '*nothing was saved*'
+        } finally {
+            $lock.Dispose()
+        }
+        Read-DevKitProjectStoreText -Path $script:DeckFile | Should -Match 'ship it'
+    }
+
+    It "keeps a copy of a corrupt store before rebuilding it" {
+        Set-Content -LiteralPath $script:DeckFile -Value '{ not json'
+        Save-DevKitProjectOnDeck -ProjectPath 'D:\A' -Items @($script:DeckItem) -OnDeckFile $script:DeckFile
+        $copies = @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:DeckFile) -Filter ((Split-Path -Leaf $script:DeckFile) + '.corrupt-*'))
+        $copies.Count | Should -Be 1
+        @(Get-DevKitProjectOnDeck -ProjectPath 'D:\A' -OnDeckFile $script:DeckFile).Count | Should -Be 1
+    }
 }
