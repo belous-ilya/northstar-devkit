@@ -2,6 +2,92 @@
 
 All notable changes to Northstar DevKit are documented here.
 
+## [Unreleased]
+
+The lightening pass: the tool catalog is cut to what gets used, the WiFi
+tools are rebuilt to diagnose before they change anything, and a sweep of
+the whole app fixes the first batch of what it found.
+
+### Removed
+
+- **Five tool categories are gone from the catalog and the repo** - the
+  catalog drops from 12 categories and 67 items to 7 and 33. Deleted
+  outright: Maintenance (14 tools), Agents & MCP (7), and the System
+  (PATH, environment backup/restore, shell reload, hosts file), Workflow
+  (open in editor, open repo, `.env` copy/compare, text converter) and
+  Diagnostics (System Dev Info, update check) menu entries, with their
+  `.bat` wrappers, manifests and tests, plus the two MCP helper libraries
+  only they used. Doctor and Close-Out stay as tiles on the widget; the MCP
+  Servers tray is unaffected. Every removed file is in git history.
+
+### Changed
+
+- **The WiFi optimizer now measures first and fixes only what is wrong.**
+  It used to run a full Winsock + TCP/IP reset on every use - dropping the
+  connection and asking for a restart - whatever the actual problem was,
+  and never checked the result. It now measures signal, the router, the
+  internet and DNS; reports what it finds in plain words; applies only the
+  fixes those measurements call for (clear the DNS cache, switch DNS,
+  renew the address, restart the adapter), least invasive first; then
+  measures again and shows before and after. A healthy connection gets no
+  changes at all, and problems no setting can repair (weak signal, a
+  crowded channel, an outage past the router) are reported, not "fixed".
+  The stack reset is now its own item, WiFi Deep Reset.
+- **DNS is chosen by timing real lookups** against the servers in use and
+  against Cloudflare, Google, Quad9 and OpenDNS. The old choice came from
+  two pings each to two providers and never asked whether the DNS already
+  in use was better than both. DNS is never changed behind a sign-in page,
+  and a switch that turns out slower or broken is rolled back by itself.
+- New WiFi Check item: the same measurements and diagnosis, read-only, no
+  administrator rights needed, with a download and upload speed test.
+- The WiFi scanner requests a fresh scan instead of printing Windows'
+  cached list, shows the band (2.4 / 5 / 6 GHz), marks the network you are
+  on, reports crowded channels (overlapping 2.4 GHz neighbours and the
+  airtime access points themselves report), and points out a faster or
+  stronger access point of your own network when one is in range.
+- Renewing the address is scoped to the WiFi adapter; it used to release
+  every adapter, Ethernet included.
+- Panels stop polling while the docked widget is collapsed to its sliver,
+  and refresh once when they come back into view instead of showing
+  pre-hide data as live for a full interval.
+- The bundled logo shrank from 1,977 kB to 46 kB (it was shipped at
+  1254 px and displayed at 56).
+
+### Fixed
+
+- **The Close-Out confirmation no longer covers the run.** The confirm
+  dialog stayed up, blurred and undismissable, until the tool finished,
+  hiding the live output it had just started. Same fix for caution tools
+  in the Control Center, where it also covered the Stop button.
+- **Saving a note could delete every other project's notes.** When the
+  notes file could not be read at the moment of a save (antivirus, a sync
+  client, a write still in flight), the save rebuilt the file with only the
+  project being saved. An unreadable file now fails the save; a corrupt one
+  is copied aside before it is rebuilt; writes are atomic. Same for On Deck.
+- **Kill Port, Kill All Node and Scan Ports could stop Windows itself.**
+  DevKit runs elevated, and the only guards were pids 0 and 4 - killing by
+  port 135 targeted a system service whose death forces a shutdown. They
+  now refuse the processes Windows needs and DevKit's own process tree,
+  the same rules Close-Out already had.
+- A kill that failed (access denied, already gone) was reported as done
+  with exit code 0; the tools now check, and the widget's kill buttons
+  show the reason instead of silently doing nothing.
+- Port tools reported "PID 0 (Idle)" as the owner of a port nothing was
+  listening on for about two minutes after a dev server stopped.
+- WiFi "Undo DNS" restored the wrong settings after a second optimizer
+  run (the undo file had been overwritten with DevKit's own choice), and
+  pinned a network's DNS as static when it had been automatic - leaving no
+  working DNS on the next network. The original settings are now kept
+  across runs, and automatic is restored as automatic.
+- The WiFi scanner credited a hidden network's access points to the
+  network listed above it, and could label an open network "best secured".
+- The Error Center listed Windows events in scrambled order once there
+  were more than about sixteen.
+- Opening another tool while a run dialog was open showed the new tool's
+  form over the old tool's console and Stop button.
+- The admin badge polled the sidecar every minute for a value that cannot
+  change while the app runs.
+
 ## [4.7.0] - 2026-09-20
 
 DevKit becomes an admin-only application: a startup gate makes every
