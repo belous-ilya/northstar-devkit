@@ -17,8 +17,13 @@
 
       MEASURING (read-only, touch the network but change nothing):
         Measure-DevKitPingLatency, Measure-DevKitDnsResolver,
-        Test-DevKitCaptivePortal, Get-DevKitWifiSnapshot,
+        Test-DevKitCaptivePortal, Get-DevKitWifiLink, Get-DevKitWifiSnapshot,
         Invoke-DevKitWlanRescan (asks the radio for a fresh scan)
+
+      REPORTS FOR THE APP (the widget's WiFi tray; pure converters over the
+      above, tested in tests/Unit/WiFiReports.Tests.ps1):
+        ConvertTo-DevKitWifiStatusReport, ConvertTo-DevKitWifiMeasureReport,
+        ConvertTo-DevKitWifiScanReport, and the Get-* that feed them
 
     Nothing in this file changes a setting. The mutating steps (DNS, lease,
     adapter, network stack) live in tools/wifi/WiFi-Optimize.ps1, behind its
@@ -1014,6 +1019,73 @@ function Test-DevKitDnsIsStatic {
     }
 }
 
+function Get-DevKitWifiLink {
+    <#
+    .SYNOPSIS
+        The WiFi adapter, what it is connected to, and its address. Reads
+        only; no pings and no lookups, so it answers in a fraction of a
+        second.
+    .OUTPUTS
+        Ordered hashtable: AdapterPresent, AdapterUp, InterfaceIndex,
+        InterfaceAlias, InterfaceGuid, Connected, DetailsHidden, Ssid,
+        Bssid, SignalPercent, Band, Channel, RadioType, RxMbps, TxMbps,
+        IPv4, Gateway.
+
+        AdapterUp without details (DetailsHidden) still counts as Connected:
+        Windows 11 24H2 and later hide the network's name and signal from
+        every program while Location is off, and an adapter that is up with
+        an address is a connection all the same.
+    #>
+    $link = [ordered]@{
+        AdapterPresent = $false; AdapterUp = $false; InterfaceIndex = $null; InterfaceAlias = ''; InterfaceGuid = ''
+        Connected = $false; DetailsHidden = $false
+        Ssid = ''; Bssid = ''; SignalPercent = $null; Band = ''; Channel = 0; RadioType = ''; RxMbps = $null; TxMbps = $null
+        IPv4 = ''; Gateway = ''
+    }
+
+    # PhysicalMediaType (not just "wireless-looking name") keeps this
+    # WiFi-specific: a docked laptop's Ethernet adapter must never be the one
+    # measured, let alone reconfigured.
+    $wifiAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.PhysicalMediaType -eq 'Native 802.11' })
+    if ($wifiAdapters.Count -eq 0) { return $link }
+    $link.AdapterPresent = $true
+    $adapter = $wifiAdapters | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+    if (-not $adapter) {
+        # A WiFi adapter exists but is not connected to anything.
+        $link.InterfaceAlias = $wifiAdapters[0].Name
+        return $link
+    }
+    $link.AdapterUp = $true
+    $link.InterfaceIndex = $adapter.InterfaceIndex
+    $link.InterfaceAlias = $adapter.Name
+    $link.InterfaceGuid = [string]$adapter.InterfaceGuid
+
+    $rawInterfaces = (netsh wlan show interfaces | Out-String)
+    # Assigned before filtering - the parser returns its array behind a unary
+    # comma, and piping the call straight into Where-Object would test all
+    # adapters as one item (two disconnected adapters would read as connected).
+    $allWlan = ConvertFrom-DevKitWlanInterface -RawOutput $rawInterfaces
+    $wlan = @($allWlan | Where-Object { $_.Connected -and (-not $_.Name -or $_.Name -eq $adapter.Name) }) | Select-Object -First 1
+    $link.Connected = $true
+    if ($wlan) {
+        $link.Ssid = $wlan.Ssid; $link.Bssid = $wlan.Bssid; $link.SignalPercent = $wlan.SignalPercent
+        $link.Band = $wlan.Band; $link.Channel = $wlan.Channel; $link.RadioType = $wlan.RadioType
+        $link.RxMbps = $wlan.RxMbps; $link.TxMbps = $wlan.TxMbps
+    } else {
+        # netsh can refuse to report (Windows 11 24H2 hides WLAN details when
+        # Location is off). The adapter being Up with an address is still a
+        # connection - measure it rather than declaring "not connected".
+        $link.DetailsHidden = $true
+    }
+
+    $config = Get-NetIPConfiguration -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
+    if ($config) {
+        $link.IPv4 = [string](@($config.IPv4Address | ForEach-Object { $_.IPAddress }) | Select-Object -First 1)
+        $link.Gateway = [string](@($config.IPv4DefaultGateway | ForEach-Object { $_.NextHop }) | Select-Object -First 1)
+    }
+    return $link
+}
+
 function Get-DevKitWifiSnapshot {
     <#
     .SYNOPSIS
@@ -1036,44 +1108,13 @@ function Get-DevKitWifiSnapshot {
         GatewayPing = $null; InternetPing = $null; DnsCurrent = $null; DnsCandidates = @(); DnsIsStatic = $false
     }
 
-    # PhysicalMediaType (not just "wireless-looking name") keeps this
-    # WiFi-specific: a docked laptop's Ethernet adapter must never be the one
-    # measured, let alone reconfigured.
-    $wifiAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.PhysicalMediaType -eq 'Native 802.11' })
-    if ($wifiAdapters.Count -eq 0) { return [PSCustomObject]$snapshot }
-    $snapshot.AdapterPresent = $true
-    $adapter = $wifiAdapters | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
-    if (-not $adapter) {
-        # A WiFi adapter exists but is not connected to anything.
-        $snapshot.InterfaceAlias = $wifiAdapters[0].Name
-        return [PSCustomObject]$snapshot
+    # The adapter, what it is connected to and its address: shared with the
+    # app's status line (Get-DevKitWifiLink), so both read it the same way.
+    $link = Get-DevKitWifiLink
+    foreach ($key in @($snapshot.Keys)) {
+        if ($link.Contains($key)) { $snapshot[$key] = $link[$key] }
     }
-    $snapshot.InterfaceIndex = $adapter.InterfaceIndex
-    $snapshot.InterfaceAlias = $adapter.Name
-
-    $rawInterfaces = (netsh wlan show interfaces | Out-String)
-    # Assigned before filtering - the parser returns its array behind a unary
-    # comma, and piping the call straight into Where-Object would test all
-    # adapters as one item (two disconnected adapters would read as connected).
-    $allWlan = ConvertFrom-DevKitWlanInterface -RawOutput $rawInterfaces
-    $wlan = @($allWlan | Where-Object { $_.Connected -and (-not $_.Name -or $_.Name -eq $adapter.Name) }) | Select-Object -First 1
-    if ($wlan) {
-        $snapshot.Connected = $true
-        $snapshot.Ssid = $wlan.Ssid; $snapshot.Bssid = $wlan.Bssid; $snapshot.SignalPercent = $wlan.SignalPercent
-        $snapshot.Band = $wlan.Band; $snapshot.Channel = $wlan.Channel; $snapshot.RadioType = $wlan.RadioType
-        $snapshot.RxMbps = $wlan.RxMbps; $snapshot.TxMbps = $wlan.TxMbps
-    } else {
-        # netsh can refuse to report (Windows 11 24H2 hides WLAN details when
-        # Location is off). The adapter being Up with an address is still a
-        # connection - measure it rather than declaring "not connected".
-        $snapshot.Connected = $true
-    }
-
-    $config = Get-NetIPConfiguration -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
-    if ($config) {
-        $snapshot.IPv4 = [string](@($config.IPv4Address | ForEach-Object { $_.IPAddress }) | Select-Object -First 1)
-        $snapshot.Gateway = [string](@($config.IPv4DefaultGateway | ForEach-Object { $_.NextHop }) | Select-Object -First 1)
-    }
+    if (-not $link.AdapterUp) { return [PSCustomObject]$snapshot }
     if (-not $snapshot.IPv4 -or $snapshot.IPv4.StartsWith('169.254.') -or -not $snapshot.Gateway) {
         return [PSCustomObject]$snapshot
     }
@@ -1082,12 +1123,12 @@ function Get-DevKitWifiSnapshot {
     # ping while the connection through them works, and the diagnosis needs
     # the probes below to tell the two apart.
     $snapshot.GatewayPing = Measure-DevKitPingLatency -ComputerName $snapshot.Gateway
-    $snapshot.DnsIsStatic = (Test-DevKitDnsIsStatic -InterfaceGuid ([string]$adapter.InterfaceGuid) -AddressFamily IPv4)
+    $snapshot.DnsIsStatic = (Test-DevKitDnsIsStatic -InterfaceGuid ([string]$link.InterfaceGuid) -AddressFamily IPv4)
 
     $snapshot.Portal = Test-DevKitCaptivePortal
     $snapshot.InternetPing = Measure-DevKitPingLatency -ComputerName '1.1.1.1'
 
-    $servers = @(Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    $servers = @(Get-DnsClientServerAddress -InterfaceIndex $link.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             ForEach-Object { $_.ServerAddresses })
     if ($servers.Count -gt 0) {
         $measured = Measure-DevKitDnsResolver -Server $servers[0]
@@ -1107,4 +1148,295 @@ function Get-DevKitWifiSnapshot {
     }
 
     return [PSCustomObject]$snapshot
+}
+
+# ==================== REPORTS FOR THE APP'S WIFI TRAY ====================
+# What the widget's WiFi tray shows, as plain data (text, numbers, true/false
+# and lists of those) so it crosses the sidecar's JSON boundary unchanged.
+# Each report is a pure ConvertTo-* function over things measured elsewhere,
+# plus a thin Get-* that does the measuring. Nothing here changes a setting:
+# the tray's fix buttons run tools/wifi/WiFi-Optimize.ps1, behind its
+# confirmation, exactly as the Control Center does.
+
+function ConvertTo-DevKitWifiNumber {
+    <#
+    .SYNOPSIS
+        A measurement rounded for display, or $null when there is none.
+        Pure. ($null stays $null: "not measured" must never become 0.)
+    #>
+    param($Value, [int]$Digits = 0)
+    if ($null -eq $Value) { return $null }
+    return [math]::Round([double]$Value, $Digits)
+}
+
+function ConvertTo-DevKitWifiStatusReport {
+    <#
+    .SYNOPSIS
+        The tray's header: what this PC is connected to right now. Pure.
+    .PARAMETER Link
+        Output of Get-DevKitWifiLink.
+    .PARAMETER DnsServers
+        The IPv4 DNS servers the adapter is using.
+    .PARAMETER DnsIsStatic
+        Whether those were set by hand rather than handed out by the network.
+    .OUTPUTS
+        Ordered hashtable: AdapterPresent, Connected, DetailsHidden,
+        InterfaceAlias, Ssid, Bssid, SignalPercent, Band, Channel, RadioType,
+        RxMbps, TxMbps, IPv4, Gateway, DnsServers, DnsIsStatic.
+        DetailsHidden is true when the adapter is up but Windows would not
+        say what it is connected to (Location off on Windows 11 24H2+).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Link,
+        [AllowEmptyCollection()][string[]]$DnsServers = @(),
+        [bool]$DnsIsStatic = $false
+    )
+
+    $channel = 0
+    if ($Link.Channel) { $channel = [int]$Link.Channel }
+    return [ordered]@{
+        AdapterPresent = [bool]$Link.AdapterPresent
+        Connected      = [bool]$Link.Connected
+        DetailsHidden  = [bool]$Link.DetailsHidden
+        InterfaceAlias = [string]$Link.InterfaceAlias
+        Ssid           = [string]$Link.Ssid
+        Bssid          = [string]$Link.Bssid
+        SignalPercent  = if ($null -ne $Link.SignalPercent) { [int]$Link.SignalPercent } else { $null }
+        Band           = [string]$Link.Band
+        Channel        = $channel
+        RadioType      = [string]$Link.RadioType
+        RxMbps         = ConvertTo-DevKitWifiNumber $Link.RxMbps 1
+        TxMbps         = ConvertTo-DevKitWifiNumber $Link.TxMbps 1
+        IPv4           = [string]$Link.IPv4
+        Gateway        = [string]$Link.Gateway
+        DnsServers     = @($DnsServers | Where-Object { $_ } | ForEach-Object { [string]$_ })
+        DnsIsStatic    = [bool]$DnsIsStatic
+    }
+}
+
+function ConvertTo-DevKitWifiMeasureReport {
+    <#
+    .SYNOPSIS
+        A full measurement and what it means, for the tray's Measure view.
+        Pure.
+    .PARAMETER Snapshot
+        Output of Get-DevKitWifiSnapshot.
+    .PARAMETER Diagnosis
+        Output of Get-DevKitWifiDiagnosis for that snapshot.
+    .PARAMETER MeasuredAt
+        When the measurement was taken.
+    .OUTPUTS
+        Ordered hashtable: MeasuredAt (ISO 8601 UTC text), Healthy, Portal,
+        Router and Internet (AverageMs, JitterMs, LossPct - or $null when
+        not measured), DnsCurrent (Servers, MedianMs, FailurePct - or
+        $null), DnsCandidates (Name, MedianMs, FailurePct), BestDns (Name,
+        MedianMs - or $null), Findings (Code, Severity, Message), Actions
+        (the fix codes WiFi Fix would apply, in order; empty when there is
+        nothing a setting can fix).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)]$Diagnosis,
+        [datetime]$MeasuredAt = (Get-Date)
+    )
+
+    $ping = {
+        param($Measured)
+        if ($null -eq $Measured) { return $null }
+        [ordered]@{
+            AverageMs = ConvertTo-DevKitWifiNumber $Measured.AverageLatency 1
+            JitterMs  = ConvertTo-DevKitWifiNumber $Measured.JitterMs 1
+            LossPct   = [int]$Measured.PacketLossPct
+        }
+    }
+
+    $dnsCurrent = $null
+    if ($Snapshot.DnsCurrent) {
+        $dnsCurrent = [ordered]@{
+            Servers    = @($Snapshot.DnsCurrent.Servers | Where-Object { $_ } | ForEach-Object { [string]$_ })
+            MedianMs   = ConvertTo-DevKitWifiNumber $Snapshot.DnsCurrent.MedianMs 1
+            FailurePct = [int]$Snapshot.DnsCurrent.FailurePct
+        }
+    }
+    $bestDns = $null
+    if ($Diagnosis.BestDns) {
+        $bestDns = [ordered]@{
+            Name     = [string]$Diagnosis.BestDns.Name
+            MedianMs = ConvertTo-DevKitWifiNumber $Diagnosis.BestDns.MedianMs 1
+        }
+    }
+
+    return [ordered]@{
+        MeasuredAt    = $MeasuredAt.ToUniversalTime().ToString('o')
+        Healthy       = [bool]$Diagnosis.Healthy
+        Portal        = [string]$Snapshot.Portal
+        Router        = (& $ping $Snapshot.GatewayPing)
+        Internet      = (& $ping $Snapshot.InternetPing)
+        DnsCurrent    = $dnsCurrent
+        DnsCandidates = @($Snapshot.DnsCandidates | Where-Object { $_ } | ForEach-Object {
+                [ordered]@{
+                    Name       = [string]$_.Name
+                    MedianMs   = ConvertTo-DevKitWifiNumber $_.MedianMs 1
+                    FailurePct = [int]$_.FailurePct
+                }
+            })
+        BestDns       = $bestDns
+        Findings      = @($Diagnosis.Findings | Where-Object { $_ } | ForEach-Object {
+                [ordered]@{ Code = [string]$_.Code; Severity = [string]$_.Severity; Message = [string]$_.Message }
+            })
+        Actions       = @($Diagnosis.Actions | Where-Object { $_ } | ForEach-Object { [string]$_ })
+    }
+}
+
+function ConvertTo-DevKitWifiScanReport {
+    <#
+    .SYNOPSIS
+        Networks in range, how crowded their channels are, and advice, for
+        the tray's Nearby networks view. Pure.
+    .PARAMETER Networks
+        Output of ConvertFrom-DevKitWlanScan.
+    .PARAMETER Current
+        The connected adapter from ConvertFrom-DevKitWlanInterface, or $null.
+    .PARAMETER RescanState
+        What the fresh-scan request answered: 'started', 'denied',
+        'unavailable', or 'skipped' when none was asked for.
+    .PARAMETER Problem
+        '' normally; 'noAdapter' or 'locationOff' when the list could not be
+        read at all (the lists are then empty and there is no advice).
+    .OUTPUTS
+        Ordered hashtable: RescanState, Problem, Networks (Ssid, Hidden,
+        Auth, Signal, Bands, Channels, AccessPoints, IsCurrent - strongest
+        first), ChannelLoad (Band, Channel, AccessPoints, Overlapping,
+        StrongestSignal, Utilization), Advice (Level, Text).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Networks,
+        $Current = $null,
+        [string]$RescanState = 'skipped',
+        [string]$Problem = ''
+    )
+
+    $report = [ordered]@{
+        RescanState = $RescanState
+        Problem     = $Problem
+        Networks    = @()
+        ChannelLoad = @()
+        Advice      = @()
+    }
+    if ($Problem) { return $report }
+
+    $connected = [bool]($Current -and $Current.Connected)
+    $currentSsid = if ($connected) { [string]$Current.Ssid } else { '' }
+    $currentBssid = if ($connected) { ([string]$Current.Bssid).ToLowerInvariant() } else { '' }
+
+    $rows = @()
+    foreach ($net in @($Networks)) {
+        $aps = @($net.BSSIDs | Where-Object { $_ })
+        $ssid = [string]$net.SSID
+        # The network this PC is on: by access point when Windows names it
+        # (two networks can share a name), by name otherwise.
+        $isCurrent = $false
+        if ($connected) {
+            if ($currentBssid) {
+                $isCurrent = (@($aps | Where-Object { ([string]$_.MAC).ToLowerInvariant() -eq $currentBssid }).Count -gt 0)
+            } elseif ($currentSsid) {
+                $isCurrent = ($ssid -eq $currentSsid)
+            }
+        }
+        $rows += [ordered]@{
+            Ssid         = $ssid
+            Hidden       = [string]::IsNullOrEmpty($ssid)
+            Auth         = [string]$net.Auth
+            Signal       = [int](Get-DevKitWifiBestSignal -Network $net)
+            Bands        = @($aps | ForEach-Object { [string]$_.Band } | Where-Object { $_ } | Sort-Object -Unique)
+            Channels     = @($aps | ForEach-Object { [int]$_.Channel } | Where-Object { $_ -gt 0 } | Sort-Object -Unique)
+            AccessPoints = $aps.Count
+            IsCurrent    = $isCurrent
+        }
+    }
+    # Strongest first; the network in use wins a tie so it is easy to find.
+    $report.Networks = @($rows | Sort-Object @{ Expression = { $_.Signal }; Descending = $true }, @{ Expression = { $_.IsCurrent }; Descending = $true }, @{ Expression = { $_.Ssid } })
+
+    # Both return their array behind a unary comma: assigned before use.
+    $load = Get-DevKitWifiChannelLoad -Networks $Networks
+    $report.ChannelLoad = @($load | ForEach-Object {
+            [ordered]@{
+                Band            = [string]$_.Band
+                Channel         = [int]$_.Channel
+                AccessPoints    = [int]$_.AccessPoints
+                Overlapping     = [int]$_.Overlapping
+                StrongestSignal = [int]$_.StrongestSignal
+                Utilization     = if ($null -ne $_.Utilization) { [int]$_.Utilization } else { $null }
+            }
+        })
+    $advice = Get-DevKitWifiScanAdvice -Networks $Networks -Current $Current
+    $report.Advice = @($advice | ForEach-Object { [ordered]@{ Level = [string]$_.Level; Text = [string]$_.Text } })
+    return $report
+}
+
+function Get-DevKitWifiStatusReport {
+    <#
+    .SYNOPSIS
+        Reads the connection (no pings, no lookups) for the tray's header.
+        Read-only; a fraction of a second.
+    #>
+    $link = Get-DevKitWifiLink
+    $servers = @()
+    $static = $false
+    if ($link.AdapterUp -and $null -ne $link.InterfaceIndex) {
+        $servers = @(Get-DnsClientServerAddress -InterfaceIndex $link.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.ServerAddresses })
+        if ($link.InterfaceGuid) { $static = (Test-DevKitDnsIsStatic -InterfaceGuid ([string]$link.InterfaceGuid) -AddressFamily IPv4) }
+    }
+    return ConvertTo-DevKitWifiStatusReport -Link $link -DnsServers $servers -DnsIsStatic $static
+}
+
+function Get-DevKitWifiMeasureReport {
+    <#
+    .SYNOPSIS
+        Runs the full measurement the WiFi Check tool runs (5-10 seconds:
+        real pings and DNS lookups) and returns it with its diagnosis.
+        Read-only.
+    #>
+    $measuredAt = Get-Date
+    $snapshot = Get-DevKitWifiSnapshot
+    $diagnosis = Get-DevKitWifiDiagnosis -Snapshot $snapshot
+    return ConvertTo-DevKitWifiMeasureReport -Snapshot $snapshot -Diagnosis $diagnosis -MeasuredAt $measuredAt
+}
+
+function Get-DevKitWifiScanReport {
+    <#
+    .SYNOPSIS
+        Lists the networks in range for the tray's Nearby networks view.
+        Read-only: a scan does not drop the connection.
+    .PARAMETER Rescan
+        Ask the radio for a fresh scan first and give it four seconds to
+        land. Without it this is whatever Windows has cached, which on a
+        connected laptop is often just the network it is on.
+    #>
+    param([switch]$Rescan)
+
+    $rescanState = 'skipped'
+    if ($Rescan) {
+        $rescanState = Invoke-DevKitWlanRescan
+        # A full scan across 2.4, 5 and 6 GHz takes a few seconds to land in
+        # the list netsh reads.
+        if ($rescanState -eq 'started') { Start-Sleep -Seconds 4 }
+    }
+
+    $rawNetworks = (netsh wlan show networks mode=Bssid | Out-String)
+    $netshExit = $LASTEXITCODE
+    if ($rawNetworks -match 'no wireless interface') {
+        return ConvertTo-DevKitWifiScanReport -Networks @() -RescanState $rescanState -Problem 'noAdapter'
+    }
+    if ($netshExit -ne 0 -and $rawNetworks -match 'location') {
+        # Windows 11 24H2 and later hide WLAN details from every app, netsh
+        # included, while Location is off.
+        return ConvertTo-DevKitWifiScanReport -Networks @() -RescanState $rescanState -Problem 'locationOff'
+    }
+
+    $networks = ConvertFrom-DevKitWlanScan -RawOutput $rawNetworks
+    $allInterfaces = ConvertFrom-DevKitWlanInterface -RawOutput (netsh wlan show interfaces | Out-String)
+    $current = @($allInterfaces | Where-Object { $_.Connected }) | Select-Object -First 1
+    return ConvertTo-DevKitWifiScanReport -Networks $networks -Current $current -RescanState $rescanState
 }

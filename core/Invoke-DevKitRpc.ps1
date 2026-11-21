@@ -18,9 +18,9 @@
       - ONE dedicated writer runspace owns [Console]::Out. It drains a
         single BlockingCollection[string] ($script:OutQueue) and is the
         only code in the whole process that calls WriteLine/Flush.
-      - SIX dedicated LANE runspaces (metrics / slow / work / errors /
-        mcp / tool). 'metrics' and 'work' start at boot; the other four
-        start the first time a request is routed to them (see BOOT), so a
+      - SEVEN dedicated LANE runspaces (metrics / slow / work / errors /
+        mcp / tool / network). 'metrics' and 'work' start at boot; the other
+        five start the first time a request is routed to them (see BOOT), so a
         session that never uses one never pays for it. Once started,
         each owns a persistent PowerShell runspace with DevKit.Core
         imported once (imports serialized across lanes - see $ImportLock),
@@ -146,10 +146,17 @@ $script:LaneQueues = @{
     #   lane it starved every git.overview/github.* poll into timeouts.
     mcp     = [System.Collections.Concurrent.BlockingCollection[object]]::new()
     tool    = [System.Collections.Concurrent.BlockingCollection[object]]::new()
+    # - network: wifi.* (the widget's WiFi tray). wifi.measure runs real
+    #   pings and DNS lookups for 5-10 seconds and wifi.scan waits four
+    #   seconds for the radio; on any shared lane that is 5-10 seconds of
+    #   something else not answering (a git poll on 'slow', an MCP report on
+    #   'mcp'). Like every lane but the first two it is not started until
+    #   something asks for it, so the tray being there costs nothing.
+    network = [System.Collections.Concurrent.BlockingCollection[object]]::new()
 }
 
 # Live handle on every tool run currently in flight, keyed by runId, shared
-# by reference with all six lanes exactly as the queues above are.
+# by reference with all the lanes exactly as the queues above are.
 #
 # It exists for one reason: tool.stop cannot be answered on the lane that
 # owns the run. The tool lane spends a whole run blocked draining the child's
@@ -388,6 +395,7 @@ function Get-DevKitRpcLaneForMethod {
     # must never ride behind UI browsing.
     if ($Method -eq 'process.topCpu' -or $Method -eq 'process.topMemory' -or $Method -eq 'files.children') { return 'metrics' }
     if ($Method -like 'mcp.*') { return 'mcp' }
+    if ($Method -like 'wifi.*') { return 'network' }
     # tool.stop is the ONE tool.* method that must not ride the tool lane.
     # By the time anyone asks to cancel a run, that lane is - by definition -
     # blocked inside the very run being cancelled, draining its child's
