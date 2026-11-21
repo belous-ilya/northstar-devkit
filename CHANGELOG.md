@@ -125,6 +125,12 @@ the whole app fixes the first batch of what it found.
   priority. Existing installs are repaired automatically on their first
   start with this version (in full from the start after that), and the
   app restores normal CPU and memory priority itself at startup.
+- **Updating never removed anything.** The installer only adds and
+  overwrites, so a tool deleted from DevKit stayed on disk, and in the
+  catalog, on every install that updated. After installing, the installer
+  now removes whatever a previous version left under `core` and `tools`
+  that this version does not ship. This is what makes the smaller catalog
+  above actually arrive on an existing install.
 - **Launching DevKit while it was already running did nothing.** The same
   task ignored a second start. It now lets it through, so the running
   window comes forward as intended.

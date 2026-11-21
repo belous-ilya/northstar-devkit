@@ -130,8 +130,15 @@ DevKit/
 │   │                              # loading, category grouping, arg resolution
 │   ├── Export-Catalog.ps1          # Dev-time: (re)writes core/catalog.json -
 │   │                              # the live app never reads that file itself
-│   └── catalog.json                # Committed static snapshot (offline
-│                                  # inspection / type generation only)
+│   ├── catalog.json                # Committed static snapshot (offline
+│   │                              # inspection / type generation only)
+│   ├── Export-ShippedFiles.ps1     # Dev-time: (re)writes core/ShippedFiles.txt -
+│   │                              # re-run after adding/removing ANY file in
+│   │                              # core/ or tools/ (a test enforces it)
+│   ├── ShippedFiles.txt            # Generated list of every file under core/
+│   │                              # and tools/; what an update may keep
+│   └── Remove-StaleInstallFiles.ps1 # Run by the installer after an update:
+│                                  # deletes installed files not on that list
 │
 ├── crates/devkit-host/         # Rust NDJSON-RPC client crate - owns the
 │   │                          # sidecar process, shared by app/ and cli/
@@ -399,7 +406,17 @@ try {
   teardown path for support (`-Off` from an elevated terminal), and the
   NSIS `installerHooks` POSTUNINSTALL hook
   (`app/src-tauri/windows/hooks.nsh`) removes the task, launcher,
-  shortcuts, and marker best-effort. Trade-offs (documented in README):
+  shortcuts, and marker best-effort (skipped when the uninstaller runs
+  as a step of an update). The task is registered with priority 4 and
+  `MultipleInstances Parallel` - NOT Task Scheduler's defaults, which
+  start the process at below-normal CPU, low disk-I/O and low memory
+  priority (inherited by the sidecar, every tool and the terminal) and
+  silently ignore a second launch. `Get-DevKitElevationTaskSettings` in
+  `tools/lib/DevKit-Common.ps1` is the one definition; the app repairs a
+  task registered by an older version once per start through the
+  `system.repairElevationTask` RPC (`useElevationTaskRepair`, called from
+  `WidgetApp.tsx` only), and `elevation::restore_normal_priority` covers
+  the start in progress. Trade-offs (documented in README):
   all tools, the sidecar, and the embedded terminal always run as
   Administrator, and UIPI bars drag-and-drop from Explorer into the
   elevated windows. The app still surfaces elevation state through the
@@ -782,9 +799,23 @@ means it'll work from the other.
   from `CARGO_MANIFEST_DIR` to the repo checkout in a dev build. There is
   no custom `Uninstall.ps1` any more - NSIS generates its own uninstaller
   as part of the bundle, extended by a small `installerHooks` file
-  (`app/src-tauri/windows/hooks.nsh`) whose POSTUNINSTALL hook best-effort
-  removes the mandatory-elevation scheduled task, the 'DevKit (Admin)'
-  shortcuts, the hidden launcher, and the admin-mode state marker.
+  (`app/src-tauri/windows/hooks.nsh`) with two hooks. POSTINSTALL runs
+  `core/Remove-StaleInstallFiles.ps1`, which deletes whatever is under
+  the installed `core/` and `tools/` folders and is NOT named in
+  `core/ShippedFiles.txt`: the stock installer only adds and overwrites,
+  and the catalog is built from whatever manifests are on disk, so a tool
+  removed from the product would otherwise stay listed and runnable on
+  every install that updates. **`core/ShippedFiles.txt` is generated -
+  re-run `core/Export-ShippedFiles.ps1` after adding, renaming or
+  deleting any file in `core/` or `tools/`**
+  (`tests/Unit/ShippedFiles.Tests.ps1` fails when the list and the tree
+  disagree; a missing entry would get a shipped file deleted on update).
+  It is deliberately not a delete-first PREINSTALL hook: the template
+  runs that hook before its own running-app check, which the user can
+  cancel, and that would leave the app without scripts. POSTUNINSTALL
+  best-effort removes the mandatory-elevation scheduled task, the
+  'DevKit (Admin)' shortcuts, the hidden launcher, and the admin-mode
+  state marker.
 - **CI** (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag builds
   and signs the app on `windows-latest` and **publishes** the GitHub
   Release. It is not a draft (`releaseDraft: false` since v4.2.0): the
