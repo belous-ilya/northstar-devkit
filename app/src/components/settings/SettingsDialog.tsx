@@ -18,7 +18,7 @@ import { GlassPanel } from "../primitives/GlassPanel";
 import brand from "../../assets/brand.png";
 import "./SettingsDialog.css";
 
-const REPO_URL = "https://github.com/st3adyp1ck/northstar-devkit";
+const REPO_URL = "https://github.com/belous-ilya/northstar-devkit";
 
 type SectionId = "appearance" | "terminal" | "sound" | "behavior" | "about";
 
@@ -1019,7 +1019,7 @@ function AboutSection() {
       </div>
       <button type="button" className="settings-link-row" onClick={() => void openRepo()}>
         <span className="settings-link-row__label">GitHub repository</span>
-        <span className="settings-link-row__url">github.com/st3adyp1ck/northstar-devkit</span>
+        <span className="settings-link-row__url">github.com/belous-ilya/northstar-devkit</span>
       </button>
       {linkError && <div className="settings-inline-error">{linkError}</div>}
     </div>

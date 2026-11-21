@@ -6,7 +6,7 @@ First off, thanks for taking the time to contribute! 🎉
 
 ### Reporting Bugs
 
-- Check if the bug has already been reported in [Issues](https://github.com/st3adyp1ck/northstar-devkit/issues).
+- Check if the bug has already been reported in [Issues](https://github.com/belous-ilya/northstar-devkit/issues).
 - If not, open a new issue and use the **Bug Report** template.
 - Include your PowerShell version, Windows version, and steps to reproduce.
 
@@ -43,4 +43,4 @@ Please don't report vulnerabilities through public issues or pull requests - see
 
 ## Questions?
 
-Open a [Discussion](https://github.com/st3adyp1ck/northstar-devkit/discussions), or email [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com). More at [northstarcoding.com](https://www.northstarcoding.com).
+Open a [Discussion](https://github.com/belous-ilya/northstar-devkit/discussions), or email [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com). More at [northstarcoding.com](https://www.northstarcoding.com).

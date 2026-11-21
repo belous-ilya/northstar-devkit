@@ -4,7 +4,7 @@ A Windows desktop app — an always-on widget plus a searchable Control Center �
 PowerShell tools with their output streaming live, so you never go hunting for a terminal.
 Ships with `devkit`, a terminal CLI over the same tool catalog.
 
-[![Latest release](https://img.shields.io/github/v/release/st3adyp1ck/northstar-devkit?style=flat-square&color=00b4d8)](https://github.com/st3adyp1ck/northstar-devkit/releases)
+[![Latest release](https://img.shields.io/github/v/release/belous-ilya/northstar-devkit?style=flat-square&color=00b4d8)](https://github.com/belous-ilya/northstar-devkit/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
 <!-- TODO: capture and commit these two images, then uncomment. Create docs/images/ first.
@@ -30,7 +30,7 @@ Pick a project once in the picker and it becomes your **Active Project**, shared
 ## Install
 
 Download the latest `DevKit_x.y.z_x64-setup.exe` from
-[Releases](https://github.com/st3adyp1ck/northstar-devkit/releases) and run it. The install is
+[Releases](https://github.com/belous-ilya/northstar-devkit/releases) and run it. The install is
 per-user — no admin rights — and uninstalls from Settings > Apps like any other Windows app.
 
 Two things worth knowing before you click:
@@ -44,7 +44,7 @@ Two things worth knowing before you click:
 ### Build from source
 
 ```powershell
-git clone https://github.com/st3adyp1ck/northstar-devkit.git
+git clone https://github.com/belous-ilya/northstar-devkit.git
 cd northstar-devkit/app
 pnpm install
 pnpm tauri build
@@ -138,9 +138,9 @@ To build from source: Rust (stable toolchain), Node.js and pnpm.
 ## Support
 
 - Bugs and feature requests:
-  [open an issue](https://github.com/st3adyp1ck/northstar-devkit/issues/new/choose)
+  [open an issue](https://github.com/belous-ilya/northstar-devkit/issues/new/choose)
 - Questions and ideas:
-  [Discussions](https://github.com/st3adyp1ck/northstar-devkit/discussions)
+  [Discussions](https://github.com/belous-ilya/northstar-devkit/discussions)
 - Security vulnerabilities: see [SECURITY.md](SECURITY.md) — please don't file a public issue
 - Anything else: [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com)
 

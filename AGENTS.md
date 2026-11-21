@@ -756,7 +756,7 @@ means it'll work from the other.
   `settings.get`/`settings.set` RPC methods and `stores/useSettingsStore.ts`.
 - **Auto-update**: a minisign keypair signs updater artifacts
   (`tauri-plugin-updater`); the app checks
-  `https://github.com/st3adyp1ck/northstar-devkit/releases/latest/download/latest.json`
+  `https://github.com/belous-ilya/northstar-devkit/releases/latest/download/latest.json`
   on launch (throttled to once per 24h via `preferences.lastUpdateCheckUtc`
   - see `useUpdateCheck.ts`) and via a manual "Check for Updates" button
   in Quick Actions, with a real download-progress -> install -> relaunch

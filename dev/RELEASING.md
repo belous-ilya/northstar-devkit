@@ -150,7 +150,7 @@ So the tag IS the release. Check it actually landed:
 
 ```powershell
 gh release view vX.Y.Z            # draft: false, and marked Latest
-curl -sL https://github.com/st3adyp1ck/northstar-devkit/releases/latest/download/latest.json
+curl -sL https://github.com/belous-ilya/northstar-devkit/releases/latest/download/latest.json
 ```
 
 That second command is the exact URL installed copies of DevKit hit; the

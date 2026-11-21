@@ -15,7 +15,7 @@ security fixes; the in-app updater installs it automatically within 24 hours.
 **Please do not open a public issue for a security problem.**
 
 Preferred: use GitHub's private reporting —
-[Report a vulnerability](https://github.com/st3adyp1ck/northstar-devkit/security/advisories/new).
+[Report a vulnerability](https://github.com/belous-ilya/northstar-devkit/security/advisories/new).
 
 Alternatively, email [thesage@northstarcoding.com](mailto:thesage@northstarcoding.com) with `[SECURITY]` in the subject.
 
