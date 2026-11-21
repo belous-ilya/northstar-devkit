@@ -169,9 +169,33 @@ fn task_points_elsewhere() -> bool {
 }
 
 /// The exePath string from the marker JSON, when present and a string.
+///
+/// The marker is written by `Set-DevKitAdminMode.ps1`, which can run under
+/// Windows PowerShell 5.1, where `Set-Content -Encoding UTF8` writes a byte
+/// order mark; serde_json rejects one outright. Unstripped, a marker written
+/// that way read as "no path recorded", which switched the stale-task check
+/// off: a task registered for a different copy of DevKit was trusted and that
+/// other copy was started. `tray.rs` reads the same file and strips it too.
 fn exe_path_from_marker(text: &str) -> Option<String> {
+    let text = text.trim_start_matches('\u{feff}');
     let json: serde_json::Value = serde_json::from_str(text).ok()?;
     json.get("exePath")?.as_str().map(str::to_owned)
+}
+
+/// A Windows console program, started without a console window.
+///
+/// A release build has no console (`windows_subsystem = "windows"`), so
+/// Windows gives each console program it starts a NEW one - a black window
+/// that flashes up for as long as the program runs. Redirected output does
+/// not prevent that; only this flag does. It was visible on every start made
+/// from a shortcut, which goes through two of these (`schtasks /query`, then
+/// `schtasks /run`) before the elevated copy appears.
+fn hidden_command(program: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = Command::new(program);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
 }
 
 /// Does the elevation task exist? `schtasks /query`'s exit code IS reliable
@@ -180,7 +204,7 @@ fn exe_path_from_marker(text: &str) -> Option<String> {
 /// gets a first-run consent dialog, so a false positive would be a silent
 /// no-start.
 fn task_present() -> bool {
-    match Command::new("schtasks")
+    match hidden_command("schtasks")
         .args(["/query", "/tn", TASK_NAME, "/fo", "csv"])
         .output()
     {
@@ -199,10 +223,13 @@ fn task_present() -> bool {
 
 /// `schtasks /run` on the elevation task, best-effort: `/run`'s exit code
 /// cannot distinguish "started" from "refused", and both are acceptable
-/// here - a refused start under the task's default IgnoreNew policy means an
-/// instance is already running, which is the outcome this gate wants.
+/// here. The task is registered to allow parallel instances, so a start
+/// while DevKit is already running reaches the running copy through the
+/// single-instance plugin and brings its window up; a task still on the old
+/// IgnoreNew policy refuses the start, which leaves the running copy as the
+/// app.
 fn run_elevation_task() {
-    match Command::new("schtasks").args(["/run", "/tn", TASK_NAME]).status() {
+    match hidden_command("schtasks").args(["/run", "/tn", TASK_NAME]).status() {
         Ok(status) if status.success() => {
             tracing::info!("elevation gate: started the elevation task");
         }
@@ -392,7 +419,7 @@ fn setup_script_and_exe() -> anyhow::Result<(PathBuf, PathBuf)> {
 /// and the setup path never runs.
 fn app_process_already_running() -> bool {
     let own_pid = std::process::id().to_string();
-    match Command::new("tasklist").args(["/fo", "csv"]).output() {
+    match hidden_command("tasklist").args(["/fo", "csv"]).output() {
         Ok(out) => String::from_utf8_lossy(&out.stdout)
             .lines()
             .any(|line| tasklist_row_is_other_instance(line, &own_pid)),
@@ -580,5 +607,24 @@ mod tests {
         );
         assert_eq!(exe_path_from_marker("not json"), None);
         assert_eq!(exe_path_from_marker("{ \"taskName\": \"x\" }"), None);
+    }
+
+    #[test]
+    fn marker_exe_path_survives_a_byte_order_mark() {
+        // Windows PowerShell 5.1 writes one; serde_json rejects it.
+        let marker = "\u{feff}{ \"exePath\": \"C:\\\\DevKit\\\\devkit-app.exe\" }";
+        assert_eq!(
+            exe_path_from_marker(marker).as_deref(),
+            Some("C:\\DevKit\\devkit-app.exe")
+        );
+    }
+
+    #[test]
+    fn hidden_command_still_runs_the_program() {
+        // What a test can show: Windows accepts the flag and the program
+        // runs to completion and reports its exit code. That no window
+        // appears is only visible on a real desktop.
+        let status = hidden_command("cmd").args(["/c", "exit", "0"]).status();
+        assert!(matches!(status, Ok(s) if s.success()));
     }
 }
