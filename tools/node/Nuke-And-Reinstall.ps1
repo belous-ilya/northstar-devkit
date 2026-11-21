@@ -48,10 +48,18 @@ Write-DevKitInfo "Path: $targetPath"
 $manager = Get-DevKitPackageManager -Path $targetPath
 Write-DevKitInfo "Package manager: $($manager.Command)"
 
+# Checked BEFORE the confirmation and before anything is deleted: a reinstall
+# that cannot run must not get as far as removing what it was going to rebuild.
+$blocker = Get-DevKitReinstallBlocker -Path $targetPath -Manager $manager
+if ($blocker) {
+    Write-DevKitError "Cannot start: $blocker. Nothing was deleted."
+    exit 1
+}
+
 if (-not $Force) {
     Write-Host "  WARNING: This will permanently delete:" -ForegroundColor Yellow
     Write-Host "    - node_modules" -ForegroundColor Gray
-    Write-Host "    - package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock" -ForegroundColor Gray
+    Write-Host "    - package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock (put back if the reinstall fails)" -ForegroundColor Gray
     Write-Host "    - .next, .turbo, and package-manager caches (node_modules\.cache, node_modules\.vite)" -ForegroundColor Gray
     Write-Host ""
     $confirm = Read-Host "  Type 'nuke' to confirm"
@@ -63,6 +71,8 @@ if (-not $Force) {
 
 Invoke-DevKitInDirectory -Path $targetPath -ScriptBlock {
     $steps = @()
+    # Shared with the step actions below (they run in child scopes).
+    $state = @{ Locks = @() }
 
     $steps += @{
         Name = "Stop local node processes"
@@ -90,20 +100,24 @@ Invoke-DevKitInDirectory -Path $targetPath -ScriptBlock {
     $steps += @{
         Name = "Delete node_modules"
         Action = {
-            if (Remove-DevKitNodeModules -Path .) {
-                Write-DevKitDone
-            } else {
-                Write-DevKitSkip
+            switch (Remove-DevKitNodeModulesWithStatus -Path .) {
+                'Removed' { Write-DevKitDone }
+                'Absent' { Write-DevKitSkip }
+                default {
+                    # Still there: something is holding files in it. Stop
+                    # HERE, before the lock files are touched - installing
+                    # over a half-deleted tree is worse than not starting.
+                    throw "node_modules could not be fully removed - a running process (dev server, editor, antivirus) is still holding files in it. Close it and run this again. The lock files were not touched."
+                }
             }
         }
     }
 
     $steps += @{
-        Name = "Delete lock files"
+        Name = "Set lock files aside"
         Action = {
-            @("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock") | ForEach-Object {
-                if (Test-Path $_) { Remove-Item -Path $_ -Force -ErrorAction Stop }
-            }
+            # Renamed, not deleted: put back if the install below fails.
+            $state.Locks = Move-DevKitLockFilesAside -Path (Get-Location).Path
         }
     }
 
@@ -129,10 +143,20 @@ Invoke-DevKitInDirectory -Path $targetPath -ScriptBlock {
             }
         } catch {
             Write-DevKitError $_
+            if (@($state.Locks).Count -gt 0) {
+                try {
+                    Restore-DevKitLockFiles -Moved $state.Locks
+                    Write-DevKitInfo "The previous lock file(s) were put back."
+                } catch {
+                    Write-Host "  WARNING: could not restore the lock file(s); they are beside the project as *.devkit-bak ($($_.Exception.Message))" -ForegroundColor Yellow
+                }
+            }
             exit 1
         }
         $stepNum++
     }
+    # The install succeeded and wrote fresh lock files.
+    Remove-DevKitLockFileBackups -Moved $state.Locks
 }
 
 Write-Host "`n  DONE: Nuclear reset complete!`n" -ForegroundColor Green

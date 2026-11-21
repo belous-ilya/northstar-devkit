@@ -99,10 +99,16 @@ try {
         # Clear node_modules if requested
         if ($ClearNodeModules) {
             Write-DevKitStep "Clearing node_modules"
-            if (Remove-DevKitNodeModules -Path .) {
-                Write-DevKitDone
-            } else {
-                Write-DevKitSkip
+            switch (Remove-DevKitNodeModulesWithStatus -Path .) {
+                'Removed' { Write-DevKitDone }
+                'Absent' { Write-DevKitSkip }
+                default {
+                    # Locked files: say so and carry on - the install below
+                    # repairs a partly removed tree, and the point of this
+                    # tool is to get the dev server up.
+                    Write-Host " PARTIAL" -ForegroundColor Yellow
+                    Write-Host "  WARNING: node_modules could not be fully removed (a process is holding files in it); installing over what is left." -ForegroundColor Yellow
+                }
             }
         }
 

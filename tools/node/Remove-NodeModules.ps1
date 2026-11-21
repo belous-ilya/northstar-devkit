@@ -84,10 +84,14 @@ if (-not (Test-Path $nmPath)) {
 
     Write-DevKitStep "Deleting node_modules"
     try {
-        if (Remove-DevKitNodeModules -Path $targetPath) {
-            Write-DevKitDone
-        } else {
-            Write-DevKitSkip
+        switch (Remove-DevKitNodeModulesWithStatus -Path $targetPath) {
+            'Removed' { Write-DevKitDone }
+            'Absent' { Write-DevKitSkip }
+            default {
+                # "Could not remove it" is a failure, not a skip: a dev
+                # server or an editor still holds files in it.
+                throw "node_modules could not be fully removed - a running process is still holding files in it. Close it and run this again."
+            }
         }
     } catch {
         Write-DevKitError $_

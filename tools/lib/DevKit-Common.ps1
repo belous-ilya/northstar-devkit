@@ -834,20 +834,32 @@ function Invoke-DevKitInDirectory {
 
 # ==================== FILE / CACHE HELPERS ====================
 
-function Remove-DevKitNodeModules {
+function Remove-DevKitNodeModulesWithStatus {
     <#
     .SYNOPSIS
-        Deletes node_modules from the given project directory.
+        Deletes node_modules from a project directory and says which of the
+        three things happened: 'Removed', 'Absent' or 'Failed'.
     .DESCRIPTION
+        'Absent' (there was no node_modules) and 'Failed' (files in it are
+        locked and it is still there) are opposite outcomes, and the old
+        boolean returned $false for both. Every caller printed SKIP for
+        either, so a delete blocked by a running dev server was reported as
+        "nothing to do" - and Nuke-And-Reinstall then went on to delete the
+        lock files and install on top of a half-deleted tree.
+
         Long-path-safe deletion: mirrors an empty folder over node_modules
-        with robocopy, then removes the (now-empty) directory tree.
-        Robocopy is bounded with /R:2 /W:1 so a locked file cannot hang the
-        call forever. Returns $false both when node_modules never existed
-        and when the delete attempt could not fully remove it (e.g. locked
-        files); throws if robocopy itself reports a hard failure
-        (exit code >= 8), which is distinct from either $false case.
+        with robocopy, then removes the (now-empty) directory tree. Robocopy
+        is bounded with /R:2 /W:1 so a locked file cannot hang the call.
+        Throws if robocopy itself reports a hard failure (exit code >= 8).
+
+        A node_modules that is a junction or symbolic link (dev containers,
+        some monorepo setups) has only the LINK removed. Mirroring an empty
+        folder through it would empty the directory it points at - somebody
+        else's node_modules.
     .PARAMETER Path
         The project directory containing node_modules.
+    .OUTPUTS
+        [string] 'Removed' | 'Absent' | 'Failed'
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -857,8 +869,16 @@ function Remove-DevKitNodeModules {
     $resolved = Resolve-DevKitDirectory -Path $Path
     $nmPath = Join-Path $resolved "node_modules"
 
-    if (-not (Test-Path $nmPath)) {
-        return $false
+    if (-not (Test-Path -LiteralPath $nmPath)) {
+        return 'Absent'
+    }
+
+    $nmItem = Get-Item -LiteralPath $nmPath -Force
+    if ($nmItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        # Non-recursive delete of a directory link removes the link only.
+        [System.IO.Directory]::Delete($nmPath, $false)
+        if (Test-Path -LiteralPath $nmPath) { return 'Failed' }
+        return 'Removed'
     }
 
     # Long-path-safe deletion: mirror an empty folder, then remove
@@ -871,20 +891,120 @@ function Remove-DevKitNodeModules {
         if ($LASTEXITCODE -ge 8) {
             throw "robocopy failed to clear '$nmPath' (exit code $LASTEXITCODE) - files may be locked by a running process."
         }
-        Remove-Item -Path $nmPath -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $nmPath -Recurse -Force -ErrorAction SilentlyContinue
     } finally {
-        if (Test-Path $empty) {
-            Remove-Item $empty -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $empty) {
+            Remove-Item -LiteralPath $empty -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    if (Test-Path $nmPath) {
-        # Removal did not fully succeed (e.g. locked files) - report failure
-        # instead of pretending the directory is gone.
-        return $false
+    if (Test-Path -LiteralPath $nmPath) {
+        # Removal did not fully succeed (e.g. locked files) - say so instead
+        # of pretending the directory is gone.
+        return 'Failed'
     }
 
-    return $true
+    return 'Removed'
+}
+
+function Remove-DevKitNodeModules {
+    <#
+    .SYNOPSIS
+        Deletes node_modules from the given project directory. Returns $true
+        only when it existed and is now gone.
+    .DESCRIPTION
+        Kept for callers that only need yes/no. $false means EITHER "there
+        was none" OR "it could not be removed" - anything that must tell
+        those apart (every tool that goes on to do something destructive)
+        calls Remove-DevKitNodeModulesWithStatus instead.
+    .PARAMETER Path
+        The project directory containing node_modules.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+    return ((Remove-DevKitNodeModulesWithStatus -Path $Path) -eq 'Removed')
+}
+
+function Get-DevKitReinstallBlocker {
+    <#
+    .SYNOPSIS
+        Why a "delete everything and reinstall" must not start, or $null
+        when it may.
+    .DESCRIPTION
+        The reinstall tools used to delete node_modules and the lock files
+        first and discover only at the install step that the package
+        manager was not on PATH - leaving a project with neither. Asked
+        BEFORE anything is deleted.
+    .OUTPUTS
+        [string] reason, or $null.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][hashtable]$Manager
+    )
+    if (-not (Test-Path -LiteralPath (Join-Path $Path 'package.json'))) {
+        return "there is no package.json in $Path, so there is nothing to reinstall"
+    }
+    if (-not (Test-DevKitCommand $Manager.Command)) {
+        return "$($Manager.Command) is not installed or not on PATH, so the reinstall could not run"
+    }
+    return $null
+}
+
+function Move-DevKitLockFilesAside {
+    <#
+    .SYNOPSIS
+        Renames a project's lock files to "<name>.devkit-bak" so a fresh
+        install resolves from scratch, and returns what it moved.
+    .DESCRIPTION
+        Set aside, not deleted: if the install that follows fails (offline,
+        an expired registry token), Restore-DevKitLockFiles puts them back.
+        Deleting them outright left a failed run with no lock file at all -
+        and an untracked one was gone for good.
+    .OUTPUTS
+        Array of hashtables (Original, Backup) - full paths.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $moved = @()
+    foreach ($name in @("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock")) {
+        $original = Join-Path $Path $name
+        if (-not (Test-Path -LiteralPath $original)) { continue }
+        $backup = "$original.devkit-bak"
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop }
+        Move-Item -LiteralPath $original -Destination $backup -Force -ErrorAction Stop
+        $moved += @{ Original = $original; Backup = $backup }
+    }
+    return , $moved
+}
+
+function Restore-DevKitLockFiles {
+    <#
+    .SYNOPSIS
+        Puts lock files set aside by Move-DevKitLockFilesAside back, over
+        whatever a failed install may have half-written.
+    #>
+    param([AllowEmptyCollection()][array]$Moved = @())
+    foreach ($entry in @($Moved)) {
+        if (-not $entry -or -not (Test-Path -LiteralPath $entry.Backup)) { continue }
+        Move-Item -LiteralPath $entry.Backup -Destination $entry.Original -Force -ErrorAction Stop
+    }
+}
+
+function Remove-DevKitLockFileBackups {
+    <#
+    .SYNOPSIS
+        Deletes the backups once the install has succeeded and written new
+        lock files.
+    #>
+    param([AllowEmptyCollection()][array]$Moved = @())
+    foreach ($entry in @($Moved)) {
+        if ($entry -and (Test-Path -LiteralPath $entry.Backup)) {
+            Remove-Item -LiteralPath $entry.Backup -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Clear-DevKitDirectoryContents {
