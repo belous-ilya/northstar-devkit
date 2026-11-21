@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion, type Transition } from "fram
 import clsx from "clsx";
 import { useErrorStore, type ErrorEntry, type ErrorSeverity } from "../../stores/useErrorStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
+import { claimEscape } from "../../lib/escapeKey";
 import { playSound } from "../../lib/sounds";
 import { Badge } from "../primitives/Badge";
 import { Button } from "../primitives/Button";
@@ -72,9 +73,11 @@ export function ErrorCenter({ feed, onClose }: ErrorCenterProps) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [clearingLogs, setClearingLogs] = useState(false);
 
+  // One Escape closes one thing (see lib/escapeKey.ts): not while one of
+  // this list's own "Clear...?" confirms, or anything else above it, is up.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (claimEscape(e, "errorCenter")) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

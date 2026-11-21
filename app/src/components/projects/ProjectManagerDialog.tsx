@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import { rpcCall } from "../../lib/ipc";
 import { asArray } from "../../lib/arrays";
+import { claimEscape } from "../../lib/escapeKey";
 import { playSound } from "../../lib/sounds";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
@@ -90,14 +91,12 @@ export function ProjectManagerDialog({ onClose }: ProjectManagerDialogProps) {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
       // A rename in progress owns Escape (the input's own handler cancels it
-      // and stops propagation before this ever sees it). The Unlink confirm
-      // renders ABOVE this dialog and has no Escape of its own, so closing
-      // here would strand it over a vanished list - let it be dismissed on
-      // its own terms first.
-      if (document.querySelector(".confirm-dialog__overlay")) return;
-      onClose();
+      // and stops propagation before this ever sees it). Anything drawn
+      // above this dialog - the Unlink confirm, Settings, the Error Center -
+      // is dismissed on its own terms first: one Escape closes one thing
+      // (see lib/escapeKey.ts).
+      if (claimEscape(e, "projectManager")) onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
