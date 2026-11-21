@@ -828,12 +828,21 @@ function Get-DevKitCatalogPayload {
             $items = @()
             foreach ($item in @($module.Items)) {
                 $help = [string]$item.Help
+                # "Safety note:" in the Help is what marks a tool caution,
+                # unless the manifest says so outright. The text match alone
+                # misfires on a tool whose note is about something other
+                # than a destructive DevKit action (Run Package Script: "it
+                # runs your own script") and put a "cannot be undone" dialog
+                # in front of every `npm run dev`. An explicit `Caution` key
+                # wins in either direction.
+                $caution = ($help -match 'Safety note:')
+                if ($item -is [System.Collections.IDictionary] -and $item.Contains('Caution')) { $caution = [bool]$item['Caution'] }
                 $items += [ordered]@{
                     key             = [string]$item.Key
                     label           = [string]$item.Label
                     script          = [string]$item.Script
                     help            = $help
-                    caution         = ($help -match 'Safety note:')
+                    caution         = $caution
                     requiresProject = [bool]$item.RequiresProject
                     projectArgName  = if ($item.ProjectArgName) { [string]$item.ProjectArgName } else { $null }
                     requiresFile    = $item.RequiresFile

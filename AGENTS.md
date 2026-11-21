@@ -343,8 +343,14 @@ try {
 
 ### Git Tools (`tools/git/`)
 - Prunes merged branches with `git branch -d`
-- Runs garbage collection with `git gc --aggressive`
+- Runs a plain `git gc` by default (git's two-week grace period for
+  unreachable objects stays in force); `-Aggressive` or `-ClearReflog` is
+  what runs `git gc --aggressive --prune=now`
 - Optionally clears reflog
+- `Git-SyncFork.ps1 -Rebase` records the fork's tip BEFORE rebasing,
+  refuses if the fork has commits the checkout lacks, and force-pushes with
+  `--force-with-lease=<branch>:<that sha>` - never a bare lease after a
+  fresh fetch, which protects nothing
 - Scans multiple repositories for status
 - Syncs forks with upstream using merge or rebase
 
@@ -1003,7 +1009,13 @@ code to touch for this case:
    `"Safety note:"` - `Get-DevKitCatalogPayload` turns that into the
    `caution` flag automatically, which badges the tool and routes its Run
    button through the confirm dialog in the Control Center. No extra
-   wiring needed.
+   wiring needed. A manifest item can also say so outright with
+   `Caution = $true` / `$false`, which wins over the text match (Run
+   Package Script uses `$false`: its note is about running the user's own
+   script, not a destructive DevKit action). A caution tool must declare
+   `-Force`, and should expose its preview switch as a YesNo prompt -
+   `tests/Unit/Manifests.Tests.ps1` holds every manifest entry to its
+   script's parameter block.
 7. **If the tool needs real interactive stdin** (arrow-key menus, a live
    y/n read from the console, launching another interactive CLI like
    `claude`/`kimi`), it will work correctly via the CLI and via the

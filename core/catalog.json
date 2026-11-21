@@ -29,12 +29,12 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Prompt": "Enter port number",
+              "Name": "Port",
+              "Min": 1,
               "Max": 65535,
               "Type": "Int",
-              "InvalidMessage": "Invalid port number.",
-              "Min": 1,
-              "Name": "Port",
-              "Prompt": "Enter port number"
+              "InvalidMessage": "Invalid port number."
             }
           ],
           "staticArgs": {
@@ -52,12 +52,12 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Prompt": "Enter PID to kill",
+              "Name": "ProcessId",
+              "Min": 1,
               "Max": 2147483647,
               "Type": "Int",
-              "InvalidMessage": "Invalid PID.",
-              "Min": 1,
-              "Name": "ProcessId",
-              "Prompt": "Enter PID to kill"
+              "InvalidMessage": "Invalid PID."
             }
           ],
           "staticArgs": null
@@ -85,12 +85,12 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Prompt": "Enter port number",
+              "Name": "Port",
+              "Min": 1,
               "Max": 65535,
               "Type": "Int",
-              "InvalidMessage": "Invalid port number.",
-              "Min": 1,
-              "Name": "Port",
-              "Prompt": "Enter port number"
+              "InvalidMessage": "Invalid port number."
             }
           ],
           "staticArgs": {
@@ -108,12 +108,12 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Prompt": "Enter port number",
+              "Name": "Port",
+              "Min": 1,
               "Max": 65535,
               "Type": "Int",
-              "InvalidMessage": "Invalid port number.",
-              "Min": 1,
-              "Name": "Port",
-              "Prompt": "Enter port number"
+              "InvalidMessage": "Invalid port number."
             }
           ],
           "staticArgs": null
@@ -141,10 +141,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter URL to test (blank = scan listening dev ports)",
-              "Name": "Url",
               "Optional": true,
-              "Type": "String"
+              "Prompt": "Enter URL to test (blank = scan listening dev ports)",
+              "Type": "String",
+              "Name": "Url"
             }
           ],
           "staticArgs": null
@@ -163,7 +163,7 @@
           "script": "Clear-NpmCache.ps1",
           "help": "Clears the local package-manager cache for the project at -Path (defaults to the current directory). Auto-detects npm/yarn/pnpm/bun from lock files and runs the matching cache-clean command (npm cache clean --force / pnpm store prune / yarn cache clean --all / bun pm cache rm). -Verify additionally runs 'npm cache verify' afterward (npm only - other package managers have no equivalent). Use this when installs are behaving oddly and you want a clean package-manager cache without touching node_modules or any project files. Note: mutates the package manager's own (global, per-user) cache - a fully regenerable store, so the irreversible-changes confirmation does not apply - and runs immediately with no confirmation prompt and no -Force/-DryRun switch, unlike the other mutating tools in this category.",
           "caution": false,
-          "requiresProject": false,
+          "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
           "prompts": null,
@@ -178,7 +178,14 @@
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Reinstall dependencies afterwards?",
+              "Type": "YesNo",
+              "Name": "Reinstall"
+            }
+          ],
           "staticArgs": null
         },
         {
@@ -199,7 +206,7 @@
           "script": "Check-NpmCacheSize.ps1",
           "help": "Read-only report of the package-manager cache location for the project at -Path (defaults to current directory), and its size where the package manager exposes one: npm via 'npm cache verify', pnpm/yarn/bun by measuring the reported cache/store folder directly (bun's cache path is a documented fixed per-user location, not queried from bun itself). Use this before deciding whether a cache clear is worth running. Makes no changes.",
           "caution": false,
-          "requiresProject": false,
+          "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
           "prompts": null,
@@ -210,16 +217,16 @@
           "label": "Run Package Script (npm run picker)",
           "script": "Start-PackageScript.ps1",
           "help": "The daily-driver 'npm run' picker (RequiresProject - the menu prompts you to pick a linked project first; from the command line, use -Path): lists the scripts defined in the project's package.json in an arrow-key menu and runs the chosen one with the project's detected package manager via '<pm> run <name>' (works for npm/pnpm/yarn/bun). Pass -Name to skip the picker and run a script directly - headless runners (the Control Center's Run dialog) always require -Name since the picker menu needs an interactive terminal; run the .bat wrapper (or the .ps1) directly in a terminal for the interactive picker. Use this instead of typing npm run dev / npm test / npm run build by hand. Safety note: this runs the project's OWN package.json script verbatim - whatever command the project author put there - with no confirmation, since running scripts is the entire point of the tool; DevKit itself never installs, deletes, or modifies anything.",
-          "caution": true,
+          "caution": false,
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
               "InvalidMessage": "Enter a script name.",
-              "Name": "Name",
-              "Type": "String"
+              "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
+              "Type": "String",
+              "Name": "Name"
             }
           ],
           "staticArgs": null
@@ -233,7 +240,14 @@
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Delete the folders it lists? (No = report only)",
+              "Type": "YesNo",
+              "Name": "Apply"
+            }
+          ],
           "staticArgs": null
         }
       ]
@@ -291,18 +305,18 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Clear Turbopack cache too?",
-              "Name": "Turbo",
               "Optional": true,
-              "Type": "YesNo"
+              "Prompt": "Clear Turbopack cache too?",
+              "Type": "YesNo",
+              "Name": "Turbo"
             },
             {
-              "Optional": true,
-              "Type": "Int",
+              "Prompt": "Port (0 = package default; press Enter for default)",
+              "Name": "Port",
               "Min": 0,
               "Max": 65535,
-              "Name": "Port",
-              "Prompt": "Port (0 = package default; press Enter for default)"
+              "Type": "Int",
+              "Optional": true
             }
           ],
           "staticArgs": null
@@ -324,7 +338,28 @@
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Prompt": "Port (0 = Vite default; press Enter for default)",
+              "Name": "Port",
+              "Min": 0,
+              "Max": 65535,
+              "Type": "Int",
+              "Optional": true
+            },
+            {
+              "Optional": true,
+              "Prompt": "Skip the dependency install (faster when nothing changed)?",
+              "Type": "YesNo",
+              "Name": "SkipInstall"
+            },
+            {
+              "Optional": true,
+              "Prompt": "Expose the server on the local network (--host)?",
+              "Type": "YesNo",
+              "Name": "ExposeHost"
+            }
+          ],
           "staticArgs": null
         },
         {
@@ -336,7 +371,22 @@
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Prompt": "Preview port (press Enter for 4173)",
+              "Name": "Port",
+              "Min": 1,
+              "Max": 65535,
+              "Type": "Int",
+              "Optional": true
+            },
+            {
+              "Optional": true,
+              "Prompt": "Skip the build and preview the existing output?",
+              "Type": "YesNo",
+              "Name": "SkipBuild"
+            }
+          ],
           "staticArgs": null
         }
       ]
@@ -351,12 +401,19 @@
           "key": "1",
           "label": "Git Cleanup (prune, gc, etc.)",
           "script": "Git-Cleanup.ps1",
-          "help": "Fetches the remote, deletes local branches already merged into the repo's default branch, prunes stale remote-tracking refs, and can run 'git gc --aggressive --prune=now' and clear the reflog (-ClearReflog) to shrink repo size. Shows pack size before/after. Use this periodically on a repo with a lot of merged/stale branch history. Safety note: mutates real repository state - fetching and remote-tracking prune run automatically (skipped under -DryRun); deleting merged branches, running gc, and clearing the reflog each require a 'y/n' confirmation unless -Force is passed. -DryRun previews every step with zero changes made.",
+          "help": "Fetches the remote, deletes local branches already merged into the repo's default branch, prunes stale remote-tracking refs, and runs 'git gc' (a plain one: objects that became unreachable in the last two weeks are kept, so a commit orphaned by mistake can still be rescued). The irreversible strengths are command-line only: -Aggressive runs 'git gc --aggressive --prune=now', and -ClearReflog clears the reflog first. Shows pack size before/after. Use this periodically on a repo with a lot of merged/stale branch history. Safety note: mutates real repository state - fetching and remote-tracking prune run automatically (skipped under -DryRun); deleting merged branches, running gc, and clearing the reflog each require a 'y/n' confirmation unless -Force is passed. Answer yes to the preview question (-DryRun) to see every step with zero changes made.",
           "caution": true,
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Preview only - show what would change and change nothing?",
+              "Type": "YesNo",
+              "Name": "DryRun"
+            }
+          ],
           "staticArgs": null
         },
         {
@@ -380,7 +437,14 @@
           "requiresProject": true,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Rebase onto upstream instead of merging?",
+              "Type": "YesNo",
+              "Name": "Rebase"
+            }
+          ],
           "staticArgs": null
         },
         {
@@ -394,13 +458,13 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Prompt": "How many hours back? (blank = 24)",
+              "Name": "Hours",
+              "Min": 1,
               "Max": 720,
               "Type": "Int",
-              "InvalidMessage": "Invalid hours.",
-              "Min": 1,
-              "Name": "Hours",
               "Optional": true,
-              "Prompt": "How many hours back? (blank = 24)"
+              "InvalidMessage": "Invalid hours."
             }
           ],
           "staticArgs": null
@@ -411,34 +475,87 @@
       "group": "Version Control & Containers",
       "folder": "docker",
       "name": "Docker Tools",
-      "description": "Clean up Docker resources (containers, images, volumes, networks, build cache) - either a full teardown or a selective/unused-only pass - and tail logs from one or more running containers at once. All three tools require Docker Desktop or the Docker Engine CLI installed with the daemon running.",
+      "description": "Clean up Docker resources (containers, images, volumes, networks, build cache) - either a full teardown or a selective/unused-only pass - and tail logs from one or more running containers at once. All of these tools require Docker Desktop or the Docker Engine CLI installed with the daemon running.",
       "items": [
         {
           "key": "1",
-          "label": "Docker Nuke (remove all)",
+          "label": "Docker Nuke (Containers and Images, Volumes Kept)",
           "script": "Docker-Nuke.ps1",
-          "help": "Stops and force-removes ALL containers, then removes all images (unless -KeepImages) and all volumes (unless -KeepVolumes), prunes custom networks and the build cache, and finishes with a final 'docker system prune' (adding --volumes unless -KeepVolumes). Use this when you want a completely clean Docker state and don't need anything currently on the machine. Safety note: mutates real Docker state - shows a per-resource-type count before acting, requires typing 'NUKE' (case-sensitive) via the shared Confirm-DevKitDestructiveAction gate unless -Force is passed, and supports -DryRun to list what would be removed with no changes made.",
+          "help": "Stops and force-removes ALL containers, then removes all images (unless you answer yes to keeping them), prunes custom networks and the build cache, and finishes with a final 'docker system prune'. VOLUMES ARE KEPT - this item always passes -KeepVolumes, because a volume is where a local database keeps its data and that is the one thing a rebuild cannot bring back; use the next item when the volumes should go too. Use this when you want a clean Docker state but not to lose database contents. Safety note: mutates real Docker state - shows a per-resource-type count before acting, and requires typing 'NUKE' (case-sensitive) via the shared Confirm-DevKitDestructiveAction gate unless -Force is passed (the Control Center's confirm dialog passes it for you). Answer yes to the preview question to see exactly what would be removed first; a preview changes nothing even after confirming.",
           "caution": true,
           "requiresProject": false,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
-          "staticArgs": null
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Preview only - list what would be removed and change nothing?",
+              "Type": "YesNo",
+              "Name": "DryRun"
+            },
+            {
+              "Optional": true,
+              "Prompt": "Keep images too (remove containers only)?",
+              "Type": "YesNo",
+              "Name": "KeepImages"
+            }
+          ],
+          "staticArgs": {
+            "KeepVolumes": true
+          }
         },
         {
           "key": "2",
-          "label": "Docker Cleanup (selective)",
-          "script": "Docker-Cleanup.ps1",
-          "help": "Selective, less destructive than Docker Nuke - removes stopped containers and dangling images by default; -AllUnused widens image removal to every unused (not just untagged) image and also prunes unused custom networks; -Volumes additionally prunes unused volumes. Also cleans the build cache and reports estimated reclaimable disk space. Use this for routine disk-space cleanup that leaves in-use resources alone. Safety note: mutates real Docker state - prompts with a plain y/n confirmation unless -Force is passed (this script predates the shared Confirm-DevKitDestructiveAction gate that Docker Nuke uses, so it does not honor the confirmDestructive setting); supports -DryRun to preview affected containers/images with no changes made.",
+          "label": "Docker Nuke - Everything, Including Volumes",
+          "script": "Docker-Nuke.ps1",
+          "help": "The full teardown: everything the item above removes, PLUS EVERY DOCKER VOLUME. Volumes hold the data of local databases and anything else a container was told to keep - once removed, that data is gone and no rebuild restores it. Use this only when you really want Docker back to an empty install. Safety note: mutates real Docker state and permanently deletes volume data - shows a per-resource-type count before acting, and requires typing 'NUKE' (case-sensitive) via the shared Confirm-DevKitDestructiveAction gate unless -Force is passed (the Control Center's confirm dialog passes it for you). Answer yes to the preview question to see what would be removed first; a preview changes nothing even after confirming.",
           "caution": true,
           "requiresProject": false,
           "projectArgName": null,
           "requiresFile": null,
-          "prompts": null,
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Preview only - list what would be removed and change nothing?",
+              "Type": "YesNo",
+              "Name": "DryRun"
+            }
+          ],
           "staticArgs": null
         },
         {
           "key": "3",
+          "label": "Docker Cleanup (selective)",
+          "script": "Docker-Cleanup.ps1",
+          "help": "Selective, less destructive than Docker Nuke - removes stopped containers and dangling images by default; answering yes to 'every unused image' (-AllUnused) widens image removal to every unused (not just untagged) image and also prunes unused custom networks; answering yes to volumes (-Volumes) additionally prunes unused volumes. Also cleans the build cache and reports estimated reclaimable disk space. Use this for routine disk-space cleanup that leaves in-use resources alone. Safety note: mutates real Docker state - prompts with a plain y/n confirmation unless -Force is passed (this script predates the shared Confirm-DevKitDestructiveAction gate that Docker Nuke uses, so it does not honor the confirmDestructive setting); answer yes to the preview question (-DryRun) to list the affected containers/images with no changes made.",
+          "caution": true,
+          "requiresProject": false,
+          "projectArgName": null,
+          "requiresFile": null,
+          "prompts": [
+            {
+              "Optional": true,
+              "Prompt": "Preview only - list what would be removed and change nothing?",
+              "Type": "YesNo",
+              "Name": "DryRun"
+            },
+            {
+              "Optional": true,
+              "Prompt": "Also remove every unused image and unused network (not just dangling ones)?",
+              "Type": "YesNo",
+              "Name": "AllUnused"
+            },
+            {
+              "Optional": true,
+              "Prompt": "Also remove unused volumes (their data is deleted)?",
+              "Type": "YesNo",
+              "Name": "Volumes"
+            }
+          ],
+          "staticArgs": null
+        },
+        {
+          "key": "4",
           "label": "Quick Logs (multi-container)",
           "script": "Docker-QuickLogs.ps1",
           "help": "Tails 'docker logs' for one or more containers at once (all running containers by default, or specific names via -Container), with a distinct color prefix per container, an initial line count (-Lines, default 50), optional -Timestamps, and optional -Follow to keep streaming instead of printing the last N lines and exiting. Use this to watch several services' logs together during local development. Note: read-only against Docker (no containers/images/volumes are touched), but with -Follow it blocks the terminal indefinitely - press Ctrl+C to stop, and never invoke -Follow from an unattended/non-interactive context.",

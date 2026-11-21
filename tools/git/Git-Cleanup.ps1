@@ -5,6 +5,11 @@
 .DESCRIPTION
     Cleans up a Git repository by pruning merged branches, running garbage
     collection, and optionally clearing the reflog. Shows before/after size.
+
+    Garbage collection is a plain `git gc` by default, which keeps git's
+    two-week grace period for unreachable objects. -Aggressive (and
+    -ClearReflog) run `git gc --aggressive --prune=now` instead: slower, and
+    anything unreachable is deleted immediately.
     
     Created by Northstar Software Development
     Website: https://www.northstarcoding.com
@@ -12,6 +17,9 @@
     Path to the Git repository. Defaults to current directory.
 .PARAMETER ClearReflog
     Clear the reflog (use with caution - irreversible).
+.PARAMETER Aggressive
+    Run `git gc --aggressive --prune=now` instead of a plain `git gc`.
+    Irreversible: unreachable objects are deleted now, not after two weeks.
 .PARAMETER Force
     Skip confirmation prompts.
 .PARAMETER DryRun
@@ -25,6 +33,7 @@
 param(
     [string]$Path = ".",
     [switch]$ClearReflog,
+    [switch]$Aggressive,
     [switch]$Force,
     [switch]$DryRun
 )
@@ -171,18 +180,37 @@ if ($DryRun) {
     }
 }
 
-# Runs `git gc --aggressive --prune=now`. Local helper so the confirmation +
+# Garbage collection, in one of two strengths. Local helper so the
 # exit-code handling isn't duplicated between the standalone pass below and
 # the post-reflog-clear pass.
+#
+# The DEFAULT is a plain `git gc`: it repacks and prunes only objects that
+# have been unreachable for git's own two-week grace period, so a commit
+# orphaned by mistake yesterday (a bad reset, a dropped stash) can still be
+# rescued. This tool used to run `--aggressive --prune=now` on every use -
+# deleting every unreachable object immediately, with no way back, and
+# burning minutes of CPU on a repack git's own documentation advises against
+# for routine use - behind a button labelled "cleanup".
+#
+# -Thorough is that old behaviour, now explicit: -Aggressive on the command
+# line, or -ClearReflog, whose whole purpose is to make objects unreachable
+# and gone.
 function Invoke-DevKitGitGc {
-    Write-Host "  Running garbage collection..." -ForegroundColor Cyan
-    git gc --aggressive --prune=now 2>&1 | ForEach-Object {
+    param([switch]$Thorough)
+    if ($Thorough) {
+        Write-Host "  Running aggressive garbage collection (unreachable objects are deleted now)..." -ForegroundColor Cyan
+        $gcArgs = @('gc', '--aggressive', '--prune=now')
+    } else {
+        Write-Host "  Running garbage collection..." -ForegroundColor Cyan
+        $gcArgs = @('gc')
+    }
+    git @gcArgs 2>&1 | ForEach-Object {
         if ($_ -match '^(Counting|Compressing|Writing|Total)') {
             Write-Host "    $_" -ForegroundColor DarkGray
         }
     }
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ERROR: git gc --aggressive --prune=now failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        Write-Host "  ERROR: git $($gcArgs -join ' ') failed (exit code $LASTEXITCODE)." -ForegroundColor Red
     }
 }
 
@@ -194,10 +222,11 @@ if ($DryRun) {
 } elseif ($ClearReflog) {
     Write-Host "`n  Skipping pre-reflog garbage collection (will run once after reflog clear)." -ForegroundColor Gray
 } else {
-    $runGc = $Force -or ((Read-Host "`n  Run garbage collection? --prune=now is irreversible (y/n)") -eq 'y')
+    $gcQuestion = if ($Aggressive) { "`n  Run AGGRESSIVE garbage collection? --prune=now is irreversible (y/n)" } else { "`n  Run garbage collection? (y/n)" }
+    $runGc = $Force -or ((Read-Host $gcQuestion) -eq 'y')
     if ($runGc) {
         Write-Host ""
-        Invoke-DevKitGitGc
+        Invoke-DevKitGitGc -Thorough:$Aggressive
     } else {
         Write-Host "  Skipped garbage collection." -ForegroundColor Yellow
     }
@@ -225,7 +254,7 @@ if ($ClearReflog) {
         # above - otherwise declining the reflog prompt would mean gc never
         # runs at all for this invocation.
         if ($Force -or ((Read-Host "`n  Run garbage collection? --prune=now is irreversible (y/n)") -eq 'y')) {
-            Invoke-DevKitGitGc
+            Invoke-DevKitGitGc -Thorough
         } else {
             Write-Host "  Skipped garbage collection." -ForegroundColor Yellow
         }
