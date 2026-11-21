@@ -13,17 +13,26 @@
 
     This runs from the installer's POSTINSTALL hook
     (app/src-tauri/windows/hooks.nsh), i.e. AFTER the new files are in place
-    and after the installer has closed a running app. It deletes, inside
-    <InstallRoot>\core and <InstallRoot>\tools only, every file that is not
-    named in core\ShippedFiles.txt, then removes the folders that emptied.
+    and after the installer has closed a running app.
+
+    IT DELETES ONLY PATHS DEVKIT ITSELF ONCE SHIPPED. core\RemovedFiles.txt
+    names every file an earlier release installed under core\ or tools\ that
+    this one does not; those, and nothing else, are removed, followed by the
+    folders they emptied. It never walks a folder looking for "anything not
+    on the shipped list", and that is deliberate: the install folder is
+    whatever the user picked, and a tools\ or core\ directory there may hold
+    files that were never DevKit's. (An earlier draft did walk, guarded by
+    "does this look like a DevKit folder" - a check that ran after the
+    installer had just written the very files it looked for, so it was
+    always true.) A file nobody shipped is not this script's to judge.
 
     It is built to fail towards doing nothing:
-      - no list, an implausibly short list, or a list that does not name the
-        files that must be there  -> nothing is deleted;
-      - the folder is not recognizably a DevKit install -> nothing is deleted;
-      - a file that cannot be deleted is skipped and reported, never retried
-        harder;
-      - links (junctions, symlinks) are neither followed nor removed.
+      - no shipped list, an implausibly short one, or one that does not name
+        the files every real list names -> nothing is deleted;
+      - an entry that is also on the shipped list, that points outside
+        core\ or tools\, or that contains '..' -> skipped;
+      - a path that passes through a link (junction, symlink) -> skipped;
+      - a file that cannot be deleted is counted and left.
     The worst outcome is that stale files stay - which is what happened on
     every update before this script existed.
 
@@ -44,18 +53,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# The two folders the installer fills from the repository, and one file in
-# each that nothing but DevKit ships. $InstallRoot is whatever folder the
-# user chose: an unrelated 'core' or 'tools' directory there must never be
-# cleaned on the strength of its name.
-$script:ManagedFolders = @(
-    @{ Name = 'core'; Marker = 'core\DevKit.Core.psm1' }
-    @{ Name = 'tools'; Marker = 'tools\lib\DevKit-Common.ps1' }
-)
-$script:ListRelativePath = 'core\ShippedFiles.txt'
-# A real list holds about eighty entries. Anything much shorter is a
-# truncated or wrong file, and acting on it would delete the product.
-$script:MinimumListEntries = 40
+# The two folders the installer fills from the repository. Nothing outside
+# them is ever touched, whatever a list says.
+$script:ManagedFolders = @('core', 'tools')
+$script:ShippedListPath = 'core\ShippedFiles.txt'
+$script:RemovedListPath = 'core\RemovedFiles.txt'
+# Files every real shipped list names. A list without them is not ours.
+$script:RequiredShippedEntries = @('core\ShippedFiles.txt', 'core\DevKit.Core.psm1', 'tools\lib\DevKit-Common.ps1')
+# A real shipped list holds about eighty entries. Anything much shorter is a
+# truncated or wrong file.
+$script:MinimumShippedEntries = 40
 
 function ConvertTo-DevKitInstallKey {
     # One spelling per path: backslashes, no leading separator, lower case.
@@ -63,103 +70,141 @@ function ConvertTo-DevKitInstallKey {
     return ($RelativePath -replace '/', '\').Trim().TrimStart('\').ToLowerInvariant()
 }
 
-function Read-DevKitShippedFileList {
+function Read-DevKitInstallList {
+    # Entries of a list file (blank lines and # comments dropped), or $null
+    # when the file is missing or unreadable.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $entries = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        foreach ($line in [System.IO.File]::ReadAllLines($Path)) {
+            $entry = $line.Trim()
+            if (-not $entry -or $entry.StartsWith('#')) { continue }
+            $entries.Add($entry)
+        }
+    } catch { return $null }
+    return , $entries
+}
+
+function Read-DevKitShippedFileSet {
     <#
     .SYNOPSIS
         The shipped-file list as a set of normalized relative paths, or $null
-        when the list is missing, too short, or does not name the marker
-        files and itself (all of which a real list always does).
+        when it is missing, too short, or does not name the files every real
+        list names.
     #>
     param([Parameter(Mandatory = $true)][string]$Root)
 
-    $listPath = Join-Path $Root $script:ListRelativePath
-    if (-not (Test-Path -LiteralPath $listPath -PathType Leaf)) { return $null }
+    $entries = Read-DevKitInstallList -Path (Join-Path $Root $script:ShippedListPath)
+    if ($null -eq $entries) { return $null }
     $set = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($line in [System.IO.File]::ReadAllLines($listPath)) {
-        $entry = $line.Trim()
-        if (-not $entry -or $entry.StartsWith('#')) { continue }
-        [void]$set.Add((ConvertTo-DevKitInstallKey $entry))
-    }
-    if ($set.Count -lt $script:MinimumListEntries) { return $null }
-    if (-not $set.Contains((ConvertTo-DevKitInstallKey $script:ListRelativePath))) { return $null }
-    foreach ($folder in $script:ManagedFolders) {
-        if (-not $set.Contains((ConvertTo-DevKitInstallKey $folder.Marker))) { return $null }
+    foreach ($entry in $entries) { [void]$set.Add((ConvertTo-DevKitInstallKey $entry)) }
+    if ($set.Count -lt $script:MinimumShippedEntries) { return $null }
+    foreach ($required in $script:RequiredShippedEntries) {
+        if (-not $set.Contains((ConvertTo-DevKitInstallKey $required))) { return $null }
     }
     return , $set
 }
 
-function Get-DevKitInstallTreeFiles {
+function Test-DevKitManagedRelativePath {
     <#
     .SYNOPSIS
-        Every file below $Folder as a full path, without entering a link.
-        (Get-ChildItem -Recurse follows junctions on Windows PowerShell 5.1,
-        which could walk - and then delete - outside the install folder.)
+        Pure: is this list entry a plain relative path inside core\ or
+        tools\? No drive, no leading separator, no '.' or '..' segment.
     #>
-    param([Parameter(Mandatory = $true)][string]$Folder)
+    param([string]$RelativePath)
 
-    $files = New-Object 'System.Collections.Generic.List[string]'
-    $pending = New-Object 'System.Collections.Generic.Stack[string]'
-    $pending.Push($Folder)
-    while ($pending.Count -gt 0) {
-        $current = $pending.Pop()
-        $entries = @()
-        try { $entries = @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop) } catch { continue }
-        foreach ($entry in $entries) {
-            $isLink = [bool]($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
-            if ($isLink) { continue }
-            if ($entry.PSIsContainer) { $pending.Push($entry.FullName) } else { $files.Add($entry.FullName) }
-        }
+    $key = ConvertTo-DevKitInstallKey $RelativePath
+    if (-not $key -or $key.Contains(':')) { return $false }
+    $segments = $key.Split('\')
+    if ($segments.Length -lt 2) { return $false }
+    if ($script:ManagedFolders -notcontains $segments[0]) { return $false }
+    foreach ($segment in $segments) {
+        if (-not $segment -or $segment -eq '.' -or $segment -eq '..') { return $false }
     }
-    return , $files
+    return $true
+}
+
+function Test-DevKitPathCrossesLink {
+    <#
+    .SYNOPSIS
+        Does any existing component of $RelativePath below $Root - a folder on
+        the way, or the file itself - turn out to be a link (junction,
+        symlink)? Such a path leads somewhere this script was never told
+        about, so it is left alone.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $current = $Root
+    foreach ($segment in (ConvertTo-DevKitInstallKey $RelativePath).Split('\')) {
+        $current = Join-Path $current $segment
+        $item = $null
+        try { $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop } catch { return $false }   # not there: nothing to cross
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return $true }
+    }
+    return $false
 }
 
 function Get-DevKitStaleInstallFiles {
     <#
     .SYNOPSIS
-        Full paths of the files under the managed folders of $Root that the
-        shipped-file list does not name. Empty when anything about the
-        folder or the list is not as expected - see the script's description.
+        Full paths of the files under $Root that an earlier DevKit shipped,
+        this one does not, and that are still there. Empty when either list
+        is missing or the shipped list is not plausible.
     #>
     param([Parameter(Mandatory = $true)][string]$Root)
 
     $stale = New-Object 'System.Collections.Generic.List[string]'
-    $shipped = Read-DevKitShippedFileList -Root $Root
+    $shipped = Read-DevKitShippedFileSet -Root $Root
     if ($null -eq $shipped) { return , $stale }
+    $removed = Read-DevKitInstallList -Path (Join-Path $Root $script:RemovedListPath)
+    if ($null -eq $removed) { return , $stale }
 
     $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
-    foreach ($folder in $script:ManagedFolders) {
-        if (-not (Test-Path -LiteralPath (Join-Path $rootFull $folder.Marker) -PathType Leaf)) { continue }
-        $folderPath = Join-Path $rootFull $folder.Name
-        foreach ($file in (Get-DevKitInstallTreeFiles -Folder $folderPath)) {
-            if (-not $file.StartsWith($rootFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-            $relative = $file.Substring($rootFull.Length + 1)
-            if (-not $shipped.Contains((ConvertTo-DevKitInstallKey $relative))) { $stale.Add($file) }
-        }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($entry in $removed) {
+        if (-not (Test-DevKitManagedRelativePath $entry)) { continue }
+        $key = ConvertTo-DevKitInstallKey $entry
+        if ($shipped.Contains($key)) { continue }          # shipped again: never delete
+        if (-not $seen.Add($key)) { continue }
+        $full = Join-Path $rootFull $key
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        if (Test-DevKitPathCrossesLink -Root $rootFull -RelativePath $key) { continue }
+        $stale.Add($full)
     }
     return , $stale
 }
 
-function Remove-DevKitEmptyInstallFolders {
-    # Deepest first, and only folders that are empty: a folder that still
-    # holds a shipped file (or anything undeletable) stays.
-    param([Parameter(Mandatory = $true)][string]$Folder)
+function Remove-DevKitEmptiedInstallFolders {
+    <#
+    .SYNOPSIS
+        Removes the folders the deleted files lived in, deepest first, when
+        (and only when) they are now empty. Never core\ or tools\ themselves,
+        never a link, never a folder that still holds anything.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$DeletedFiles
+    )
 
-    $all = New-Object 'System.Collections.Generic.List[string]'
-    $pending = New-Object 'System.Collections.Generic.Stack[string]'
-    $pending.Push($Folder)
-    while ($pending.Count -gt 0) {
-        $current = $pending.Pop()
-        $children = @()
-        try { $children = @(Get-ChildItem -LiteralPath $current -Force -Directory -ErrorAction Stop) } catch { continue }
-        foreach ($child in $children) {
-            if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-            $all.Add($child.FullName)
-            $pending.Push($child.FullName)
+    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $candidates = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $DeletedFiles) {
+        $dir = Split-Path -Parent $file
+        while ($dir -and $dir.Length -gt $rootFull.Length) {
+            $relative = $dir.Substring($rootFull.Length + 1)
+            # stop at core\ and tools\ themselves: they are never removed
+            if ($relative.Split('\').Length -lt 2) { break }
+            [void]$candidates.Add($dir)
+            $dir = Split-Path -Parent $dir
         }
     }
     $removed = 0
-    foreach ($dir in ($all | Sort-Object { $_.Length } -Descending)) {
+    foreach ($dir in ($candidates | Sort-Object { $_.Length } -Descending)) {
         try {
+            $item = Get-Item -LiteralPath $dir -Force -ErrorAction Stop
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
             if (@(Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop).Count -eq 0) {
                 [System.IO.Directory]::Delete($dir, $false)
                 $removed++
@@ -182,24 +227,20 @@ function Invoke-DevKitStaleInstallCleanup {
     $result.Files = @($stale)
     if ($DryRun -or $stale.Count -eq 0) { return $result }
 
+    $deleted = New-Object 'System.Collections.Generic.List[string]'
     foreach ($file in $stale) {
         try {
             # A read-only stale file is still stale.
             $info = New-Object System.IO.FileInfo($file)
             if ($info.IsReadOnly) { $info.IsReadOnly = $false }
             [System.IO.File]::Delete($file)
+            $deleted.Add($file)
             $result.Removed++
         } catch {
             $result.Failed++
         }
     }
-    $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
-    foreach ($folder in $script:ManagedFolders) {
-        $folderPath = Join-Path $rootFull $folder.Name
-        if (Test-Path -LiteralPath $folderPath -PathType Container) {
-            $result.FoldersRemoved += (Remove-DevKitEmptyInstallFolders -Folder $folderPath)
-        }
-    }
+    $result.FoldersRemoved = Remove-DevKitEmptiedInstallFolders -Root $Root -DeletedFiles ([string[]]$deleted.ToArray())
     return $result
 }
 

@@ -128,9 +128,10 @@ the whole app fixes the first batch of what it found.
 - **Updating never removed anything.** The installer only adds and
   overwrites, so a tool deleted from DevKit stayed on disk, and in the
   catalog, on every install that updated. After installing, the installer
-  now removes whatever a previous version left under `core` and `tools`
-  that this version does not ship. This is what makes the smaller catalog
-  above actually arrive on an existing install.
+  now removes the files earlier releases shipped under `core` and `tools`
+  that this one does not - exactly those, by name, so a file of your own
+  in the install folder is never touched. This is what makes the smaller
+  catalog above actually arrive on an existing install.
 - **Launching DevKit while it was already running did nothing.** The same
   task ignored a second start. It now lets it through, so the running
   window comes forward as intended.
@@ -250,11 +251,15 @@ the whole app fixes the first batch of what it found.
 
 - `tool.run` executed any `.ps1` it was given a path to, elevated. It now
   runs only scripts inside the tools folder.
-- **The Git panel's background refresh ran a program named in the
-  project's own git settings, as Administrator.** A `core.fsmonitor` hook
-  path (or an `ext::` remote, for the background fetch) in a project's
-  `.git/config` was executed by DevKit's own polling, with nobody
-  clicking anything. Those calls now force both off.
+- **The Git panel's background refresh and fetch ran programs the
+  project itself named, as Administrator.** A `core.fsmonitor` hook path
+  in a project's `.git/config`, or a script dropped into `.git/hooks`,
+  was executed by DevKit's own polling with nobody clicking anything
+  (both reproduced). Those calls now run with hooks, the file-monitor
+  hook, `ext::` remotes, a custom upload-pack program, external diff and
+  signature programs switched off. A custom `core.sshCommand` and
+  `.gitattributes` filter drivers (git-lfs) are still honoured, because
+  switching them off breaks ordinary setups.
 - Uninstalling left the scheduled task that starts DevKit as
   Administrator behind, pointing at the now-empty install folder. The
   uninstaller removes it, asking for administrator rights once if the

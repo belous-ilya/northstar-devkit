@@ -32,12 +32,17 @@
 ; uninstaller).
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; powershell.exe (Windows PowerShell 5.1) is on every supported Windows;
-  ; the script is written for it. nsExec runs it without a window. Its
-  ; output and exit code are deliberately ignored: leftovers that could not
-  ; be removed are not a reason to fail an install that has succeeded.
+  ; Windows PowerShell 5.1 is on every supported Windows; the script is
+  ; written for it. nsExec runs it without a window. Its output and exit
+  ; code are deliberately ignored: leftovers that could not be removed are
+  ; not a reason to fail an install that has succeeded.
+  ;
+  ; By FULL PATH, here and for schtasks below: a bare program name is looked
+  ; for in the installer's own folder first, and an update runs this
+  ; installer elevated out of a user-writable temp folder - whatever was
+  ; planted beside it under that name would run as Administrator.
   ${If} ${FileExists} "$INSTDIR\core\Remove-StaleInstallFiles.ps1"
-    nsExec::ExecToStack 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\core\Remove-StaleInstallFiles.ps1" -InstallRoot "$INSTDIR"'
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\core\Remove-StaleInstallFiles.ps1" -InstallRoot "$INSTDIR"'
     Pop $0
     Pop $1
     DetailPrint "Removed files from previous versions that are no longer shipped"
@@ -45,12 +50,22 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ; Not when the uninstaller is run as a step of an update (/UPDATE): the
-  ; app is about to be installed again, and deleting the elevation task
-  ; would send the next launch back through one-time setup and its UAC
-  ; prompt. The template skips its own shortcut and app-data removal in
-  ; that mode for the same reason.
+  ; Only for a REAL uninstall. When someone installs a newer version by hand
+  ; and leaves "uninstall before installing" selected, the installer runs
+  ; this uninstaller as a step of the upgrade - and the app is about to be
+  ; installed again. Cleaning up then would raise a UAC prompt in the middle
+  ; of an install, and throw away the elevation task, the logon trigger
+  ; Start-with-Windows may have been moved onto, and the setup marker, so
+  ; the next launch would go through one-time setup all over again.
+  ;
+  ; The two cases are told apart by where this exe runs from. The installer
+  ; starts the previous uninstaller in place ('uninstall.exe ... _?=<dir>'),
+  ; so $EXEDIR is the install folder; a real uninstall, from Settings or the
+  ; Start menu, runs from the temporary copy NSIS makes of itself. $UpdateMode
+  ; (/UPDATE) is checked too, though the template does not currently run the
+  ; uninstaller in that mode at all.
   ${If} $UpdateMode <> 1
+  ${AndIf} $EXEDIR != $INSTDIR
     ; Remove the elevation scheduled task. It MUST go: it starts whatever
     ; exe sits at the old install path as Administrator, with no prompt, for
     ; anyone who can run 'schtasks /run' as this user - and after an
@@ -62,10 +77,10 @@
     ; for again, and only if it is still there is the delete repeated
     ; elevated - the one UAC prompt of an uninstall. Declining it leaves the
     ; task in place; nothing else here depends on it.
-    nsExec::ExecToStack 'schtasks /delete /tn "NorthstarDevKit-Admin" /f'
+    nsExec::ExecToStack '"$SYSDIR\schtasks.exe" /delete /tn "NorthstarDevKit-Admin" /f'
     Pop $0
     Pop $1
-    nsExec::ExecToStack 'schtasks /query /tn "NorthstarDevKit-Admin"'
+    nsExec::ExecToStack '"$SYSDIR\schtasks.exe" /query /tn "NorthstarDevKit-Admin"'
     Pop $0 ; exit code of the query: 0 means the task still exists
     Pop $1
     ${If} $0 == 0

@@ -1118,7 +1118,13 @@ Describe "background git calls do not run programs named in the project's git co
     }
 
     It "forces both settings off for every git call the app makes on its own" {
-        $script:DevKitGitBackgroundArgs -join ' ' | Should -Be '-c core.fsmonitor=false -c protocol.ext.allow=never'
+        $joined = $script:DevKitGitBackgroundArgs -join ' '
+        foreach ($setting in 'core.fsmonitor=false', 'core.hooksPath=/dev/null', 'protocol.ext.allow=never', 'remote.origin.uploadpack=git-upload-pack') {
+            $joined | Should -Match ([regex]::Escape("-c $setting"))
+        }
+        # every element is a '-c' followed by one setting: nothing else rides along
+        ($script:DevKitGitBackgroundArgs.Count % 2) | Should -Be 0
+        for ($i = 0; $i -lt $script:DevKitGitBackgroundArgs.Count; $i += 2) { $script:DevKitGitBackgroundArgs[$i] | Should -Be '-c' }
         $source = Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1'
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$null, [ref]$null)
         foreach ($name in 'Get-DevKitRepoOverview', 'Invoke-DevKitGitAutoFetch', 'Get-DevKitCommitDetails') {
@@ -1135,8 +1141,57 @@ Describe "background git calls do not run programs named in the project's git co
         }
     }
 
-    It "never runs a diff driver or text converter the repository configures when showing a commit" {
+    It "never runs a diff driver, text converter or signature checker the repository configures" {
         $text = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1'))
-        $text.Contains("'show' '--no-ext-diff' '--no-textconv'") | Should -BeTrue
+        $text.Contains("'show' '--no-show-signature' '--no-ext-diff' '--no-textconv'") | Should -BeTrue
+        $text.Contains("'log' '--no-show-signature' '--all'") | Should -BeTrue
+    }
+
+    Context "a hook planted in the project's .git\hooks" {
+
+        # .git/hooks/reference-transaction runs on any fetch that moves a ref,
+        # with no configuration at all - and the app fetches in the
+        # background, elevated, about once a minute.
+
+        BeforeAll {
+            $script:HookBase = Join-Path $TestDrive "hook-probe-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+            $script:HookOrigin = Join-Path $script:HookBase 'origin.git'
+            $script:HookWork = Join-Path $script:HookBase 'work'
+            $script:HookClone = Join-Path $script:HookBase 'clone'
+            $script:HookRan = Join-Path $script:HookBase 'hook-ran.txt'
+            if ($script:GitExe) {
+                $g = $script:GitExe.Source
+                [void](New-Item -ItemType Directory -Path $script:HookBase)
+                & $g init -q --bare -b main $script:HookOrigin
+                & $g clone -q $script:HookOrigin $script:HookWork 2>$null
+                & $g -C $script:HookWork -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m one
+                & $g -C $script:HookWork push -q origin HEAD:main 2>$null
+                & $g clone -q $script:HookOrigin $script:HookClone 2>$null
+                [System.IO.File]::WriteAllText((Join-Path $script:HookClone '.git\hooks\reference-transaction'),
+                    "#!/bin/sh`necho ran > '$($script:HookRan -replace '\\', '/')'`n")
+            }
+            function Push-TestCommit {
+                $g = $script:GitExe.Source
+                & $g -C $script:HookWork -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m more
+                & $g -C $script:HookWork push -q origin HEAD:main 2>$null
+            }
+        }
+
+        It "is not executed by the background fetch, which still fetches" {
+            Push-TestCommit
+            $before = (& $script:GitExe.Source -c core.hooksPath=/dev/null -C $script:HookClone rev-parse origin/main | Out-String).Trim()
+            if (Test-Path -LiteralPath $script:HookRan) { Remove-Item -LiteralPath $script:HookRan }
+            Invoke-DevKitGitAutoFetch -Path $script:HookClone -Git $script:GitExe
+            $after = (& $script:GitExe.Source -c core.hooksPath=/dev/null -C $script:HookClone rev-parse origin/main | Out-String).Trim()
+            $after | Should -Not -Be $before          # the fetch really happened
+            Test-Path -LiteralPath $script:HookRan | Should -BeFalse
+        }
+
+        It "control: a plain 'git fetch' in that same clone DOES execute it" {
+            Push-TestCommit
+            if (Test-Path -LiteralPath $script:HookRan) { Remove-Item -LiteralPath $script:HookRan }
+            $null = & $script:GitExe.Source -C $script:HookClone fetch -q origin 2>&1
+            Test-Path -LiteralPath $script:HookRan | Should -BeTrue
+        }
     }
 }

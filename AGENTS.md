@@ -132,13 +132,14 @@ DevKit/
 │   │                              # the live app never reads that file itself
 │   ├── catalog.json                # Committed static snapshot (offline
 │   │                              # inspection / type generation only)
-│   ├── Export-ShippedFiles.ps1     # Dev-time: (re)writes core/ShippedFiles.txt -
+│   ├── Export-ShippedFiles.ps1     # Dev-time: (re)writes the two lists below -
 │   │                              # re-run after adding/removing ANY file in
 │   │                              # core/ or tools/ (a test enforces it)
-│   ├── ShippedFiles.txt            # Generated list of every file under core/
-│   │                              # and tools/; what an update may keep
+│   ├── ShippedFiles.txt            # Generated: every file under core/ and tools/
+│   ├── RemovedFiles.txt            # Generated: every path an earlier release
+│   │                              # shipped there and this one does not
 │   └── Remove-StaleInstallFiles.ps1 # Run by the installer after an update:
-│                                  # deletes installed files not on that list
+│                                  # deletes exactly the RemovedFiles paths
 │
 ├── crates/devkit-host/         # Rust NDJSON-RPC client crate - owns the
 │   │                          # sidecar process, shared by app/ and cli/
@@ -800,22 +801,28 @@ means it'll work from the other.
   no custom `Uninstall.ps1` any more - NSIS generates its own uninstaller
   as part of the bundle, extended by a small `installerHooks` file
   (`app/src-tauri/windows/hooks.nsh`) with two hooks. POSTINSTALL runs
-  `core/Remove-StaleInstallFiles.ps1`, which deletes whatever is under
-  the installed `core/` and `tools/` folders and is NOT named in
-  `core/ShippedFiles.txt`: the stock installer only adds and overwrites,
-  and the catalog is built from whatever manifests are on disk, so a tool
-  removed from the product would otherwise stay listed and runnable on
-  every install that updates. **`core/ShippedFiles.txt` is generated -
-  re-run `core/Export-ShippedFiles.ps1` after adding, renaming or
-  deleting any file in `core/` or `tools/`**
-  (`tests/Unit/ShippedFiles.Tests.ps1` fails when the list and the tree
-  disagree; a missing entry would get a shipped file deleted on update).
-  It is deliberately not a delete-first PREINSTALL hook: the template
-  runs that hook before its own running-app check, which the user can
-  cancel, and that would leave the app without scripts. POSTUNINSTALL
+  `core/Remove-StaleInstallFiles.ps1`, which deletes the files named in
+  `core/RemovedFiles.txt` - paths an EARLIER release installed under
+  `core/` or `tools/` that this one no longer ships: the stock installer
+  only adds and overwrites, and the catalog is built from whatever
+  manifests are on disk, so a tool removed from the product would
+  otherwise stay listed and runnable on every install that updates. It
+  deletes nothing else - never "whatever is not on the shipped list" -
+  because the install folder is the user's choice and may hold files that
+  were never DevKit's. **Both lists are generated: re-run
+  `core/Export-ShippedFiles.ps1` after adding, renaming or deleting any
+  file in `core/` or `tools/`.** That run is what records a deletion in
+  `RemovedFiles.txt`, and `tests/Unit/ShippedFiles.Tests.ps1` fails until
+  it is done (the shipped list must match the tree exactly). It is
+  deliberately not a delete-first PREINSTALL hook: the template runs that
+  hook before its own running-app check, which the user can cancel, and
+  that would leave the app without scripts. The hooks start Windows' own
+  programs by full `$SYSDIR` path, never by bare name. POSTUNINSTALL
   best-effort removes the mandatory-elevation scheduled task, the
   'DevKit (Admin)' shortcuts, the hidden launcher, and the admin-mode
-  state marker.
+  state marker (retrying the task removal elevated when the plain delete
+  is refused) - but only for a real uninstall, not when the installer
+  runs the previous uninstaller in place as a step of a manual upgrade.
 - **CI** (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag builds
   and signs the app on `windows-latest` and **publishes** the GitHub
   Release. It is not a draft (`releaseDraft: false` since v4.2.0): the

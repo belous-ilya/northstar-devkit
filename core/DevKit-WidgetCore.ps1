@@ -1878,24 +1878,46 @@ $script:DevKitGitAutoFetchLastAttempt = @{}
 #
 # The installed app is admin-only, so these calls run elevated, inside
 # whatever folder is the active project, and git obeys that project's own
-# .git/config - a file anything running as the user can write. Two settings
-# there name a program for git to run during exactly these commands:
+# .git folder - files anything running as the user can write. Several
+# things there name a program for git to run during exactly these commands.
+# The ones that can be switched off without breaking an honest setup are,
+# on the command line, where -c beats every config file:
 #
-#   core.fsmonitor = <path>   run by 'git status' (and any index refresh).
-#                             Proven: a scratch repository with this set
-#                             made the overview poll execute the program.
-#   remote.origin.url = ext::<command>   run by 'git fetch'.
+#   core.fsmonitor=false      a hook path here is run by 'git status' and
+#                             any index refresh. Proven: a scratch
+#                             repository with this set made the overview
+#                             poll execute the program.
+#   core.hooksPath=/dev/null  .git/hooks/reference-transaction (and
+#                             pre-auto-gc) run on a fetch that moves a ref,
+#                             with no config at all. Pointing the hooks
+#                             path at nothing disables every hook for
+#                             these calls.
+#   protocol.ext.allow=never  remote.origin.url = ext::<command> is run by
+#                             'git fetch'.
+#   remote.origin.uploadpack  a program path here is run by 'git fetch' for
+#                             a local-path remote; forced to git's own.
 #
-# Left alone, either is a way for an unprivileged program to be run as
-# Administrator without a click. Forced off here: a command-line -c beats
-# the repository's config. The cost is small and deliberate - a repository
-# that uses git's built-in file monitor (core.fsmonitor=true) gets an
-# ordinary full status scan from these polls, as if the monitor were off.
+# (--no-show-signature on the log/show calls, so log.showSignature cannot
+# make them start a configured gpg.program, is passed where those run.)
 #
-# This is hardening, not a boundary. Git actions the user clicks (fetch,
-# pull, push) and every tool the app runs still honour the project's
-# configuration and its scripts - that is what they are for. See SECURITY.md.
-$script:DevKitGitBackgroundArgs = @('-c', 'core.fsmonitor=false', '-c', 'protocol.ext.allow=never')
+# The costs are small and deliberate: a repository using git's built-in
+# file monitor gets an ordinary full status scan from these polls, and a
+# server that needs a non-standard upload-pack path is not fetched in the
+# background.
+#
+# NOT covered, on purpose, because overriding them breaks ordinary setups:
+# core.sshCommand (many Windows users point it at the system OpenSSH for
+# their agent) and filter drivers named in .gitattributes (git-lfs is one).
+# Both are still run by these calls. This is hardening, not a boundary:
+# git actions the user clicks (fetch, pull, push) and every tool the app
+# runs honour the project's configuration and scripts in full - that is
+# what they are for. See SECURITY.md.
+$script:DevKitGitBackgroundArgs = @(
+    '-c', 'core.fsmonitor=false',
+    '-c', 'core.hooksPath=/dev/null',
+    '-c', 'protocol.ext.allow=never',
+    '-c', 'remote.origin.uploadpack=git-upload-pack'
+)
 
 # Repo path (lowercased) -> @{ Stamp = <the auto-fetch attempt this was
 # learned under>; Tips = @{ sha -> $true } }. Which extra tips turned out
@@ -2153,7 +2175,7 @@ function Get-DevKitRepoOverview {
             $commits = @()
             $loaded = @{}
             foreach ($windowSize in $windowSizes) {
-                $log = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'log' '--all' '--topo-order' '-n' ([string]$windowSize) '--pretty=format:%x1e%H%x1f%P%x1f%an%x1f%ar%x1f%d%x1f%s' 2>$null | Out-String)
+                $log = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'log' '--no-show-signature' '--all' '--topo-order' '-n' ([string]$windowSize) '--pretty=format:%x1e%H%x1f%P%x1f%an%x1f%ar%x1f%d%x1f%s' 2>$null | Out-String)
                 $commits = ConvertFrom-DevKitGitLogOutput -Output $log
                 if ($wantedTips.Count -eq 0) { break }
                 $loaded = @{}
@@ -2342,7 +2364,7 @@ function Get-DevKitCommitDetails {
     $git = Get-DevKitWindowsExecutable -Name 'git'
     if (-not $git) { $result.Error = 'git not found on PATH.'; return $result }
     try {
-        $out = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'show' '--no-ext-diff' '--no-textconv' '--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%B%x1e' '--numstat' '--shortstat' $Hash 2>&1 | Out-String)
+        $out = (& $git.Source @script:DevKitGitBackgroundArgs '-C' $Path 'show' '--no-show-signature' '--no-ext-diff' '--no-textconv' '--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%B%x1e' '--numstat' '--shortstat' $Hash 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) {
             # bad object / unknown revision: the classic "commit vanished
             # after a rebase while the graph still showed it" case.
