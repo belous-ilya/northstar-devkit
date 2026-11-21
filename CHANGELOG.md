@@ -73,6 +73,19 @@ the whole app fixes the first batch of what it found.
   pre-hide data as live for a full interval.
 - The bundled logo shrank from 1,977 kB to 46 kB (it was shipped at
   1254 px and displayed at 56).
+- **The gauges cost about a five-hundredth of what they did.** The CPU
+  reading went through WMI, which waits a full second per query, so the
+  sidecar spent half of every 2-second poll on it. CPU, memory and the
+  listening-ports table are now read straight from Windows: the system
+  poll takes about 2 ms instead of about 1,100, the Node/ports poll about
+  6 ms instead of 130, and the top-CPU list about 20 ms instead of 1,090
+  (it compares with its previous reading instead of sleeping a second).
+  WMI remains the fallback where the direct read is unavailable.
+- Run history: Stop is offered on any row that may still be running, in
+  every window, including after a reload. It used to exist only in the
+  dialog that started the run.
+- A folder in the Files panel is re-read every time it is opened (the
+  listing already on screen stays until the fresh one arrives).
 - The in-app updater, and every link in the app and the docs, now point
   at `github.com/belous-ilya/northstar-devkit`. The account was renamed
   and the old address only worked through GitHub's redirect; versions
@@ -143,6 +156,17 @@ the whole app fixes the first batch of what it found.
 - Build-and-Preview deleted the previous `dist` when the project builds to
   a different folder; it now notices, restores it, and says which option
   to set. It also refuses an output folder that holds source files.
+- **The Git panel's background refresh could make your own `git add` or
+  `git commit` fail** with "index.lock: File exists". Its `git status`
+  took the index lock every few seconds; it now reads without locking.
+- Run history disagreed between the widget and the Control Center: a run
+  that finished in one window could stay "running" in the other, and a
+  cleared or removed row came back when the other window saved. Windows
+  now merge by outcome and remember what was cleared.
+- A project picked before the sidecar was ready stayed "No linked
+  projects" for the whole session, and a folder that became a git
+  repository after it was selected stayed "not a repository" until
+  re-selected. Both now recover on their own.
 
 ### Security
 
