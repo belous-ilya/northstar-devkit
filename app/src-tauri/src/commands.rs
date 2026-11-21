@@ -232,14 +232,47 @@ pub(crate) fn emit_visibility<R: Runtime, E: Emitter<R>>(emitter: &E, label: &st
     );
 }
 
+/// The window with this label, created now if it has not been yet.
+///
+/// The standalone Control Center is declared in tauri.conf.json with
+/// `"create": false`: it is a whole second webview (its own renderer
+/// process, its own copy of the app), and most sessions never open it - the
+/// docked widget shows the same Control Center in a tray of its own window.
+/// Creating it at startup cost that memory and start-up work every time,
+/// for a window that stayed hidden. It is built here, from that same config
+/// entry, the first time something asks to show it.
+///
+/// NEVER call this from the main thread (a synchronous command, a tray or
+/// menu handler): creating a webview there deadlocks on Windows. Async
+/// commands and `tauri::async_runtime::spawn` are both fine.
+pub fn window_or_create(
+    app: &tauri::AppHandle,
+    label: &str,
+) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(label) {
+        return Ok(window);
+    }
+    let Some(config) = app.config().app.windows.iter().find(|w| w.label == label) else {
+        return Err(format!("no window with label '{label}'"));
+    };
+    tracing::info!(label, "creating window on first use");
+    match tauri::WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
+        Ok(window) => Ok(window),
+        // Two requests can arrive together (a double click, the palette and
+        // the tray): the second build fails because the label is taken,
+        // which is the outcome it wanted.
+        Err(e) => app.get_webview_window(label).ok_or_else(|| e.to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn toggle_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
     if label == "widget" {
         return toggle_widget(&app);
     }
-    let Some(window) = app.get_webview_window(&label) else {
-        return Err(format!("no window with label '{label}'"));
-    };
+    // A window that does not exist yet is hidden by definition, and a
+    // freshly created one reports itself hidden, so the toggle shows it.
+    let window = window_or_create(&app, &label)?;
     toggle_window_visibility(&window)
 }
 
@@ -251,9 +284,7 @@ pub async fn show_window(app: tauri::AppHandle, label: String) -> Result<(), Str
     if label == "widget" {
         return surface_widget(&app);
     }
-    let Some(window) = app.get_webview_window(&label) else {
-        return Err(format!("no window with label '{label}'"));
-    };
+    let window = window_or_create(&app, &label)?;
     set_window_visible(&window, true)
 }
 

@@ -636,7 +636,15 @@ lane-drain deadline plus a 2s writer-drain deadline) before force-killing.
 Two windows, both created hidden and shown via `set_window_visible` (see
 `commands.rs` for why - `WebviewWindow::hide()`/`show()` alone don't
 reliably drive `document.visibilityState`, which the frontend's
-`useVisibility` hook needs to be able to trust):
+`useVisibility` hook needs to be able to trust). Only the widget is created
+at startup. The Control Center window is declared with `"create": false` in
+`tauri.conf.json` and built by `commands::window_or_create` the first time
+something shows it - it is a whole second webview, and most sessions use the
+Control Center only as a tray inside the widget. Two consequences: never
+create it from the main thread (a tray or menu handler; it deadlocks on
+Windows), and never assume it is listening - anything sent to it before it
+has mounted needs a handoff like the command palette's
+(`stashToolRequest` in `components/palette/paletteStore.ts`):
 
 - **`widget`** (`app/src/windows/widget/WidgetApp.tsx`) - the always-on
   companion, DevKit's main face. Panels top to bottom: Gauges

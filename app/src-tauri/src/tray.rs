@@ -5,10 +5,10 @@
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::commands::{set_window_visible, toggle_widget};
+use crate::commands::{set_window_visible, toggle_widget, window_or_create};
 
 /// Text for the autostart entry. A plain `MenuItem` has no native check
 /// state, so the mark lives in the label.
@@ -147,9 +147,22 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             "open_control_center" => {
-                if let Some(w) = app.get_webview_window("control-center") {
-                    let _ = set_window_visible(&w, true);
-                }
+                // Off the main thread: the Control Center window is created
+                // on first use, and creating a webview from a menu handler
+                // deadlocks on Windows (see commands::window_or_create).
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    match window_or_create(&app, "control-center") {
+                        Ok(window) => {
+                            if let Err(e) = set_window_visible(&window, true) {
+                                tracing::warn!(error = %e, "tray menu could not show the Control Center");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "tray menu could not create the Control Center window");
+                        }
+                    }
+                });
             }
             "toggle_autostart" => {
                 // The item is built and refreshed disabled while Admin Mode
