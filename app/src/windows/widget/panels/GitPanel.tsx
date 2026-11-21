@@ -142,7 +142,15 @@ export function GitPanel() {
   // render identically as a permanent "Checking repository…".
   const isRepo = data?.IsRepo === true;
   const knownNotRepo = data !== undefined && data.IsRepo === false;
-  const notRepoReason = knownNotRepo ? data.Error ?? "Not a git repository." : null;
+  // A project whose folder is gone gets the same "not a repository" answer
+  // from git as a folder that never was one, which sent the reader looking
+  // for a .git that was never the problem. The project list knows the
+  // folder is missing; say that, and where to fix it.
+  const notRepoReason = knownNotRepo
+    ? active?.Missing
+      ? "This project's folder is missing - it was moved, renamed or deleted. Point the project at its new location, or unlink it, in Projects."
+      : data.Error ?? "Not a git repository."
+    : null;
   const dirtyFiles = asArray<GitDirtyFile>(data?.DirtyFiles);
   const graph = data?.Graph ?? null;
 
