@@ -66,7 +66,7 @@ means reading both sides, not assuming:
    `devkit://terminal`, `devkit://visibility`. Event names and payload shapes
    are stringly-typed across Rust and TS.
 5. **Sidecar invariants** (`core/Invoke-DevKitRpc.ps1`) — single writer
-   runspace owns stdout; three lanes route by method-name prefix. Read the
+   runspace owns stdout; six lanes route by method-name prefix. Read the
    file's threading comment before touching it.
 6. **New features go in `RpcMethods.ps1`, not new Tauri commands** — Rust
    commands are only for genuine OS-level work (windows, tray, ConPTY).

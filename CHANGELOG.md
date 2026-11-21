@@ -206,6 +206,14 @@ the whole app fixes the first batch of what it found.
   instead of saying no port was given.
 - Files and Notes kept polling inside a closed tray when the widget
   started with no project selected.
+- **Note and On-Deck timestamps were being rewritten, and a note that
+  looked like a timestamp was changed.** PowerShell 7 reads any
+  date-shaped text in a JSON file as a date, and DevKit wrote it back as
+  `11/21/2026 10:00:00`: the time zone was dropped, and text such as
+  `2026-11-21T10:00:00+02:00` came back shifted to local time. Text and
+  timestamps are now stored and returned exactly as written. Values
+  already rewritten stay as they are (the original cannot be recovered);
+  nothing in the app reads them.
 
 ### Security
 

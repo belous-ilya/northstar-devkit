@@ -497,8 +497,8 @@ ever writes a line" true by construction:
 - **One writer runspace** owns `[Console]::Out` exclusively. It drains a
   single `BlockingCollection<string>` queue and is the only code in the
   whole process calling `WriteLine`/`Flush`.
-- **Three lane runspaces** (`metrics`, `slow`, `work`), each one
-  persistent runspace with `DevKit.Core` imported once, each draining its
+- **Six lane runspaces** (`metrics`, `mcp`, `tool`, `slow`, `errors`,
+  `work`), each one persistent runspace with `DevKit.Core` imported once, each draining its
   own request queue and processing one request at a time, pushing its
   response onto the writer's queue when done. (These are plain runspaces,
   not `RunspacePool`s, despite sometimes being described that way - each
@@ -508,8 +508,12 @@ ever writes a line" true by construction:
 - The **main thread** routes each request to a lane by method-name
   prefix: `metrics.*` (plus the polled read-only collectors
   `process.topCpu`/`process.topMemory`/`files.children`) -> metrics
-  lane; `git.*`/`github.*`/`tool.*`/`maintenance.*` -> slow lane;
-  everything else -> work lane. `ping`/`shutdown` are handled inline
+  lane; `mcp.*` -> mcp lane; `tool.*` -> tool lane, EXCEPT `tool.stop`,
+  which goes to work (the tool lane is by definition busy inside the run
+  being stopped); `errors.*` -> errors lane; `git.*`/`github.*` -> slow
+  lane; everything else -> work lane. `Get-DevKitRpcLaneForMethod` in
+  `core/Invoke-DevKitRpc.ps1` is the source of truth, with the measured
+  reason for each split beside it. `ping`/`shutdown` are handled inline
   with no lane hop. It also **single-flights `tool.run`**: a fixed-key
   `TryAdd` gate means a second `tool.run` while one is running is
   refused immediately with a `toolLaneBusy` error (rather than queuing
@@ -528,8 +532,8 @@ non-ASCII tool output (e.g. from the powershell.exe 5.1 fallback's OEM
 codepage) can't corrupt NDJSON framing.
 
 If this ever proves fragile in practice, the file's own header comment
-documents the fallback: split the three lanes into three separate `pwsh`
-processes instead of three runspaces in one - simpler, more RAM, no
+documents the fallback: split the lanes into separate `pwsh`
+processes instead of runspaces in one - simpler, more RAM, no
 shared-process invariants to get right.
 
 #### The method table (`core/RpcMethods.ps1`)
@@ -574,7 +578,7 @@ itself with a `$global:*Loaded` flag, so importing it multiple times
 
 `PsHost` (in `host.rs`) owns the sidecar's `Child` process and
 multiplexes concurrent calls over its one stdout stream by request id.
-From the Rust side, the three PowerShell lanes are invisible - this
+From the Rust side, the PowerShell lanes are invisible - this
 client just sees one stream and demuxes.
 
 Four things worth knowing if you touch this file:
