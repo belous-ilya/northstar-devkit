@@ -70,8 +70,8 @@ pub struct RequiresFile {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogItem {
-    // The manifest's own per-item number (used by the retired TUI's
-    // Start-DevKitModuleTools numbered menu). The CLI navigates a
+    // The manifest's own per-item number (used by the retired PowerShell
+    // TUI's numbered menu). The CLI navigates a
     // flattened, arrow-driven list instead, so this isn't rendered - kept
     // for parity with the full catalog.get item shape.
     #[allow(dead_code)]
@@ -181,8 +181,8 @@ pub fn search<'a>(catalog: &'a Catalog, keyword: &str) -> Vec<SearchHit<'a>> {
 
 /// One collected prompt/project/file value, prior to the
 /// `ConvertTo-DevKitToolArguments`-equivalent validation in
-/// [`build_arguments`]. `None` means "no value" - matches
-/// `Read-DevKitTypedValue` returning `$null` for a blank or invalid entry.
+/// [`build_arguments`]. `None` means "no value": a blank or invalid
+/// entry is never a re-prompt.
 #[derive(Debug, Clone)]
 pub enum PromptRawValue {
     None,
@@ -345,8 +345,8 @@ pub fn build_arguments(
                 }
                 "YesNo" => {
                     // Only ever adds the arg when true - a false answer
-                    // means "leave the switch off", matching both
-                    // Invoke-DevKitTool and ConvertTo-DevKitToolArguments.
+                    // means "leave the switch off", matching
+                    // ConvertTo-DevKitToolArguments.
                     if matches!(value, PromptRawValue::Bool(true)) {
                         set_arg(&mut ordered, spec.name.clone(), OwnedArgValue::Bool(true));
                     }

@@ -387,23 +387,13 @@ function Test-DevKitCanPrompt {
     }
 }
 
-# ==================== MODULE MENU DISPATCHER ====================
+# ==================== TOOL MANIFESTS AND THE ARROW-KEY MENU ====================
 #
-# DevKit.ps1's ten tool-category submenus (Port/Node/Next.js/Vite/Git/
-# Docker/System/Workflow/Diagnostics/WiFi Tools) previously each hand-coded
-# their own Show-XMenu + Start-XTools function pair, all following the exact
-# same recipe: print numbered options, read a choice, switch on it, build a
-# script path via Join-Path, Test-Path it, invoke it. That ~33x-duplicated
-# recipe is exactly what caused two real regressions in this repo's history
-# (see commits ecfff84, 776e166). The functions below replace all ten pairs
-# with one generic implementation driven by a small "_module.psd1" manifest
-# per tool folder. (The Main Menu and the Projects menu are deliberately
-# NOT manifest-driven: Main Menu is a single hand-written function with
-# intentional category groupings, not a duplicated pattern, and Projects
-# manages the picker system itself rather than dispatching to a leaf
-# script - neither fits this generic "run a script for a chosen project"
-# shape, so forcing them into it would add risk without removing any real
-# duplication.)
+# Every tool folder describes its tools in a small "_module.psd1" manifest
+# (Get-DevKitModule loads one). The catalog the app and the CLI show is built
+# from those manifests in core/DevKit-GuiCore.ps1. Show-DevKitInteractiveMenu
+# is the arrow-key picker a tool can use for its own choices (Run Package
+# Script lists the package.json scripts with it).
 
 function Get-DevKitModule {
     <#
@@ -426,131 +416,6 @@ function Get-DevKitModule {
     return $module
 }
 
-function Read-DevKitTypedValue {
-    <#
-    .SYNOPSIS
-        Prompts for and validates one typed value from a manifest Item's
-        Prompts entry, replicating the exact validation each menu option
-        used to hand-code (e.g. Kill-Port's "ERROR: Invalid port number.").
-    .PARAMETER Spec
-        A single Prompts hashtable: @{ Name; Type ('Int'|'YesNo'|'String');
-        Prompt; Optional; Min; Max; InvalidMessage }.
-    .OUTPUTS
-        The typed value, or $null if the input was blank/invalid. For
-        Type='YesNo' this never returns $null (blank/anything-but-'y' is a
-        real, valid "no" answer, matching the original hand-coded behavior
-        of only ever adding the arg when the answer was literally 'y').
-    #>
-    param([Parameter(Mandatory = $true)][hashtable]$Spec)
-
-    switch ($Spec.Type) {
-        'Int' {
-            $promptText = $Spec.Prompt
-            $raw = Read-Host $promptText
-            if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-            if ($raw -notmatch '^\d+$') { return $null }
-            $val = [int64]$raw
-            # $null checks, not truthiness: a Min/Max of 0 is a real bound.
-            if ($null -ne $Spec.Min -and $val -lt [int64]$Spec.Min) { return $null }
-            if ($null -ne $Spec.Max -and $val -gt [int64]$Spec.Max) { return $null }
-            # Reject like any other invalid input instead of overflowing:
-            # casting a value past Int32.MaxValue to [int] throws an uncaught
-            # OverflowException that kills the whole menu loop.
-            if ($val -gt [int]::MaxValue) { return $null }
-            return [int]$val
-        }
-        'YesNo' {
-            $raw = Read-Host "$($Spec.Prompt) (y/n)"
-            return ($raw -eq 'y')
-        }
-        'String' {
-            $raw = Read-Host $Spec.Prompt
-            if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-            return $raw
-        }
-        default {
-            throw "Unknown prompt type '$($Spec.Type)' in module manifest."
-        }
-    }
-}
-
-function Invoke-DevKitTool {
-    <#
-    .SYNOPSIS
-        Generic dispatcher: resolves whatever a manifest Item needs (a
-        project path, a file path, typed prompt values, static args) and
-        invokes the item's script - replacing the hand-coded
-        Join-Path/Test-Path/prompt/invoke block that used to be repeated at
-        every single menu option across all ten tool categories.
-    .PARAMETER FolderPath
-        The tool category's folder (e.g. .../ports), containing the item's script.
-    .PARAMETER Item
-        One entry from a module manifest's Items array.
-    .PARAMETER ForceReprompt
-        Passed through to Select-DevKitProject for RequiresProject items,
-        so a menu choice like "2p" can override the active project for one
-        run without disturbing it.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$FolderPath,
-        [Parameter(Mandatory = $true)][hashtable]$Item,
-        [switch]$ForceReprompt
-    )
-
-    $callArgs = @{}
-
-    if ($Item.RequiresProject) {
-        $targetPath = Select-DevKitProject -Prompt $Item.Label -ForceReprompt:$ForceReprompt
-        if ($null -eq $targetPath) {
-            Write-Host "  Cancelled -- no project selected." -ForegroundColor Yellow
-            return
-        }
-        $argName = if ($Item.ProjectArgName) { $Item.ProjectArgName } else { 'Path' }
-        $callArgs[$argName] = $targetPath
-    } elseif ($Item.RequiresFile) {
-        Write-Host "  [B] Browse for a file..."
-        Write-Host "  [T] Type a path manually"
-        Write-Host "  [0] Cancel"
-        $pickMode = Read-Host "Select option"
-        $filePath = $null
-        if ($pickMode -eq 'B' -or $pickMode -eq 'b') {
-            $filePath = Show-DevKitFileBrowser -Description $Item.RequiresFile.Description -Filter $Item.RequiresFile.Filter
-        } elseif ($pickMode -eq 'T' -or $pickMode -eq 't') {
-            $filePath = Read-Host $Item.RequiresFile.TypePrompt
-        }
-        if ([string]::IsNullOrWhiteSpace($filePath)) {
-            Write-Host "  Cancelled -- no file selected." -ForegroundColor Yellow
-            return
-        }
-        $callArgs[$Item.RequiresFile.ParamName] = $filePath
-    }
-
-    if ($Item.Prompts) {
-        foreach ($promptSpec in $Item.Prompts) {
-            $value = Read-DevKitTypedValue -Spec $promptSpec
-            if ($null -eq $value) {
-                if ($promptSpec.Optional) { continue }
-                $msg = if ($promptSpec.InvalidMessage) { $promptSpec.InvalidMessage } else { "Invalid value for $($promptSpec.Name)." }
-                Write-Host "  ERROR: $msg" -ForegroundColor Red
-                return
-            }
-            if ($promptSpec.Type -eq 'YesNo' -and -not $value) { continue }
-            $callArgs[$promptSpec.Name] = $value
-        }
-    }
-
-    if ($Item.StaticArgs) {
-        foreach ($key in $Item.StaticArgs.Keys) { $callArgs[$key] = $Item.StaticArgs[$key] }
-    }
-
-    $scriptPath = Join-Path $FolderPath $Item.Script
-    if (-not (Test-Path $scriptPath)) {
-        Write-DevKitError "Script not found: $scriptPath"
-        return
-    }
-
-    & $scriptPath @callArgs
-}
 
 function Show-DevKitInteractiveMenu {
     <#
@@ -711,71 +576,6 @@ function Show-DevKitInteractiveMenu {
     }
 }
 
-function Show-DevKitModuleMenu {
-    param([Parameter(Mandatory = $true)]$Module)
-    Show-Header $Module.Name
-    if (-not [string]::IsNullOrWhiteSpace([string]$Module.Description)) {
-        Write-Host "  $($Module.Description)" -ForegroundColor Gray
-        Write-Host ""
-    }
-}
-
-function Start-DevKitModuleTools {
-    <#
-    .SYNOPSIS
-        Generic submenu loop for any manifest-backed tool category.
-    .PARAMETER FolderPath
-        Full path to the category folder (e.g. .../ports).
-    #>
-    param([Parameter(Mandatory = $true)][string]$FolderPath)
-
-    $module = Get-DevKitModule -FolderPath $FolderPath
-
-    while ($true) {
-        Show-DevKitModuleMenu -Module $module
-        $entries = @()
-        foreach ($item in $module.Items) { $entries += @{ Key = $item.Key; Label = $item.Label } }
-        $entries += @{ Key = '?'; Label = 'Help - what does each option do?' }
-        $entries += @{ Key = '0'; Label = 'Back' }
-        $choice = Show-DevKitInteractiveMenu -Entries $entries -PromptLabel 'Select option'
-        $trimmed = $choice.Trim()
-
-        if ($trimmed -eq '0') { return }
-
-        if ($trimmed -eq '?') {
-            Show-DevKitModuleMenu -Module $module
-            foreach ($item in $module.Items) {
-                Write-Host ("  [{0}] {1}" -f $item.Key, $item.Label) -ForegroundColor Cyan
-                if (-not [string]::IsNullOrWhiteSpace([string]$item.Help)) {
-                    Write-Host "      $($item.Help)" -ForegroundColor Gray
-                } else {
-                    Write-Host "      (no additional help for this item)" -ForegroundColor Gray
-                }
-            }
-            Write-Host ""
-            Read-Host "Press Enter to return to the menu"
-            continue
-        }
-
-        $forceReprompt = $false
-        $keyToMatch = $trimmed
-        if ($trimmed -match '^(.+)p$') {
-            $keyToMatch = $matches[1]
-            $forceReprompt = $true
-        }
-
-        $item = $module.Items | Where-Object { $_.Key -eq $keyToMatch } | Select-Object -First 1
-        if (-not $item) {
-            Write-Host "  Invalid option. Press Enter to continue." -ForegroundColor Red
-            Read-Host
-            continue
-        }
-
-        Clear-Host
-        Invoke-DevKitTool -FolderPath $FolderPath -Item $item -ForceReprompt:$forceReprompt
-        Read-Host "Press Enter to continue"
-    }
-}
 
 # ==================== OUTPUT HELPERS ====================
 
@@ -1676,89 +1476,6 @@ function Show-DevKitFolderBrowser {
     return $outcome.Path
 }
 
-function Show-DevKitFileBrowser {
-    <#
-    .SYNOPSIS
-        Shows a file-open dialog from a console host, regardless of the
-        host's own apartment state. Same STA-runspace approach as
-        Show-DevKitFolderBrowser.
-    .PARAMETER Filter
-        Standard Windows Forms file-dialog filter string, e.g.
-        "JSON files (*.json)|*.json|All files (*.*)|*.*"
-    .OUTPUTS
-        [string] the chosen full file path, or $null if cancelled/unavailable.
-    #>
-    [CmdletBinding()]
-    param(
-        [string]$Description = "Select a file",
-        [string]$InitialDirectory,
-        [string]$Filter = "All files (*.*)|*.*"
-    )
-
-    Initialize-DevKitFormsInterop   # process-wide types used inside the STA runspace below
-
-    try {
-        $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
-        $rs.ApartmentState = [System.Threading.ApartmentState]::STA
-        $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
-        $rs.Open()
-    } catch {
-        Write-DevKitError "Could not start a file-browser session: $_"
-        return $null
-    }
-
-    $ps = [System.Management.Automation.PowerShell]::Create()
-    $ps.Runspace = $rs
-
-    [void]$ps.AddScript({
-        param($Description, $InitialDirectory, $Filter)
-
-        try {
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        } catch {
-            return @{ Ok = $false; Error = "File browser unavailable on this PowerShell install (Desktop Runtime not found). Type the path manually." }
-        }
-
-        $dialog = New-Object System.Windows.Forms.OpenFileDialog
-        $dialog.Title = $Description
-        $dialog.Filter = $Filter
-        $dialog.Multiselect = $false
-        if ($InitialDirectory -and (Test-Path $InitialDirectory)) {
-            $dialog.InitialDirectory = $InitialDirectory
-        }
-
-        $consoleHwnd = [DevKit.NativeMethods]::GetConsoleWindow()
-        $owner = $null
-        if ($consoleHwnd -ne [IntPtr]::Zero) {
-            $owner = New-Object DevKit.Win32Window ($consoleHwnd)
-        }
-
-        $result = if ($owner) { $dialog.ShowDialog($owner) } else { $dialog.ShowDialog() }
-
-        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-            return @{ Ok = $true; Path = $dialog.FileName }
-        }
-        return @{ Ok = $true; Path = $null }
-    }).AddArgument($Description).AddArgument($InitialDirectory).AddArgument($Filter)
-
-    try {
-        $outcome = ($ps.Invoke() | Select-Object -First 1)
-    } catch {
-        Write-DevKitError "File browser failed: $_"
-        $ps.Dispose(); $rs.Close(); $rs.Dispose()
-        return $null
-    }
-    $ps.Dispose()
-    $rs.Close()
-    $rs.Dispose()
-
-    if (-not $outcome -or -not $outcome.Ok) {
-        if ($outcome -and $outcome.Error) { Write-DevKitError $outcome.Error }
-        return $null
-    }
-    return $outcome.Path
-}
 
 # ==================== PROJECT REGISTRY ====================
 

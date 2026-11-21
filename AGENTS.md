@@ -654,8 +654,8 @@ reliably drive `document.visibilityState`, which the frontend's
   - the full catalog-driven tool browser. Renders the `catalog.get`
   payload as a searchable, grouped card grid; clicking a card opens
   `ToolRunDialog.tsx`, which builds a dynamic form from the item's
-  `prompts`/`requiresProject`/`requiresFile`/`staticArgs` (mirroring
-  `Read-DevKitTypedValue`'s validation contract exactly - see its own
+  `prompts`/`requiresProject`/`requiresFile`/`staticArgs` (the same
+  validation contract as the CLI's prompt collection in `cli/src/menu.rs` - see its own
   code comments; `requiresFile` renders a text input + native
   plugin-dialog browse and passes the path as `-<ParamName> <path>`) and
   runs the tool via the headless `tool.run` path,

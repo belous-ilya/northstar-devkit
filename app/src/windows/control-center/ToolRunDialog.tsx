@@ -149,8 +149,8 @@ async function fileExistsOnDisk(path: string): Promise<boolean | null> {
 
 /**
  * Dynamic form generated from the catalog item's `prompts` (typed inputs
- * with real Min/Max/Optional validation, mirroring
- * Read-DevKitTypedValue's contract) plus `staticArgs` applied last, then
+ * with real Min/Max/Optional validation, the same contract the CLI's
+ * prompt collection enforces) plus `staticArgs` applied last, then
  * streams the run's stdout/stderr live via the sidecar's tool.output
  * events. This is the headless execution path the plan called for -
  * "most tools run headlessly with streamed output instead of bouncing you
@@ -312,15 +312,15 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
   }, []);
 
   /**
-   * Mirrors Read-DevKitTypedValue's exact validation contract (see
-   * tools/lib/DevKit-Common.ps1): Int requires a plain non-negative integer
+   * The validation contract, shared with the CLI ("prompt collection" in
+   * cli/src/menu.rs - change both together): Int requires a plain non-negative integer
    * string within [Min, Max] (both $null-checked, so a bound of 0 is real);
    * String just requires non-blank; YesNo is never invalid. A blank or
-   * failed-validation value is treated identically to the PowerShell side
-   * (Read-DevKitTypedValue returns $null for both) - Optional prompts skip
+   * failed-validation value is treated identically (both mean "no value",
+   * never a re-prompt) - Optional prompts skip
    * the arg silently, non-Optional prompts block the run with the same
-   * InvalidMessage/fallback text Invoke-DevKitTool would show. Values are
-   * deliberately NOT trimmed: Read-DevKitTypedValue preserves whitespace, so
+   * InvalidMessage/fallback text the CLI shows. Values are
+   * deliberately NOT trimmed: the contract preserves whitespace, so
    * whatever survives validation here must reach the script byte for byte.
    * A requiresFile entry adds its path as -<ParamName> <path> (the same
    * splat Build-DevKitToolCall builds), validated non-empty and confirmed to
@@ -349,8 +349,8 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
           valid = false;
         } else {
           const val = Number(raw);
-          // Same overflow guard as Read-DevKitTypedValue's own [int]::MaxValue
-          // check, for a prompt with no explicit Max to catch it first.
+          // Overflow guard at Int32.MaxValue (the script's parameter is an
+          // [int]), for a prompt with no explicit Max to catch it first.
           if (!Number.isSafeInteger(val) || val > 2147483647) valid = false;
           else if (prompt.Min != null && val < prompt.Min) valid = false;
           else if (prompt.Max != null && val > prompt.Max) valid = false;
@@ -358,7 +358,7 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
       }
 
       if (!valid) {
-        if (prompt.Optional) continue; // matches Invoke-DevKitTool: blank/invalid + Optional just skips the arg
+        if (prompt.Optional) continue; // blank/invalid + Optional just skips the arg, as in ConvertTo-DevKitToolArguments
         errors[prompt.Name] = prompt.InvalidMessage || `Invalid value for ${prompt.Name}.`;
         continue;
       }

@@ -3,8 +3,8 @@
 .SYNOPSIS
     Pester tests for the DevKit GUI pure-logic core (core/DevKit-GuiCore.ps1)
 .DESCRIPTION
-    Covers the GUI's argument resolution (which must mirror Invoke-DevKitTool
-    semantics exactly), the shell-quoting helpers, the terminal launch
+    Covers the GUI's argument resolution (which the CLI's build_arguments
+    must match exactly), the shell-quoting helpers, the terminal launch
     command builder, and catalog loading against the real manifests - the
     last of which doubles as a manifest/script integrity check for the repo.
 #>
