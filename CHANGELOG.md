@@ -19,6 +19,11 @@ the whole app fixes the first batch of what it found.
   `.bat` wrappers, manifests and tests, plus the two MCP helper libraries
   only they used. Doctor and Close-Out stay as tiles on the widget; the MCP
   Servers tray is unaffected. Every removed file is in git history.
+- The shell-integration and Windows Terminal profile scripts in
+  `tools/system/`: nothing called them, and they stopped with "devkit.exe
+  not found" on every installed copy because the installer does not ship
+  the command-line tool. They return from git history if it is ever
+  bundled.
 
 ### Changed
 
@@ -52,6 +57,10 @@ the whole app fixes the first batch of what it found.
   pre-hide data as live for a full interval.
 - The bundled logo shrank from 1,977 kB to 46 kB (it was shipped at
   1254 px and displayed at 56).
+- The in-app updater, and every link in the app and the docs, now point
+  at `github.com/belous-ilya/northstar-devkit`. The account was renamed
+  and the old address only worked through GitHub's redirect; versions
+  before this one keep using that redirect until they update once.
 
 ### Fixed
 
@@ -613,8 +622,8 @@ nothing. USB/ portable builds remain supported via
   CPU/MEM/GPU dialogs became carousel flyout panels (same slide machinery
   as the other tabs) instead of floating popup windows.
 - **Click-to-expand commit details** (widget GIT flyout): every commit row
-  on the graph toggles an inline details card under it - full hash, author
-  + date, the FULL multi-line message, and per-file `+/-` stats - fetched
+  on the graph toggles an inline details card under it - full hash, author +
+  date, the FULL multi-line message, and per-file `+/-` stats - fetched
   lazily via a new `CommitDetails` work-runspace job and parsed by the
   Pester-covered `ConvertFrom-DevKitGitShow`. Selection survives graph
   refreshes and resets on project switch. Also fixes the earlier
