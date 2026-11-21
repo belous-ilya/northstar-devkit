@@ -263,6 +263,13 @@ the whole app fixes the first batch of what it found.
   DevKit means: any program running as your Windows user can become
   Administrator through it. The measures above are hardening, not a
   boundary.
+- Dependencies. The `zip` library (one critical, one high and one medium
+  advisory) is no longer part of DevKit at all: it came in through an
+  updater feature for zip-wrapped updates, which DevKit never publishes.
+  rustls, vite, vitest and source-map-js are updated past their
+  advisories, and Tauri moves to 2.12. One advisory stays open by
+  necessity: `glib`, which belongs to the Linux build of a dependency and
+  is never compiled into DevKit.
 
 ## [4.7.0] - 2026-09-20
 

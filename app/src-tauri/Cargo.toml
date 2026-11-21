@@ -36,7 +36,12 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
-tauri-plugin-updater = "2"
+# default-features off to drop the "zip" feature (and with it zip, tar and
+# flate2): it only unpacks .zip-wrapped update bundles, and DevKit publishes
+# the signed NSIS setup.exe itself (createUpdaterArtifacts), which the plugin
+# handles without it. The zip crate it pulls is the 4.x line, which carries
+# open advisories and has no patched release the plugin can use.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 # Registered and driven ENTIRELY from Rust (see commands::register_global_hotkey)
@@ -56,9 +61,9 @@ which = "8"
 dunce = "1"
 # Startup elevation gate (elevation.rs): GetTokenInformation(TokenElevation)
 # for the admin check and MessageBoxW for the one-time-setup consent prompt.
-# 0.59 is already in the tree as a transitive dep of tauri, so this adds no
+# 0.61 is already in the tree as a transitive dep of tauri, so this adds no
 # new code to the lockfile beyond the direct edge.
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Registry",
