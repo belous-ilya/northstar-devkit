@@ -2,11 +2,12 @@
 
 All notable changes to Northstar DevKit are documented here.
 
-## [Unreleased]
+## [4.8.0] - 2026-11-21
 
 The lightening pass: the tool catalog is cut to what gets used, the WiFi
 tools are rebuilt to diagnose before they change anything, and a sweep of
-the whole app fixes the first batch of what it found.
+the whole app fixes what it found - including that the app had been
+running at background priority since 4.7.0.
 
 ### Removed
 
