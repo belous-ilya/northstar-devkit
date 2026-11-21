@@ -1015,6 +1015,14 @@ function Invoke-DevKitRpcMethod {
             # badge.
             return @{ elevated = [bool](Test-DevKitAdmin) }
         }
+        'system.repairElevationTask' {
+            # Called once per app start (WidgetApp.tsx). Brings an elevation
+            # task registered by an older version up to the settings the
+            # app needs - see Repair-DevKitElevationTaskSettings. Never
+            # throws: 'absent' (a dev build has no task) and 'failed' are
+            # ordinary answers.
+            return Repair-DevKitElevationTaskSettings
+        }
 
         # ---------- git ----------
         'git.overview' {

@@ -494,3 +494,93 @@ Describe "Git-Cleanup.ps1 names the repository it acts on" {
         $ast.Extent.Text.Contains('it is the repository that CONTAINS it') | Should -BeTrue
     }
 }
+
+Describe "the elevation task's settings" {
+
+    # DevKit is started through the NorthstarDevKit-Admin scheduled task on
+    # every launch. With Task Scheduler's defaults the app and everything it
+    # spawns ran at below-normal CPU, low disk-I/O and low memory priority
+    # (priority 7), and launching DevKit a second time did nothing at all
+    # (MultipleInstances IgnoreNew). Both were measured on throwaway tasks.
+
+    BeforeAll {
+        . (Join-Path $script:RepoRoot 'tools\lib\DevKit-Common.ps1')
+
+        function New-TestTask([int]$Priority, [string]$MultipleInstances) {
+            return [pscustomobject]@{
+                TaskName = 'NorthstarDevKit-Admin'
+                Settings = [pscustomobject]@{ Priority = $Priority; MultipleInstances = $MultipleInstances }
+                Triggers = @('logon')
+            }
+        }
+    }
+
+    It "asks for normal priority and for a second launch to be allowed to start" {
+        $wanted = Get-DevKitElevationTaskSettings
+        $wanted.Priority | Should -Be 4
+        $wanted.MultipleInstances | Should -Be 'Parallel'
+    }
+
+    It "recognizes a current task and both ways of being out of date" {
+        Test-DevKitElevationTaskSettingsCurrent -Priority 4 -MultipleInstances 'Parallel' | Should -BeTrue
+        Test-DevKitElevationTaskSettingsCurrent -Priority 7 -MultipleInstances 'Parallel' | Should -BeFalse
+        Test-DevKitElevationTaskSettingsCurrent -Priority 4 -MultipleInstances 'IgnoreNew' | Should -BeFalse
+        Test-DevKitElevationTaskSettingsCurrent -Priority 7 -MultipleInstances 'IgnoreNew' | Should -BeFalse
+    }
+
+    It "repairs a task registered with the defaults, changing nothing else" {
+        $script:Saved = $null
+        Mock Get-ScheduledTask { return (New-TestTask 7 'IgnoreNew') }
+        Mock Set-ScheduledTask { $script:Saved = $InputObject } -RemoveParameterType InputObject
+        $result = Repair-DevKitElevationTaskSettings
+        $result.status | Should -Be 'repaired'
+        $result.priority | Should -Be 4
+        $result.multipleInstances | Should -Be 'Parallel'
+        $script:Saved.Settings.Priority | Should -Be 4
+        $script:Saved.Settings.MultipleInstances | Should -Be 'Parallel'
+        @($script:Saved.Triggers).Count | Should -Be 1     # the SAME object goes back, trigger and all
+        Should -Invoke Set-ScheduledTask -Times 1 -Exactly
+    }
+
+    It "leaves a current task untouched" {
+        Mock Get-ScheduledTask { return (New-TestTask 4 'Parallel') }
+        Mock Set-ScheduledTask { throw 'a current task must not be written' }
+        (Repair-DevKitElevationTaskSettings).status | Should -Be 'current'
+        Should -Invoke Set-ScheduledTask -Times 0
+    }
+
+    It "answers 'absent' when there is no task (a dev build), without writing" {
+        Mock Get-ScheduledTask { throw 'No MSFT_ScheduledTask objects found' }
+        Mock Set-ScheduledTask { }
+        $result = Repair-DevKitElevationTaskSettings
+        $result.status | Should -Be 'absent'
+        Should -Invoke Set-ScheduledTask -Times 0
+    }
+
+    It "reports 'failed' instead of throwing when the edit is refused (not elevated)" {
+        Mock Get-ScheduledTask { return (New-TestTask 7 'IgnoreNew') }
+        Mock Set-ScheduledTask { throw 'Access is denied.' } -RemoveParameterType InputObject
+        { $script:RepairResult = Repair-DevKitElevationTaskSettings } | Should -Not -Throw
+        $script:RepairResult.status | Should -Be 'failed'
+        $script:RepairResult.message | Should -Match 'denied'
+        # the values reported are the ones still in force
+        $script:RepairResult.priority | Should -Be 7
+    }
+
+    It "registers new tasks with the same settings the repair applies" {
+        $ast = Get-ScriptAst 'tools\system\Set-DevKitAdminMode.ps1'
+        $calls = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-ScheduledTaskSettingsSet' }, $true))
+        $calls.Count | Should -Be 1
+        $calls[0].Extent.Text | Should -Match '-Priority \$taskSettings\.Priority'
+        $calls[0].Extent.Text | Should -Match '-MultipleInstances \$taskSettings\.MultipleInstances'
+        $ast.Extent.Text.Contains('$taskSettings = Get-DevKitElevationTaskSettings') | Should -BeTrue
+    }
+
+    It "is reachable from the app as system.repairElevationTask" {
+        $methods = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'core\RpcMethods.ps1'))
+        $methods | Should -Match "'system\.repairElevationTask' \{"
+        $hook = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'app\src\hooks\useElevationTaskRepair.ts'))
+        $hook.Contains('"system.repairElevationTask"') | Should -BeTrue
+    }
+}

@@ -27,6 +27,10 @@ pub fn run() {
     // tauri-plugin-single-instance can register it - see elevation.rs.
     elevation::enforce_or_redirect();
 
+    // Before run_app spawns anything: children inherit this process's
+    // priority class, and the elevation task can start it below normal.
+    elevation::restore_normal_priority();
+
     run_app();
 }
 

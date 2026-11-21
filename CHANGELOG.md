@@ -117,6 +117,17 @@ the whole app fixes the first batch of what it found.
 
 ### Fixed
 
+- **DevKit and everything it started ran throttled.** Since 4.7.0 every
+  launch goes through a scheduled task, and that task was registered with
+  Windows' defaults for background jobs: below-normal CPU priority, low
+  disk I/O priority and low memory priority, inherited by the sidecar,
+  every tool and the embedded terminal. The task now asks for normal
+  priority. Existing installs are repaired automatically on their first
+  start with this version (in full from the start after that), and the
+  app restores normal CPU and memory priority itself at startup.
+- **Launching DevKit while it was already running did nothing.** The same
+  task ignored a second start. It now lets it through, so the running
+  window comes forward as intended.
 - **The Close-Out confirmation no longer covers the run.** The confirm
   dialog stayed up, blurred and undismissable, until the tool finished,
   hiding the live output it had just started. Same fix for caution tools

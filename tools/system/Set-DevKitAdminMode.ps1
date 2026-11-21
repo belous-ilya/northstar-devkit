@@ -403,7 +403,12 @@ function Register-DevKitAdminMode {
     $userName = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $action = New-ScheduledTaskAction -Execute $Context.Exe
     $principal = New-ScheduledTaskPrincipal -UserId $userName -LogonType Interactive -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+    # Priority and MultipleInstances are NOT left at their defaults - see
+    # Get-DevKitElevationTaskSettings (lib/DevKit-Common.ps1) for what the
+    # defaults did to the whole app.
+    $taskSettings = Get-DevKitElevationTaskSettings
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -Priority $taskSettings.Priority -MultipleInstances $taskSettings.MultipleInstances
     $registerParams = @{
         TaskName    = $Context.TaskName
         Action      = $action

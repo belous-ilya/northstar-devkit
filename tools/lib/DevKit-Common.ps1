@@ -617,6 +617,93 @@ function Test-DevKitAdmin {
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-DevKitElevationTaskSettings {
+    <#
+    .SYNOPSIS
+        The two scheduled-task settings DevKit's elevation task must carry,
+        as @{ Priority; MultipleInstances }. One definition, read by the
+        script that registers the task and by the repair for tasks that
+        were registered before these were set.
+    .DESCRIPTION
+        Both are about the DEFAULTS of New-ScheduledTaskSettingsSet, which
+        suit a background job and are wrong for an application:
+
+        Priority 7 (the default) starts the process at Below Normal CPU
+        priority, LOW disk I/O priority and low memory priority, and every
+        child inherits it - measured on Windows 11 26300: BelowNormal / I/O
+        1 / memory 2, against Normal / 2 / 5 at priority 4. DevKit is
+        launched through this task on every start, so the app, its sidecar,
+        every tool it ran and the embedded terminal were all throttled.
+
+        MultipleInstances IgnoreNew (the default) makes a second
+        "schtasks /run" do nothing at all while the first instance is alive
+        - and DevKit, being a tray application, is always alive. Launching
+        DevKit again therefore did nothing, instead of reaching the
+        single-instance handler that brings the running window forward.
+        Parallel lets the second instance start; it hands over and exits.
+    #>
+    return @{ Priority = 4; MultipleInstances = 'Parallel' }
+}
+
+function Test-DevKitElevationTaskSettingsCurrent {
+    <#
+    .SYNOPSIS
+        Pure: do a task's Priority and MultipleInstances already match
+        Get-DevKitElevationTaskSettings?
+    #>
+    param($Priority, $MultipleInstances)
+    $wanted = Get-DevKitElevationTaskSettings
+    return (("$Priority" -eq "$($wanted.Priority)") -and ("$MultipleInstances" -eq "$($wanted.MultipleInstances)"))
+}
+
+function Repair-DevKitElevationTaskSettings {
+    <#
+    .SYNOPSIS
+        Brings an EXISTING elevation task up to Get-DevKitElevationTaskSettings,
+        in place: its action, principal, triggers and every other setting are
+        left exactly as they are. Idempotent and prompt-free.
+    .DESCRIPTION
+        Changing the registration script only helps tasks registered from
+        now on; an install that updates keeps the task it already has. The
+        app calls this once per start (system.repairElevationTask). It is
+        already elevated then, which editing a highest-privileges task
+        needs; from an unelevated session the edit is refused and this
+        reports 'failed' without throwing.
+    .OUTPUTS
+        @{ status = 'absent' | 'current' | 'repaired' | 'failed'; priority;
+           multipleInstances; message } - the two values as they are AFTER
+        the call.
+    #>
+    param([string]$TaskName = 'NorthstarDevKit-Admin')
+
+    $result = [ordered]@{ status = 'absent'; priority = $null; multipleInstances = $null; message = '' }
+    $task = $null
+    try { $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch { $task = $null }
+    if ($null -eq $task) { return $result }
+
+    $result.priority = [int]$task.Settings.Priority
+    $result.multipleInstances = [string]$task.Settings.MultipleInstances
+    if (Test-DevKitElevationTaskSettingsCurrent -Priority $task.Settings.Priority -MultipleInstances $task.Settings.MultipleInstances) {
+        $result.status = 'current'
+        return $result
+    }
+
+    $wanted = Get-DevKitElevationTaskSettings
+    try {
+        $task.Settings.Priority = $wanted.Priority
+        $task.Settings.MultipleInstances = $wanted.MultipleInstances
+        [void](Set-ScheduledTask -InputObject $task -ErrorAction Stop)
+        $result.status = 'repaired'
+        $result.priority = [int]$wanted.Priority
+        $result.multipleInstances = [string]$wanted.MultipleInstances
+        $result.message = 'Takes effect the next time DevKit starts.'
+    } catch {
+        $result.status = 'failed'
+        $result.message = "$($_.Exception.Message)"
+    }
+    return $result
+}
+
 function Test-DevKitCommand {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)

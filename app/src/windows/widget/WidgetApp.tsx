@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { useSyncAnimationsAttribute } from "../../hooks/useSyncAnimationsAttribute";
 import { useAnimationsPreference } from "../../hooks/useApplyAppearance";
 import { useUpdateCheck } from "../../hooks/useUpdateCheck";
+import { useElevationTaskRepair } from "../../hooks/useElevationTaskRepair";
 import { setPollingSuspended } from "../../hooks/usePollGate";
 import { bootAppearanceHint } from "../../lib/appearance";
 import { useSettingsStore } from "../../stores/useSettingsStore";
@@ -551,6 +552,8 @@ export function WidgetApp() {
   // Updates" button reads/drives useUpdaterStore directly instead of
   // calling this hook again.
   const updateCheck = useUpdateCheck();
+  // Same one-call-site rule as the update check above.
+  useElevationTaskRepair();
   const showUpdateDialog =
     updateCheck.status === "downloading" ||
     updateCheck.status === "installing" ||

@@ -141,6 +141,16 @@ export interface ProcessKillResult {
   Note: string;
 }
 
+// ---------- system.repairElevationTask (Repair-DevKitElevationTaskSettings
+// in tools/lib/DevKit-Common.ps1) ----------
+export interface ElevationTaskRepairResult {
+  /** `absent`: no elevation task (a dev build). `current`: nothing to do. `repaired`: changed, effective next start. */
+  status: "absent" | "current" | "repaired" | "failed";
+  priority: number | null;
+  multipleInstances: string | null;
+  message: string;
+}
+
 // ---------- tool.stop (New-DevKitToolStopResult in core/RpcMethods.ps1,
 // which is also where `message` is worded) ----------
 // `notFound` and `alreadyExited` are ordinary outcomes of the
