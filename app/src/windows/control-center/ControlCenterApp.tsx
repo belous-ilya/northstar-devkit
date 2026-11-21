@@ -467,6 +467,13 @@ export function ControlCenterApp({ embedded = false }: { embedded?: boolean }) {
           <AnimatePresence>
             {selected && (
               <ToolRunDialog
+                // Keyed by tool: without it, picking another tool while a
+                // dialog is open (the palette opens OVER it) swapped props on
+                // the same instance - tool B's title and form on top of tool
+                // A's console, running state, Stop button and typed values.
+                // A new key unmounts A's dialog, whose cleanup already hands
+                // a live run to the background watcher.
+                key={`${selected.module.folder}/${selected.item.script}/${selected.item.key}`}
                 module={selected.module}
                 item={selected.item}
                 embedded={embedded}

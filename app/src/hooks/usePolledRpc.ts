@@ -1,6 +1,8 @@
+import { useEffect, useRef } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { rpcCall } from "../lib/ipc";
 import { useVisibility } from "./useVisibility";
+import { usePollingSuspended } from "./usePollGate";
 
 /**
  * Derived, panel-friendly view of a polled query's health.
@@ -88,7 +90,11 @@ export function usePolledRpc<T>(
   unkeyedParams?: Record<string, unknown>,
   maxBackoffMs?: number,
 ): PolledRpcResult<T> {
-  const visible = useVisibility();
+  // Two reasons to hold still: the window is hidden, or it is on screen with
+  // nothing in it visible (the widget collapsed to its sliver - usePollGate).
+  const windowVisible = useVisibility();
+  const suspended = usePollingSuspended();
+  const visible = windowVisible && !suspended;
   const query = useQuery({
     queryKey: [method, params ?? null],
     queryFn: () => rpcCall<T>(method, params && unkeyedParams ? { ...params, ...unkeyedParams } : params),
@@ -105,6 +111,22 @@ export function usePolledRpc<T>(
     refetchIntervalInBackground: false,
     staleTime: intervalMs / 2,
   });
+
+  // Coming back into view restarts the interval from zero, so without this
+  // a panel shows its pre-hide data - as if live - for one whole interval
+  // (20s for the GitHub lists, 60s for MCP) after the widget is summoned or
+  // slid back out. Refetch once on the hidden -> visible edge when what is
+  // on screen is older than a tick; fresh data is left alone.
+  // (dataUpdatedAt is a dependency only so the comparison is never stale; a
+  // run caused by fresh data finds `becameVisible` false and does nothing.)
+  const { refetch, dataUpdatedAt } = query;
+  const wasVisibleRef = useRef(visible);
+  useEffect(() => {
+    const becameVisible = visible && !wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    if (!becameVisible || !enabled) return;
+    if (dataUpdatedAt > 0 && Date.now() - dataUpdatedAt > intervalMs) void refetch();
+  }, [visible, enabled, intervalMs, refetch, dataUpdatedAt]);
 
   const hasData = query.data !== undefined;
   return {

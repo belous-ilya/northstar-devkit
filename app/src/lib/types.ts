@@ -130,6 +130,17 @@ export interface FreeMemoryResult {
   Note: string;
 }
 
+// ---------- process.kill (Stop-DevKitProcessById in
+// core/DevKit-WidgetCore.ps1) ----------
+// That function NEVER throws: a refused kill (system process), a vanished pid
+// and an access-denied all come back as a resolved { Stopped: false, Note }.
+// A caller that only handles a rejected RPC reports every one of them as
+// success - read Stopped.
+export interface ProcessKillResult {
+  Stopped: boolean;
+  Note: string;
+}
+
 // ---------- catalog.get (verified live) ----------
 export interface ToolPrompt {
   Name: string;

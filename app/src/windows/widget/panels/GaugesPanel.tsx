@@ -18,6 +18,7 @@ import type {
   GpuProcessUsage,
   FreeMemoryResult,
   DriveInfo,
+  ProcessKillResult,
 } from "../../../lib/types";
 import { EASE_STANDARD, motionDuration } from "./motion";
 import "./GaugesPanel.css";
@@ -322,7 +323,10 @@ function ProcessFlyout({ kind, onClose }: { kind: Exclude<GaugeKind, null | "dis
       async () => {
         setActionError(null);
         try {
-          await rpcCall("process.kill", { pid });
+          // process.kill resolves even when nothing was stopped - the
+          // outcome is in the result, not in a rejection.
+          const result = await rpcCall<ProcessKillResult>("process.kill", { pid });
+          if (!result?.Stopped) setActionError(result?.Note || `Could not stop ${name} (pid ${pid}).`);
           refetch();
         } catch (err) {
           setActionError(err instanceof RpcClientError ? err.message : `Could not stop ${name} (pid ${pid}).`);

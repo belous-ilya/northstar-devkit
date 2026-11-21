@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { useSyncAnimationsAttribute } from "../../hooks/useSyncAnimationsAttribute";
 import { useAnimationsPreference } from "../../hooks/useApplyAppearance";
 import { useUpdateCheck } from "../../hooks/useUpdateCheck";
+import { setPollingSuspended } from "../../hooks/usePollGate";
 import { bootAppearanceHint } from "../../lib/appearance";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import type { DevKitPreferences } from "../../lib/types";
@@ -228,6 +229,13 @@ export function WidgetApp() {
   // `WidgetState::collapsed` in commands.rs is the authority, because Rust is
   // what actually parks the OS window off its edge.
   const [collapsed, setCollapsed] = useState(false);
+  // Collapsed to the sliver, every panel is parked off the edge of the
+  // monitor while the OS window stays "visible" - so tell the poll gate, or
+  // the sidecar keeps answering queries nobody can see. See usePollGate.
+  useEffect(() => {
+    setPollingSuspended(collapsed);
+    return () => setPollingSuspended(false);
+  }, [collapsed]);
   /** The Node & Ports Expander's open state - gates its 3s poll (see below). */
   const [nodePortsOpen, setNodePortsOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement | null>(null);

@@ -181,7 +181,7 @@ function SidecarHealthIndicator() {
   );
 }
 
-/** Slow poll: elevation is fixed at process start, so this only exists to land the first answer. */
+/** Retry cadence until the first answer lands; after that the indicator never asks again. */
 const ELEVATION_POLL_MS = 60_000;
 
 /**
@@ -206,10 +206,17 @@ function ElevationIndicator() {
     };
   }, []);
 
+  // Elevation is fixed for the life of the process, so one answer is the
+  // answer: `known` ends the retry loop below for good. Until then a failed
+  // check (sidecar still booting) is simply asked again a minute later.
+  const [known, setKnown] = useState(false);
+
   const check = useCallback(async () => {
     try {
       const value = await isElevated();
-      if (mounted.current) setElevated(value);
+      if (!mounted.current) return;
+      setElevated(value);
+      setKnown(true);
     } catch {
       // A failed check means "don't know" - and showing nothing is the
       // honest rendering of that, so there is no error state here.
@@ -217,11 +224,11 @@ function ElevationIndicator() {
   }, []);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || known) return;
     void check();
     const timer = window.setInterval(() => void check(), ELEVATION_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [visible, check]);
+  }, [visible, known, check]);
 
   if (!elevated) return null;
   return (

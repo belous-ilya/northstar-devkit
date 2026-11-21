@@ -763,3 +763,25 @@ Describe "New-DevKitErrorNote" {
         @($n.Keys).Count | Should -Be 7
     }
 }
+
+Describe "Get-DevKitSystemErrors ordering" {
+
+    It "returns entries newest first even when the log hands them back out of order" {
+        # 40 on purpose: the bug only showed past the size where pwsh 7's sort
+        # stops being stable. `Sort-Object -Property timestamp` cannot see the
+        # KEY of an ordered-dictionary entry, so every entry compared equal
+        # and the list came back shuffled.
+        $base = [DateTime]::new(2026, 11, 1, 0, 0, 0, [DateTimeKind]::Utc)
+        $script:FakeEvents = @(1..40 | ForEach-Object { [PSCustomObject]@{ Stamp = $base.AddMinutes(($_ * 37) % 40).ToString('o') } })
+        Mock Get-WinEvent { $script:FakeEvents }
+        Mock ConvertTo-DevKitSystemErrorEntry { [ordered]@{ timestamp = $EventRecord.Stamp; source = 'system' } }
+
+        $result = @(Get-DevKitSystemErrors -Hours 24 -Max 200)
+
+        $result.Count | Should -Be 40
+        $stamps = @($result | ForEach-Object { [string]$_['timestamp'] })
+        $expected = @($stamps | Sort-Object -Descending)
+        ($stamps -join '|') | Should -Be ($expected -join '|')
+        $stamps[0] | Should -Be ($base.AddMinutes(39).ToString('o'))
+    }
+}
