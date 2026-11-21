@@ -307,8 +307,15 @@ export function QuickActionsPanel() {
         confirmLabel: "Close out",
         danger: true,
       },
-      () =>
-        startWidgetToolRun({
+      // Fired, NOT returned. ConfirmDialogHost keeps the dialog up (busy,
+      // undismissable, over a full-window blurred overlay) until the
+      // action's promise settles, and startWidgetToolRun's promise settles
+      // only when tool.run does - which is when the tool FINISHES. Returning
+      // it parked the dialog on top of the live console for the entire
+      // Close-Out run. The dialog's job ends at "yes"; the tile's spinner,
+      // the header badge and the console report the run from there.
+      () => {
+        void startWidgetToolRun({
           surface: "quick-actions",
           folder: CLOSE_OUT.folder,
           script: CLOSE_OUT.script,
@@ -318,7 +325,8 @@ export function QuickActionsPanel() {
           // The user just came through the caution dialog, which is the only
           // thing that earns -Force. See widgetToolRun's WidgetRunSpec.
           confirmed: true,
-        }),
+        });
+      },
     );
   }
 

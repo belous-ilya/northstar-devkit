@@ -750,7 +750,14 @@ export function ToolRunDialog({ module, item, embedded = false, onClose }: ToolR
           confirmLabel: "Run",
           danger: true,
         },
-        () => executeRun(result.args, target),
+        // Fired, NOT returned: executeRun's promise settles only when
+        // tool.run does (the tool finishing), and ConfirmDialogHost holds
+        // the confirm dialog up until the action's promise settles. Returning
+        // it left the confirm overlay covering this dialog's live console -
+        // and its Stop run button - for the whole of every caution run.
+        () => {
+          void executeRun(result.args, target);
+        },
       );
     } else {
       await executeRun(result.args, target);
