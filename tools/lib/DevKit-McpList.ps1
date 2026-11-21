@@ -287,6 +287,13 @@ function Get-DevKitMcpScopeDiff {
         not from minute to minute. With reuse on, the project listing is
         taken first and a new neutral one only when the kept one is too old
         or the project's server names have changed since it was taken.
+
+        What reuse cannot see, until the kept listing ages out: a server
+        moved between user and project scope under the same name, and a
+        user-scope server added just before switching to a project not
+        looked at since. Either shows under the wrong scope heading for at
+        most this many seconds. Its status is right throughout - that
+        always comes from the fresh project listing.
     .OUTPUTS
         PSCustomObject:
           Success        [bool]
