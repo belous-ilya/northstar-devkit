@@ -584,3 +584,46 @@ Describe "the elevation task's settings" {
         $hook.Contains('"system.repairElevationTask"') | Should -BeTrue
     }
 }
+
+Describe "dev-server tools report a failed start" {
+
+    # Next-DevFresh and Vite-DevFresh end by running the project's dev
+    # server. Neither looked at how that ended, so a server that never came
+    # up (no "dev" script, a config that does not load) finished as exit 0
+    # and the app showed it as a success. These scripts start servers and
+    # cannot be executed here; the property is read from the parsed script.
+
+    BeforeDiscovery {
+        $script:DevServerTools = @(
+            @{ Script = 'tools\nextjs\Next-DevFresh.ps1' },
+            @{ Script = 'tools\vite\Vite-DevFresh.ps1' }
+        )
+    }
+
+    It "<Script> exits with the dev server's own code when it comes back with an error" -ForEach $script:DevServerTools {
+        $ast = Get-ScriptAst $Script
+        $launch = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] -and
+                    $n.InvocationOperator -eq 'Ampersand' -and
+                    $n.Extent.Text -match '^& \$manager\.Command @devArgs' }, $true))
+        $launch.Count | Should -Be 1
+
+        # The first statement after the launch, in the same block.
+        $block = $launch[0].Parent
+        while ($block -and $block -isnot [System.Management.Automation.Language.StatementBlockAst] -and
+            $block -isnot [System.Management.Automation.Language.NamedBlockAst]) { $block = $block.Parent }
+        $after = @($block.Statements | Where-Object { $_.Extent.StartOffset -gt $launch[0].Extent.EndOffset }) | Select-Object -First 1
+        $after | Should -Not -BeNullOrEmpty
+        $after | Should -BeOfType ([System.Management.Automation.Language.IfStatementAst])
+        $after.Extent.Text | Should -Match '\$LASTEXITCODE -ne 0'
+        $after.Extent.Text | Should -Match 'exit \$LASTEXITCODE'
+    }
+
+    It "Next-DevFresh.ps1 does not end as a success when the start throws" {
+        $ast = Get-ScriptAst 'tools\nextjs\Next-DevFresh.ps1'
+        $catches = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true) |
+                Where-Object { $_.Parent.Body.Extent.Text -match '& \$manager\.Command @devArgs' })
+        $catches.Count | Should -Be 1
+        $catches[0].Body.Extent.Text | Should -Match 'exit 1'
+    }
+}

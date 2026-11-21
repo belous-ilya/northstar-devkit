@@ -29,7 +29,7 @@ param(
 )
 
 $CommonModule = Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "lib") "DevKit-Common.ps1"
-if (Test-Path $CommonModule) {
+if (Test-Path -LiteralPath $CommonModule) {
     . $CommonModule
 } else {
     Write-Host "ERROR: Required module not found: $CommonModule" -ForegroundColor Red
@@ -58,15 +58,15 @@ Invoke-DevKitInDirectory -Path $targetPath -ScriptBlock {
     }
 
     $nextPath = Join-Path . ".next"
-    if (Test-Path $nextPath) {
+    if (Test-Path -LiteralPath $nextPath) {
         Write-DevKitStep "Clearing .next cache"
         try {
-            Remove-Item -Path $nextPath -Recurse -Force -ErrorAction Stop
+            Remove-Item -LiteralPath $nextPath -Recurse -Force -ErrorAction Stop
         } catch {
             # Fall through to the Test-Path check below to decide success.
         }
 
-        if (-not (Test-Path $nextPath)) {
+        if (-not (Test-Path -LiteralPath $nextPath)) {
             Write-DevKitDone
         } else {
             Write-DevKitError "Could not fully clear .next cache. Stop the dev server and try again."
@@ -96,7 +96,18 @@ Invoke-DevKitInDirectory -Path $targetPath -ScriptBlock {
         }
 
         & $manager.Command @devArgs
+        # A dev server runs until something stops it. If it comes back by
+        # itself with an error (no "dev" script, the config does not load,
+        # the port is refused), the start FAILED - and this script used to
+        # end with exit code 0 regardless, so the app showed a green
+        # "exit 0" for a server that never came up.
+        if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-DevKitError "The dev server exited with code $LASTEXITCODE."
+            exit $LASTEXITCODE
+        }
     } catch {
         Write-DevKitError $_
+        # Same reason: a start that threw is not a success.
+        exit 1
     }
 }
