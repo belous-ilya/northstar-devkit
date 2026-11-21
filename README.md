@@ -120,8 +120,8 @@ mostly support `-DryRun` — preview first.
   is equivalent to leaving an Administrator terminal open. Fine on your own development
   machine; do not install it on a shared PC or one where you run software you do not
   trust. [SECURITY.md](SECURITY.md) explains why and what DevKit does about it.
-  Uninstalling removes the task (asking for administrator rights once if needed) and
-  its shortcuts.
+  Uninstalling closes DevKit if it is running and removes the task (asking for
+  administrator rights once) and its shortcuts.
 
 ## Requirements
 

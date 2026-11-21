@@ -8,6 +8,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { RailIcon, normalizeIconTheme, type IconTheme, type RailIconName } from "../flyouts/railIcons";
 import { useSettingsStore } from "../../stores/useSettingsStore";
 import { useUpdaterStore } from "../../stores/useUpdaterStore";
+import { updateRowView } from "./updateStatus";
 import { THEMES, getThemePreset, type ThemePreset } from "../../lib/themes";
 import { previewUiScale, useAnimationsEnabled } from "../../hooks/useApplyAppearance";
 import { clampUiScale } from "../../lib/appearance";
@@ -871,7 +872,11 @@ function BehaviorSection({ prefs, update }: SectionProps) {
   // QuickActionsPanel's manual check block; Settings is its new home.
   const updateStatus = useUpdaterStore((s) => s.status);
   const availableUpdate = useUpdaterStore((s) => s.update);
+  const updateProgress = useUpdaterStore((s) => s.progress);
+  const updateError = useUpdaterStore((s) => s.error);
+  const updateFailedStep = useUpdaterStore((s) => s.failedStep);
   const checkNow = useUpdaterStore((s) => s.checkNow);
+  const installAndRestart = useUpdaterStore((s) => s.installAndRestart);
 
   async function setDock(mode: "Left" | "Right" | "Floating") {
     setDockError(null);
@@ -885,26 +890,16 @@ function BehaviorSection({ prefs, update }: SectionProps) {
     }
   }
 
-  function updateStatusLabel(): string | null {
-    switch (updateStatus) {
-      case "checking":
-        return "Checking…";
-      case "up-to-date":
-        return "Up to date";
-      case "available":
-        return availableUpdate ? `v${availableUpdate.version} available` : "Update available";
-      case "downloading":
-        return "Downloading…";
-      case "installing":
-        return "Installing…";
-      case "error":
-        return "Check failed";
-      default:
-        return null;
-    }
-  }
-  const updateBusy = updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing";
-  const updateLabel = updateStatusLabel();
+  // What to show and offer in the Updates row - see updateStatus.ts for the
+  // dead end this replaced (an "available" label with nothing to click in
+  // the Control Center, whose window never renders the install dialog).
+  const updateRow = updateRowView({
+    status: updateStatus,
+    version: availableUpdate ? availableUpdate.version : null,
+    progress: updateProgress,
+    error: updateError,
+    failedStep: updateFailedStep,
+  });
 
   return (
     <div className="settings-section">
@@ -956,21 +951,26 @@ function BehaviorSection({ prefs, update }: SectionProps) {
         <Button
           size="sm"
           variant="subtle"
-          disabled={updateBusy}
+          disabled={updateRow.busy}
           loading={updateStatus === "checking"}
           onClick={() => void checkNow()}
         >
           Check for Updates
         </Button>
-        {updateLabel && (
+        {updateRow.installLabel && (
+          <Button size="sm" variant="primary" onClick={() => void installAndRestart()}>
+            {updateRow.installLabel}
+          </Button>
+        )}
+        {updateRow.label && (
           <span
             className={clsx(
               "settings-update-status",
-              updateStatus === "error" && "settings-update-status--error",
-              updateStatus === "available" && "settings-update-status--available",
+              updateRow.tone === "error" && "settings-update-status--error",
+              updateRow.tone === "available" && "settings-update-status--available",
             )}
           >
-            {updateLabel}
+            {updateRow.label}
           </span>
         )}
       </div>

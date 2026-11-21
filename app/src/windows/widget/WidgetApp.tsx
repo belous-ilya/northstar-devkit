@@ -558,12 +558,15 @@ export function WidgetApp() {
     updateCheck.status === "downloading" ||
     updateCheck.status === "installing" ||
     (updateCheck.status === "available" && !updateCheck.dismissed) ||
-    // An install that failed after the dialog was already showing (status
-    // flips to "error" but `update` is still the one that was being
-    // installed) stays visible with the error surfaced, rather than
-    // vanishing silently - a plain check-time error (`update` still null)
-    // has nothing to show here and never reaches this dialog at all.
-    (updateCheck.status === "error" && updateCheck.update !== null && !updateCheck.dismissed);
+    // An install that failed after the dialog was already showing stays
+    // visible with the error surfaced, rather than vanishing silently. A
+    // failed CHECK has nothing to show here - including a re-check that
+    // fails while an update found earlier is still held, which `update !==
+    // null` alone used to mistake for a failed install.
+    (updateCheck.status === "error" &&
+      updateCheck.failedStep === "install" &&
+      updateCheck.update !== null &&
+      !updateCheck.dismissed);
 
   return (
     // See ControlCenterApp.tsx's own <MotionConfig> for why "never" (not

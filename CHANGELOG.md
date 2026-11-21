@@ -2,6 +2,25 @@
 
 All notable changes to Northstar DevKit are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **An update found from the Control Center's Settings could not be
+  installed.** Settings showed "v4.8.0 available" and offered nothing to
+  click: only the widget draws the install dialog, and each window keeps
+  its own update state. Settings now has an "Install & Restart" button
+  beside that message in either window, shows download progress, and
+  offers a retry after a failed install.
+- A re-check that failed while an earlier update was still known was
+  reported as a failed install.
+- **Uninstalling while DevKit was running did nothing.** DevKit runs as
+  Administrator and the uninstaller does not, so it could not close the
+  app: Windows Settings showed an error, and a silent uninstall failed
+  without a word. The uninstaller now asks for administrator rights once
+  and uses them to close DevKit and remove its scheduled task, then
+  carries on. If DevKit is not running, nothing changes.
+
 ## [4.8.0] - 2026-11-21
 
 The lightening pass: the tool catalog is cut to what gets used, the WiFi

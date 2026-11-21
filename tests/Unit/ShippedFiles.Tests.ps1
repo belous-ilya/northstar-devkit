@@ -428,3 +428,52 @@ Describe "the installer hooks" {
         $script:Hooks.Contains('${AndIf} $EXEDIR != $INSTDIR') | Should -BeFalse
     }
 }
+
+Describe "the uninstaller closes a running DevKit" {
+
+    # DevKit runs elevated; the per-user uninstaller does not. The template's
+    # own "close the running app" step therefore cannot touch it, and an
+    # uninstall while DevKit was running - the normal case for a tray app -
+    # failed (silently, in silent mode). Found on a real install.
+
+    BeforeAll {
+        $script:HooksText = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'app\src-tauri\windows\hooks.nsh'))
+        $start = $script:HooksText.IndexOf('!macro NSIS_HOOK_PREUNINSTALL')
+        $end = $script:HooksText.IndexOf('!macroend', $start)
+        $script:PreUninstall = if ($start -ge 0) { $script:HooksText.Substring($start, $end - $start) } else { '' }
+    }
+
+    It "has a PREUNINSTALL hook, which runs before the template's own running-app check" {
+        $script:PreUninstall | Should -Not -BeNullOrEmpty
+    }
+
+    It "asks for administrator rights only when DevKit is actually running" {
+        $probe = $script:PreUninstall.IndexOf('tasklist.exe" /FI "IMAGENAME eq ${MAINBINARYNAME}.exe"')
+        $branch = $script:PreUninstall.IndexOf('${If} $0 == 0')
+        $elevate = $script:PreUninstall.IndexOf('ExecShellWait "runas"')
+        $probe | Should -BeGreaterThan -1
+        $branch | Should -BeGreaterThan $probe
+        $elevate | Should -BeGreaterThan $branch
+    }
+
+    It "closes DevKit and removes the elevation task in ONE elevated step, so there is one prompt" {
+        @([regex]::Matches($script:PreUninstall, 'ExecShellWait "runas"')).Count | Should -Be 1
+        $line = @($script:PreUninstall -split "`r?`n" | Where-Object { $_ -match 'ExecShellWait "runas"' })[0]
+        $line | Should -Match 'taskkill\.exe" /IM \$\{MAINBINARYNAME\}\.exe /F /T'
+        $line | Should -Match 'schtasks\.exe" /delete /tn "NorthstarDevKit-Admin" /f'
+    }
+
+    It "runs only Windows' own programs with those rights, by full path - nothing from the install folder" {
+        $line = @($script:PreUninstall -split "`r?`n" | Where-Object { $_ -match 'ExecShellWait "runas"' })[0]
+        $line | Should -Not -Match '\$INSTDIR'
+        foreach ($program in [regex]::Matches($line, '"([^"\s]+\.exe)"') | ForEach-Object { $_.Groups[1].Value }) {
+            $program | Should -Match '^\$SYSDIR\\' -Because "$program is started elevated"
+        }
+    }
+
+    It "does not run when the uninstaller is a step of an update" {
+        $guard = $script:PreUninstall.IndexOf('${If} $UpdateMode <> 1')
+        $guard | Should -BeGreaterThan -1
+        $guard | Should -BeLessThan $script:PreUninstall.IndexOf('nsExec::ExecToStack')
+    }
+}

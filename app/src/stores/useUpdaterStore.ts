@@ -8,6 +8,14 @@ interface UpdaterState {
   status: UpdateCheckStatus;
   update: Update | null;
   error: string | null;
+  /**
+   * Which step the current `error` came from; null when there is none.
+   * `status: "error"` alone cannot say: a re-check can fail while an update
+   * found earlier is still held in `update`, and that used to be read as
+   * "the install failed" by everything that inferred it from `update !==
+   * null`.
+   */
+  failedStep: "check" | "install" | null;
   progress: UpdateDownloadProgress | null;
   /**
    * True once the user has dismissed the currently-known update via
@@ -49,6 +57,7 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
   status: "idle",
   update: null,
   error: null,
+  failedStep: null,
   progress: null,
   dismissed: false,
 
@@ -56,12 +65,12 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
     const { status } = get();
     if (status === "checking" || status === "downloading" || status === "installing") return;
 
-    set({ status: "checking", error: null, dismissed: false });
+    set({ status: "checking", error: null, failedStep: null, dismissed: false });
     try {
       const update = await checkForUpdate();
       set(update ? { status: "available", update } : { status: "up-to-date", update: null });
     } catch (err) {
-      set({ status: "error", error: errorMessage(err) });
+      set({ status: "error", error: errorMessage(err), failedStep: "check" });
     } finally {
       // Record the attempt regardless of outcome, so a persistent offline
       // state or a broken feed doesn't turn into a check running on every
@@ -74,14 +83,14 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
     const { update, status } = get();
     if (!update || status === "downloading" || status === "installing") return;
 
-    set({ status: "downloading", progress: { downloaded: 0, total: null }, error: null });
+    set({ status: "downloading", progress: { downloaded: 0, total: null }, error: null, failedStep: null });
     try {
       await installAndRelaunch(update, (progress) => set({ progress }));
       // Reached only if relaunch() resolved without the process actually
       // exiting (unusual) - otherwise the app is gone before this runs.
       set({ status: "installing" });
     } catch (err) {
-      set({ status: "error", error: errorMessage(err) });
+      set({ status: "error", error: errorMessage(err), failedStep: "install" });
     }
   },
 

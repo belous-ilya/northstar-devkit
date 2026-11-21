@@ -44,6 +44,7 @@ export function useUpdateCheck() {
   const status = useUpdaterStore((s) => s.status);
   const update = useUpdaterStore((s) => s.update);
   const error = useUpdaterStore((s) => s.error);
+  const failedStep = useUpdaterStore((s) => s.failedStep);
   const progress = useUpdaterStore((s) => s.progress);
   const dismissed = useUpdaterStore((s) => s.dismissed);
   const checkNow = useUpdaterStore((s) => s.checkNow);
@@ -72,5 +73,5 @@ export function useUpdateCheck() {
     return () => window.clearInterval(timer);
   }, [settingsLoaded, checkNow]);
 
-  return { status, update, error, progress, dismissed, checkNow, installAndRestart, dismiss };
+  return { status, update, error, failedStep, progress, dismissed, checkNow, installAndRestart, dismiss };
 }
