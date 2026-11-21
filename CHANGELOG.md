@@ -2,7 +2,7 @@
 
 All notable changes to Northstar DevKit are documented here.
 
-## [Unreleased]
+## [4.9.0] - 2026-11-21
 
 The rest of the 4.8.0 sweep: the lower-severity findings, again with the
 rule that nothing may make the app heavier.
