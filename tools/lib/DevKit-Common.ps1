@@ -1103,6 +1103,142 @@ function Invoke-DevKitPackageCacheClean {
 
 # ==================== PORT / PROCESS HELPERS ====================
 
+function Get-DevKitNeverKillProcessNames {
+    <#
+    .SYNOPSIS
+        The process names no DevKit tool may ever stop (lowercase, no .exe).
+    .DESCRIPTION
+        Processes Windows misbehaves or dies without. DevKit always runs
+        elevated, so nothing else stands between a kill tool and these:
+        stopping the svchost that owns port 135 (the RPC endpoint mapper),
+        or csrss/wininit/lsass, makes Windows force a shutdown. One list for
+        every tool that stops processes - Close-OutSession.ps1 reads it too,
+        so the tools cannot drift apart on what is untouchable.
+
+        Returned from a function rather than held in a $script: variable so
+        it resolves the same way however this file was loaded (dot-sourced
+        by a tool, imported through DevKit.Core, skipped by the load guard).
+    #>
+    return @(
+        'system', 'idle', 'registry', 'secure system', 'memory compression',
+        'smss', 'csrss', 'wininit', 'winlogon', 'services', 'svchost', 'lsass',
+        'lsaiso', 'fontdrvhost', 'dwm', 'werfault', 'sihost', 'taskhostw',
+        'runtimebroker', 'msmpeng', 'nissrv', 'searchindexer', 'spoolsv'
+    )
+}
+
+function Get-DevKitProcessAncestry {
+    <#
+    .SYNOPSIS
+        A process's pid plus every ancestor pid above it.
+    .DESCRIPTION
+        Pure - it reads only $Processes - so the walk is unit-testable
+        against a synthetic process table.
+
+        Win32_Process.ParentProcessId is a number RECORDED at creation, so a
+        recycled pid can make a stranger look like an ancestor. That is the
+        harmless direction here: the only thing this list does is EXCLUDE
+        pids from being killed, so a false positive costs one un-stopped
+        process while a false negative could kill the app that launched us.
+        The visited set makes a pid-reuse cycle (A parents B, B parents A)
+        terminate instead of spinning.
+    .PARAMETER ProcessId
+        The pid to walk up from (included in the result).
+    .PARAMETER Processes
+        Rows exposing ProcessId and ParentProcessId, e.g. from
+        Get-CimInstance Win32_Process. Empty is valid: the result is then
+        just $ProcessId itself.
+    .OUTPUTS
+        [int[]] - self first, then each ancestor, nearest first.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [object[]]$Processes = @()
+    )
+
+    $byId = @{}
+    foreach ($row in @($Processes)) {
+        if ($null -eq $row) { continue }
+        $rowId = 0
+        if (-not [int]::TryParse([string]$row.ProcessId, [ref]$rowId)) { continue }
+        if (-not $byId.ContainsKey($rowId)) { $byId[$rowId] = $row }
+    }
+
+    $chain = @()
+    $seen = @{}
+    $current = $ProcessId
+    while ($current -gt 0 -and -not $seen.ContainsKey($current)) {
+        $chain += $current
+        $seen[$current] = $true
+        if (-not $byId.ContainsKey($current)) { break }
+        $parent = 0
+        if (-not [int]::TryParse([string]$byId[$current].ParentProcessId, [ref]$parent)) { break }
+        $current = $parent
+    }
+    return , @($chain)
+}
+
+function Get-DevKitOwnProcessTreeIds {
+    <#
+    .SYNOPSIS
+        This process's pid plus every ancestor's - the pids a kill tool must
+        never stop, because they are the tool itself, the sidecar that
+        spawned it, the DevKit app above that, or the terminal the user ran
+        it from.
+    .DESCRIPTION
+        One Win32_Process snapshot (two properties). If the snapshot cannot
+        be taken the result degrades to just $PID rather than failing the
+        tool - the name-based refusals in Get-DevKitKillRefusalReason still
+        apply.
+    #>
+    try {
+        $snapshot = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction Stop)
+        $chain = Get-DevKitProcessAncestry -ProcessId $PID -Processes $snapshot
+        return , @($chain)
+    } catch {
+        return , @($PID)
+    }
+}
+
+function Get-DevKitKillRefusalReason {
+    <#
+    .SYNOPSIS
+        Why a process must NOT be stopped, or $null when stopping it is fine.
+    .DESCRIPTION
+        The floor every kill path in tools/ shares. Reserved pids and
+        DevKit's own tree are refused before any name rule. An empty or
+        unknown name is allowed: these rules exist to stop a tool from
+        killing Windows or itself, not to second-guess a target the user
+        picked - a tool that wants a stricter rule (Close-OutSession only
+        stops recognized dev runtimes) layers it on top.
+    .PARAMETER ProcessId
+        The candidate's pid.
+    .PARAMETER Name
+        The candidate's process name, with or without a .exe suffix.
+    .PARAMETER ProtectedPids
+        Pids that must survive - normally Get-DevKitOwnProcessTreeIds.
+    .OUTPUTS
+        [string] reason, or $null when the process may be stopped.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [AllowEmptyString()][AllowNull()][string]$Name = '',
+        [int[]]$ProtectedPids = @()
+    )
+
+    if ($ProcessId -le 0 -or $ProcessId -eq 4) { return 'reserved system process' }
+    if (@($ProtectedPids) -contains $ProcessId) { return "DevKit's own process tree" }
+
+    $normalized = ([string]$Name).Trim().ToLowerInvariant()
+    if ($normalized.EndsWith('.exe')) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 4)
+    }
+    if ($normalized -and ((Get-DevKitNeverKillProcessNames) -contains $normalized)) {
+        return "protected system process '$normalized'"
+    }
+    return $null
+}
+
 function Get-DevKitProcessByPort {
     param(
         [Parameter(Mandatory = $true)]
@@ -1110,12 +1246,15 @@ function Get-DevKitProcessByPort {
         [int]$Port
     )
 
-    # Prefer the real listener: a stale non-Listen row (e.g. TIME_WAIT with
-    # OwningProcess 0) can sort ahead of it in the raw Get-NetTCPConnection
-    # output and would otherwise win the -First 1 pick, reporting PID 0.
+    # ONLY a real listener counts as "the process on this port". For about
+    # two minutes after a dev server stops, closed-connection leftovers
+    # (TIME_WAIT rows with OwningProcess 0) linger on its port; this used to
+    # fall back to the first row of any state, so every port tool announced
+    # "PID 0 (Idle)" as the owner of a port nothing was listening on, and
+    # Kill-Port answered "Refusing to target PID 0" where the truth was
+    # "nothing is listening".
     $connections = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue)
     $connection = $connections | Where-Object { $_.State -eq 'Listen' -and $_.OwningProcess -ne 0 } | Select-Object -First 1
-    if (-not $connection) { $connection = $connections | Select-Object -First 1 }
     if (-not $connection) {
         return $null
     }

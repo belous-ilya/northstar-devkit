@@ -29,10 +29,25 @@ if (Test-Path $CommonModule) {
 
 Write-DevKitHeader "Kill All Node Processes"
 
-$nodeProcesses = Get-Process -Name "node" -ErrorAction SilentlyContinue
+$allNodeProcesses = @(Get-Process -Name "node" -ErrorAction SilentlyContinue)
 
-if (-not $nodeProcesses) {
-    Write-Host "  OK: No node processes running.`n" -ForegroundColor Green
+# "All node" never includes a node.exe this run descends from (a dev harness
+# such as `pnpm tauri dev` that launched DevKit itself): stopping an ancestor
+# kills this script mid-loop and the app with it. Same refusal rules as
+# Kill-Port and Close-OutSession.
+$protectedPids = Get-DevKitOwnProcessTreeIds
+$nodeProcesses = @()
+foreach ($candidate in $allNodeProcesses) {
+    $refusal = Get-DevKitKillRefusalReason -ProcessId $candidate.Id -Name $candidate.ProcessName -ProtectedPids $protectedPids
+    if ($refusal) {
+        Write-Host "  Leaving PID $($candidate.Id) alone: $refusal." -ForegroundColor Gray
+    } else {
+        $nodeProcesses += $candidate
+    }
+}
+
+if ($nodeProcesses.Count -eq 0) {
+    Write-Host "  OK: No node processes to stop.`n" -ForegroundColor Green
     exit 0
 }
 
@@ -80,10 +95,12 @@ foreach ($proc in $nodeProcesses) {
     }
 
     try {
-        Stop-Process -Id $proc.Id -Force
+        # -ErrorAction Stop: without it a failed kill is non-terminating,
+        # this catch never runs, and the failure is counted as a kill.
+        Stop-Process -Id $proc.Id -Force -ErrorAction Stop
         $killed++
     } catch {
-        Write-Host "  ERROR: Failed to kill PID $($proc.Id): $_" -ForegroundColor Red
+        Write-Host "  ERROR: Failed to kill PID $($proc.Id): $($_.Exception.Message)" -ForegroundColor Red
         $failed++
     }
 }

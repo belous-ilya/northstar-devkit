@@ -138,12 +138,9 @@ $script:DevKitCloseOutDevRuntimeNames = @(
 # Belt-and-braces on top of the allowlist: even with -KillAnyPortOwner these
 # are never stopped. Same list Get-DevKitProcessClassification calls 'System'
 # in core/DevKit-WidgetCore.ps1 - Windows misbehaves or dies without them.
-$script:DevKitCloseOutNeverKillNames = @(
-    'system', 'idle', 'registry', 'secure system', 'memory compression',
-    'smss', 'csrss', 'wininit', 'winlogon', 'services', 'svchost', 'lsass',
-    'lsaiso', 'fontdrvhost', 'dwm', 'werfault', 'sihost', 'taskhostw',
-    'runtimebroker', 'msmpeng', 'nissrv', 'searchindexer', 'spoolsv'
-)
+# The list itself lives in tools/lib/DevKit-Common.ps1 so Kill-Port,
+# Kill-AllNode and Scan-Ports refuse exactly the same processes.
+$script:DevKitCloseOutNeverKillNames = @(Get-DevKitNeverKillProcessNames)
 
 # ==================== PURE HELPERS (unit-tested) ====================
 
@@ -217,25 +214,12 @@ function Get-DevKitCloseOutAncestry {
         [object[]]$Processes = @()
     )
 
-    $byId = @{}
-    foreach ($row in @($Processes)) {
-        if ($null -eq $row) { continue }
-        $rowId = 0
-        if (-not [int]::TryParse([string]$row.ProcessId, [ref]$rowId)) { continue }
-        if (-not $byId.ContainsKey($rowId)) { $byId[$rowId] = $row }
-    }
-
-    $chain = @()
-    $seen = @{}
-    $current = $ProcessId
-    while ($current -gt 0 -and -not $seen.ContainsKey($current)) {
-        $chain += $current
-        $seen[$current] = $true
-        if (-not $byId.ContainsKey($current)) { break }
-        $parent = 0
-        if (-not [int]::TryParse([string]$byId[$current].ParentProcessId, [ref]$parent)) { break }
-        $current = $parent
-    }
+    # One implementation for every kill tool - see Get-DevKitProcessAncestry
+    # in tools/lib/DevKit-Common.ps1.
+    # Assign, then re-emit behind a unary comma: the callee hands back the
+    # array as ONE object, and a bare `return (call)` would unroll a
+    # one-element chain into a scalar on the way out of this function.
+    $chain = Get-DevKitProcessAncestry -ProcessId $ProcessId -Processes $Processes
     return , @($chain)
 }
 

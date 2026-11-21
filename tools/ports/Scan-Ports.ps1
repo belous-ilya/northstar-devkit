@@ -68,7 +68,15 @@ if ($Kill) {
     }
 
     $failed = 0
+    $protectedPids = Get-DevKitOwnProcessTreeIds
     foreach ($proc in $uniqueProcesses) {
+        # Same floor as Kill-Port: never Windows' own processes, never the
+        # tree this script runs under. Refused before asking.
+        $refusal = Get-DevKitKillRefusalReason -ProcessId ([int]$proc.PID) -Name $proc.Name -ProtectedPids $protectedPids
+        if ($refusal) {
+            Write-Host "    Leaving PID $($proc.PID) ($($proc.Name)) on port $($proc.Port) alone: $refusal." -ForegroundColor Gray
+            continue
+        }
         $confirm = Read-Host "  Kill PID $($proc.PID) ($($proc.Name)) on port $($proc.Port)? (y/n)"
         if ($confirm -eq 'y') {
             # TOCTOU guard: the confirmation prompt can take an arbitrary
@@ -87,10 +95,10 @@ if ($Kill) {
             }
 
             try {
-                Stop-Process -Id $proc.PID -Force
+                Stop-Process -Id $proc.PID -Force -ErrorAction Stop
                 Write-Host "    DONE: Killed PID $($proc.PID)" -ForegroundColor Green
             } catch {
-                Write-Host "    ERROR: Failed to kill PID $($proc.PID): $_" -ForegroundColor Red
+                Write-Host "    ERROR: Failed to kill PID $($proc.PID): $($_.Exception.Message)" -ForegroundColor Red
                 $failed++
             }
         } else {
