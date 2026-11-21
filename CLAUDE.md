@@ -23,7 +23,7 @@ enforced gate, matching `.github/workflows/ci.yml`.
 
 ```powershell
 # NOTE: cargo is not on PATH in a fresh shell here:
-#   $env:PATH = "$env:USERPROFILE\.cargoin;" + $env:PATH
+#   $env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
 
 cargo check --workspace
 cargo clippy --workspace --all-targets
