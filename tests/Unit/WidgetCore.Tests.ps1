@@ -1119,9 +1119,10 @@ Describe "background git calls do not run programs named in the project's git co
 
     It "forces both settings off for every git call the app makes on its own" {
         $joined = $script:DevKitGitBackgroundArgs -join ' '
-        foreach ($setting in 'core.fsmonitor=false', 'core.hooksPath=/dev/null', 'protocol.ext.allow=never', 'remote.origin.uploadpack=git-upload-pack') {
+        foreach ($setting in 'core.fsmonitor=false', 'protocol.ext.allow=never', 'protocol.git.allow=never', 'remote.origin.uploadpack=git-upload-pack') {
             $joined | Should -Match ([regex]::Escape("-c $setting"))
         }
+        $joined | Should -Match ([regex]::Escape("-c core.hooksPath=$($script:DevKitGitNoHooksPath)"))
         # every element is a '-c' followed by one setting: nothing else rides along
         ($script:DevKitGitBackgroundArgs.Count % 2) | Should -Be 0
         for ($i = 0; $i -lt $script:DevKitGitBackgroundArgs.Count; $i += 2) { $script:DevKitGitBackgroundArgs[$i] | Should -Be '-c' }
@@ -1139,6 +1140,21 @@ Describe "background git calls do not run programs named in the project's git co
                 $spawn.CommandElements[1].Extent.Text | Should -Be '@script:DevKitGitBackgroundArgs' -Because "a git call in $name must carry the override first"
             }
         }
+    }
+
+    It "points hooks at a folder only an administrator could create - not at '/dev/null'" {
+        # Started from PowerShell, Git for Windows reads '/dev/null' as
+        # '\dev\null' on the repository's drive: a folder any user can create
+        # at a drive root, which would have moved hooks to one place every
+        # repository on that drive shares instead of disabling them.
+        $script:DevKitGitNoHooksPath | Should -Not -Match '^/'
+        $expectedRoot = ($env:SystemRoot -replace '\\', '/') + '/System32/'
+        $script:DevKitGitNoHooksPath.StartsWith($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+        Test-Path -LiteralPath ($script:DevKitGitNoHooksPath -replace '/', '\') | Should -BeFalse
+        # ...and that is where git itself says it will look.
+        $where = (& $script:GitExe.Source @script:DevKitGitBackgroundArgs -C $script:HookRepo rev-parse --git-path hooks/reference-transaction | Out-String).Trim()
+        $where.StartsWith($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeTrue
+        $where | Should -Not -Match '^/dev/'
     }
 
     It "never runs a diff driver, text converter or signature checker the repository configures" {

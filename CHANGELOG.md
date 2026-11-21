@@ -256,8 +256,8 @@ the whole app fixes the first batch of what it found.
   in a project's `.git/config`, or a script dropped into `.git/hooks`,
   was executed by DevKit's own polling with nobody clicking anything
   (both reproduced). Those calls now run with hooks, the file-monitor
-  hook, `ext::` remotes, a custom upload-pack program, external diff and
-  signature programs switched off. A custom `core.sshCommand` and
+  hook, `ext::` and `git://` remotes, a custom upload-pack program,
+  external diff and signature programs switched off. A custom `core.sshCommand` and
   `.gitattributes` filter drivers (git-lfs) are still honoured, because
   switching them off breaks ordinary setups.
 - Uninstalling left the scheduled task that starts DevKit as

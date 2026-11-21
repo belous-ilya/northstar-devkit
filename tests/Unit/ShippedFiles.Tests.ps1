@@ -288,6 +288,25 @@ Describe "Remove-StaleInstallFiles.ps1" {
         Remove-Item -LiteralPath $outside2
     }
 
+    It "refuses another spelling of a shipped file (trailing dot, trailing space, 8.3 name, wildcard)" {
+        # Windows strips a trailing dot or space and resolves short names, so
+        # these would name shipped files while missing the shipped list.
+        # (A space at the very end of a LINE is not in this list: list lines
+        # are trimmed, so that is the canonical spelling and is caught by the
+        # shipped-list check instead.)
+        foreach ($alias in 'core\DevKit.Core.psm1.', 'tools\lib.\DevKit-Common.ps1', 'tools\lib \DevKit-Common.ps1',
+            'core\DEVKIT~1.PSM', 'tools\lib\DEVKIT~1.PS1', 'core\*.psm1', 'core\DevKit.Core.psm?') {
+            Test-DevKitManagedRelativePath $alias | Should -BeFalse -Because "'$alias' is not the canonical spelling of anything"
+        }
+        Test-DevKitManagedRelativePath 'tools\maintenance\_module.psd1' | Should -BeTrue
+
+        $root = New-FakeInstall
+        $before = Get-AllFiles $root
+        [System.IO.File]::AppendAllText((Join-Path $root 'core\RemovedFiles.txt'), "core\DevKit.Core.psm1.`r`ntools\lib.\DevKit-Common.ps1`r`ncore\DEVKIT~1.PSM`r`n")
+        (Invoke-DevKitStaleInstallCleanup -Root $root).Stale | Should -Be 0
+        (Get-AllFiles $root) | Should -Be $before
+    }
+
     It "does not delete through a link: a removed path that lies behind a junction is left alone" {
         $root = New-FakeInstall
         $outside = Join-Path $TestDrive "outside-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
@@ -396,16 +415,16 @@ Describe "the installer hooks" {
         $elevated | Should -BeGreaterThan $query
     }
 
-    It "keeps the elevation task when the uninstaller runs as a step of installing a newer version" {
-        # The installer runs the previous uninstaller in place
-        # ('uninstall.exe _?=<dir>', so $EXEDIR is the install folder); a real
-        # uninstall runs from a temporary copy. Without this, a manual
-        # upgrade raised a UAC prompt mid-install and threw away the task,
-        # its logon trigger and the setup marker.
-        $guard = $script:Hooks.IndexOf('${AndIf} $EXEDIR != $INSTDIR')
+    It "cleans up on every uninstall except an /UPDATE run - including one run in place" {
+        # An in-place run ('uninstall.exe _?=<dir>') is what the installer
+        # does for a manual uninstall-first upgrade, but ALSO what its
+        # maintenance page's "Uninstall" and a scripted silent uninstall do.
+        # Skipping the cleanup for all of them left the elevation task
+        # behind after real uninstalls.
+        $guard = $script:Hooks.IndexOf('${If} $UpdateMode <> 1')
         $delete = $script:Hooks.IndexOf('/delete /tn "NorthstarDevKit-Admin"')
         $guard | Should -BeGreaterThan -1
         $delete | Should -BeGreaterThan $guard
-        $script:Hooks.IndexOf('${If} $UpdateMode <> 1') | Should -BeLessThan $guard
+        $script:Hooks.Contains('${AndIf} $EXEDIR != $INSTDIR') | Should -BeFalse
     }
 }

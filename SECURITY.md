@@ -49,12 +49,13 @@ What DevKit does do:
 
 - The git calls it makes on its own, with nobody asking (the Git panel's
   background refresh and fetch), run with the project's git hooks, file-monitor
-  hook, `ext::` remotes, custom upload-pack program, external diff and
-  signature-checking programs switched off. Two things a project can still make
-  those calls run are left on, because switching them off breaks ordinary
-  setups: a custom `core.sshCommand`, and filter drivers named in
-  `.gitattributes` (git-lfs is one). Git actions you click, and every tool, obey
-  the project's configuration in full.
+  hook, `ext::` and `git://` remotes, custom upload-pack program, external diff
+  and signature-checking programs switched off. Known exceptions, left on
+  because switching them off breaks ordinary setups: a custom `core.sshCommand`,
+  and filter drivers named in `.gitattributes` (git-lfs is one). Git has many
+  settings; treat this list as what has been closed, not as proof nothing else
+  exists. Git actions you click, and every tool, obey the project's
+  configuration in full.
 - `tool.run` only executes scripts inside DevKit's own `tools` folder.
 - Uninstalling removes the scheduled task (asking for administrator rights once
   if needed), so no elevated launcher is left pointing at an empty folder.

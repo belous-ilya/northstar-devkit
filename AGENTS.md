@@ -821,8 +821,11 @@ means it'll work from the other.
   best-effort removes the mandatory-elevation scheduled task, the
   'DevKit (Admin)' shortcuts, the hidden launcher, and the admin-mode
   state marker (retrying the task removal elevated when the plain delete
-  is refused) - but only for a real uninstall, not when the installer
-  runs the previous uninstaller in place as a step of a manual upgrade.
+  is refused). It runs on every uninstall except an `/UPDATE` run -
+  including the in-place run the installer makes for a manual
+  "uninstall before installing" upgrade, which cannot be told apart from
+  a real in-place uninstall; that upgrade path therefore costs one UAC
+  prompt and a repeat of one-time setup.
 - **CI** (`.github/workflows/release.yml`): pushing a `vX.Y.Z` tag builds
   and signs the app on `windows-latest` and **publishes** the GitHub
   Release. It is not a draft (`releaseDraft: false` since v4.2.0): the

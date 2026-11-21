@@ -50,22 +50,20 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
-  ; Only for a REAL uninstall. When someone installs a newer version by hand
-  ; and leaves "uninstall before installing" selected, the installer runs
-  ; this uninstaller as a step of the upgrade - and the app is about to be
-  ; installed again. Cleaning up then would raise a UAC prompt in the middle
-  ; of an install, and throw away the elevation task, the logon trigger
-  ; Start-with-Windows may have been moved onto, and the setup marker, so
-  ; the next launch would go through one-time setup all over again.
+  ; Not when the uninstaller is run with /UPDATE (the template skips its own
+  ; shortcut and app-data removal then, for the same reason: the app is
+  ; being installed again).
   ;
-  ; The two cases are told apart by where this exe runs from. The installer
-  ; starts the previous uninstaller in place ('uninstall.exe ... _?=<dir>'),
-  ; so $EXEDIR is the install folder; a real uninstall, from Settings or the
-  ; Start menu, runs from the temporary copy NSIS makes of itself. $UpdateMode
-  ; (/UPDATE) is checked too, though the template does not currently run the
-  ; uninstaller in that mode at all.
+  ; Every OTHER run cleans up, including the one the installer makes itself
+  ; when a newer version is installed by hand with "uninstall before
+  ; installing" left selected. That run is indistinguishable, from in here,
+  ; from choosing "Uninstall" on the same installer's maintenance page or
+  ; from a scripted 'uninstall.exe /S _?=<dir>' - both of which really do
+  ; remove DevKit - so it is treated as what it might be. The price is paid
+  ; only in that hand-upgrade case: one UAC prompt for schtasks during the
+  ; install, and the next launch runs one-time setup again. An elevation
+  ; task left behind after a real uninstall is the worse mistake.
   ${If} $UpdateMode <> 1
-  ${AndIf} $EXEDIR != $INSTDIR
     ; Remove the elevation scheduled task. It MUST go: it starts whatever
     ; exe sits at the old install path as Administrator, with no prompt, for
     ; anyone who can run 'schtasks /run' as this user - and after an

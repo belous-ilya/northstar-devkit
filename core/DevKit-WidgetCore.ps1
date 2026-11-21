@@ -1887,13 +1887,18 @@ $script:DevKitGitAutoFetchLastAttempt = @{}
 #                             any index refresh. Proven: a scratch
 #                             repository with this set made the overview
 #                             poll execute the program.
-#   core.hooksPath=/dev/null  .git/hooks/reference-transaction (and
+#   core.hooksPath=<nowhere>  .git/hooks/reference-transaction (and
 #                             pre-auto-gc) run on a fetch that moves a ref,
 #                             with no config at all. Pointing the hooks
-#                             path at nothing disables every hook for
-#                             these calls.
+#                             path at a folder that does not exist disables
+#                             every hook for these calls - see
+#                             $script:DevKitGitNoHooksPath for why that
+#                             folder is where it is.
 #   protocol.ext.allow=never  remote.origin.url = ext::<command> is run by
 #                             'git fetch'.
+#   protocol.git.allow=never  core.gitProxy is run by 'git fetch' for a
+#                             git:// remote (an unauthenticated protocol
+#                             nothing should still be fetching over).
 #   remote.origin.uploadpack  a program path here is run by 'git fetch' for
 #                             a local-path remote; forced to git's own.
 #
@@ -1912,10 +1917,26 @@ $script:DevKitGitAutoFetchLastAttempt = @{}
 # git actions the user clicks (fetch, pull, push) and every tool the app
 # runs honour the project's configuration and scripts in full - that is
 # what they are for. See SECURITY.md.
+
+# Where the background calls are told their hooks live: a folder that does
+# not exist AND that only an administrator could create.
+#
+# NOT '/dev/null', the usual trick. Started from PowerShell, Git for Windows
+# takes that literally as '\dev\null' on the repository's drive - a folder
+# any user can create at a drive root. That would not have disabled hooks,
+# it would have MOVED them to one place every repository on the drive
+# shares: plant D:\dev\null\reference-transaction once and the next
+# background fetch in any project on D: runs it elevated. (From Git Bash
+# the same argument is rewritten to 'nul' before git sees it, which is why
+# it looks safe when tried by hand there.)
+$devKitSystemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { 'C:\Windows' }
+$script:DevKitGitNoHooksPath = ($devKitSystemRoot -replace '\\', '/') + '/System32/devkit-no-hooks'
+
 $script:DevKitGitBackgroundArgs = @(
     '-c', 'core.fsmonitor=false',
-    '-c', 'core.hooksPath=/dev/null',
+    '-c', "core.hooksPath=$($script:DevKitGitNoHooksPath)",
     '-c', 'protocol.ext.allow=never',
+    '-c', 'protocol.git.allow=never',
     '-c', 'remote.origin.uploadpack=git-upload-pack'
 )
 

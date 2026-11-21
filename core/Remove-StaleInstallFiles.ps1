@@ -111,17 +111,29 @@ function Test-DevKitManagedRelativePath {
     <#
     .SYNOPSIS
         Pure: is this list entry a plain relative path inside core\ or
-        tools\? No drive, no leading separator, no '.' or '..' segment.
+        tools\? No drive, no leading separator, no '.' or '..' segment -
+        and no spelling that Windows would quietly turn into a DIFFERENT
+        name than the one written.
+    .DESCRIPTION
+        The "never delete a shipped file" rule compares spellings, so every
+        entry has to be the one canonical spelling of its file. Windows
+        strips a trailing dot or space from a path segment, and resolves
+        8.3 short names: 'core\DevKit.Core.psm1.' and 'core\DEVKIT~1.PSM'
+        are the shipped module under names the shipped list does not hold.
+        A real DevKit path never ends a segment in '.' or ' ' and never
+        contains '~' or a wildcard, so those are simply refused.
     #>
     param([string]$RelativePath)
 
     $key = ConvertTo-DevKitInstallKey $RelativePath
     if (-not $key -or $key.Contains(':')) { return $false }
+    if ($key.IndexOfAny([char[]]'~*?<>|"') -ge 0) { return $false }
     $segments = $key.Split('\')
     if ($segments.Length -lt 2) { return $false }
     if ($script:ManagedFolders -notcontains $segments[0]) { return $false }
     foreach ($segment in $segments) {
         if (-not $segment -or $segment -eq '.' -or $segment -eq '..') { return $false }
+        if ($segment.EndsWith('.') -or $segment.EndsWith(' ') -or $segment.StartsWith(' ')) { return $false }
     }
     return $true
 }
@@ -220,6 +232,12 @@ function Invoke-DevKitStaleInstallCleanup {
         @{ Stale = <count found>; Removed; Failed; FoldersRemoved; Files = <the stale paths> }
     #>
     param([Parameter(Mandatory = $true)][string]$Root, [switch]$DryRun)
+
+    # One absolute spelling for everything below: the lists are read through
+    # PowerShell (its location) and files are deleted through .NET (the
+    # process directory), and a relative root would mean two different
+    # folders to those two.
+    $Root = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Root)
 
     $result = @{ Stale = 0; Removed = 0; Failed = 0; FoldersRemoved = 0; Files = @() }
     $stale = Get-DevKitStaleInstallFiles -Root $Root
