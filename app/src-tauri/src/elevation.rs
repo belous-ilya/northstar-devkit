@@ -513,17 +513,25 @@ mod tests {
     }
 
     #[test]
-    fn restoring_priority_leaves_a_normal_process_normal() {
+    fn restoring_priority_never_leaves_the_process_throttled() {
         use windows_sys::Win32::System::Threading::{GetPriorityClass, NORMAL_PRIORITY_CLASS};
-        // The test runner is started at normal priority; the call must be a
-        // no-op there and must never lower or raise it.
+        // Where this test starts depends on who started it. A developer's
+        // shell runs it at normal priority, where the call must change
+        // nothing. GitHub's Windows runners start their jobs BELOW normal -
+        // the very situation the function exists for - and there it must end
+        // at normal. (The first version of this test assumed "always
+        // normal" and failed in CI by catching the function doing its job.)
         let before = unsafe { GetPriorityClass(GetCurrentProcess()) };
         restore_normal_priority();
         let after = unsafe { GetPriorityClass(GetCurrentProcess()) };
-        assert_eq!(before, after);
-        if before == NORMAL_PRIORITY_CLASS {
+        if is_throttled_priority_class(before) {
             assert_eq!(after, NORMAL_PRIORITY_CLASS);
+        } else {
+            assert_eq!(after, before);
         }
+        // And it is idempotent: a second call finds nothing to do.
+        restore_normal_priority();
+        assert_eq!(unsafe { GetPriorityClass(GetCurrentProcess()) }, after);
     }
 
     #[test]
