@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnimatePresence, motion, MotionConfig } from "framer-motion";
@@ -37,9 +37,15 @@ import { NotesOnDeckPanel } from "./panels/NotesOnDeckPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { QuickActionsPanel } from "./panels/QuickActionsPanel";
 import { TerminalPanel } from "./panels/TerminalPanel";
-import { ControlCenterApp } from "../control-center/ControlCenterApp";
 import { staggerContainerVariants, staggerItemVariants, slideItemVariants } from "./panels/motion";
 import "./WidgetApp.css";
+
+// The Control Center tray mounts on first open (FlyoutPaneStack), so its
+// code is loaded then too. The standalone Control Center window already
+// imports the same module on its own (main.tsx), so this is the same chunk.
+const ControlCenterApp = lazy(() =>
+  import("../control-center/ControlCenterApp").then((module) => ({ default: module.ControlCenterApp })),
+);
 
 /** Chevron pointing toward the docked edge (collapse direction). */
 function CollapseChevron({ side }: { side: "Left" | "Right" }) {
@@ -299,7 +305,11 @@ export function WidgetApp() {
         id: "control-center",
         label: "Control Center",
         icon: <RailIcon name="devkit" theme={iconTheme} size={15} />,
-        content: <ControlCenterApp embedded />,
+        content: (
+          <Suspense fallback={<div className="panel-empty">Loading Control Center...</div>}>
+            <ControlCenterApp embedded />
+          </Suspense>
+        ),
         fill: true,
       },
     ],

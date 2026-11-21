@@ -108,7 +108,14 @@ export function usePolledRpc<T>(
       if (failures < 1) return intervalMs;
       return Math.min(intervalMs * 2 ** failures, maxBackoffMs);
     },
-    refetchIntervalInBackground: false,
+    // `visible` above is the one authority on whether to poll. Left at
+    // false, react-query adds a second, private gate on document.hidden -
+    // the very signal useVisibility documents as able to stick at "hidden"
+    // in WebView2 after a window is created hidden and then shown. In that
+    // state `visible` is true and every interval tick was silently skipped.
+    // useVisibility still folds document.hidden in (minimize), so a truly
+    // hidden window stops polling exactly as before.
+    refetchIntervalInBackground: true,
     staleTime: intervalMs / 2,
   });
 

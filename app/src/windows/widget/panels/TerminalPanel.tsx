@@ -1,10 +1,17 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { GlassPanel } from "../../../components/primitives/GlassPanel";
 import { Button } from "../../../components/primitives/Button";
-import { TerminalView } from "../../../components/TerminalView";
 import { useProjectStore } from "../../../stores/useProjectStore";
 import { TerminalIcon } from "./icons";
 import "./TerminalPanel.css";
+
+// xterm is the largest dependency in the widget (about 290 kB of the
+// bundle) and this panel sits behind a collapsed expander or an unopened
+// tray, so most sessions never show it. Loading it on first open keeps it
+// out of what the widget has to parse at startup.
+const TerminalView = lazy(() =>
+  import("../../../components/TerminalView").then((module) => ({ default: module.TerminalView })),
+);
 
 /**
  * Thin GlassPanel wrapper around TerminalView for the widget - a real
@@ -48,7 +55,9 @@ export function TerminalPanel() {
       </div>
       <div className="terminal-panel__body">
         {/* A Missing project's folder no longer exists - spawning ConPTY there fails, so fall back to the default dir. */}
-        <TerminalView key={sessionKey} cwd={active?.Missing ? undefined : active?.path} />
+        <Suspense fallback={<div className="panel-empty">Starting terminal...</div>}>
+          <TerminalView key={sessionKey} cwd={active?.Missing ? undefined : active?.path} />
+        </Suspense>
       </div>
     </GlassPanel>
   );
