@@ -410,3 +410,68 @@ exit 3
         $events.Count | Should -Be 0
     }
 }
+
+Describe "catalog.toolExists" {
+
+    # Run history asks this before offering "Run again" for a row an earlier
+    # release may have recorded. It has to be the same answer tool.run would
+    # give - and NOT "is it in the catalog": Doctor and Close-Out are tools
+    # whose folders have no manifest, so the catalog has never listed them.
+
+    BeforeAll {
+        $script:RealRepo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        $script:ExistsRepo = Join-Path $TestDrive 'exists-repo'
+        New-Item -ItemType Directory -Path (Join-Path $script:ExistsRepo 'tools\demo') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:ExistsRepo 'tools\demo\Talk.ps1') -Value 'Write-Host hi'
+        Set-Content -LiteralPath (Join-Path $script:ExistsRepo 'tools\demo\notes.txt') -Value 'not a script'
+        Set-Content -LiteralPath (Join-Path $script:ExistsRepo 'outside.ps1') -Value 'Write-Host escaped'
+        function Test-ToolExists {
+            param([string]$Repo, $Folder, $Script)
+            Set-Variable -Name RepoRoot -Value $Repo
+            (Invoke-DevKitRpcMethod -Method 'catalog.toolExists' -Params ([pscustomobject]@{ folder = $Folder; script = $Script }) -EmitEvent {}).exists
+        }
+    }
+
+    It "is true for a tool script that is there" {
+        Test-ToolExists $script:ExistsRepo 'demo' 'Talk.ps1' | Should -BeTrue
+    }
+
+    It "is false for a tool that was removed" {
+        Test-ToolExists $script:ExistsRepo 'maintenance' 'Clear-TempFiles.ps1' | Should -BeFalse
+        Test-ToolExists $script:ExistsRepo 'demo' 'Gone.ps1' | Should -BeFalse
+    }
+
+    It "is false, not an error, for anything tool.run would refuse" {
+        Test-ToolExists $script:ExistsRepo '..' 'outside.ps1' | Should -BeFalse
+        Test-ToolExists $script:ExistsRepo 'demo' 'notes.txt' | Should -BeFalse
+        Test-ToolExists $script:ExistsRepo '' '' | Should -BeFalse
+        Test-ToolExists $script:ExistsRepo 'demo' '' | Should -BeFalse
+    }
+
+    It "answers with a plain true or false under the key the app reads" {
+        Set-Variable -Name RepoRoot -Value $script:ExistsRepo
+        $result = Invoke-DevKitRpcMethod -Method 'catalog.toolExists' -Params ([pscustomobject]@{ folder = 'demo'; script = 'Talk.ps1' }) -EmitEvent {}
+        ($result | ConvertTo-Json -Compress) | Should -Be '{"exists":true}'
+    }
+
+    It "is true for the widget's own tools, which no catalog manifest lists" {
+        # The two Quick Actions tiles. A catalog lookup called both of these
+        # "no longer part of DevKit".
+        Test-ToolExists $script:RealRepo 'diagnostics' 'DevKit-Doctor.ps1' | Should -BeTrue
+        Test-ToolExists $script:RealRepo 'workflow' 'Close-OutSession.ps1' | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:RealRepo 'tools\diagnostics\_module.psd1') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:RealRepo 'tools\workflow\_module.psd1') | Should -BeFalse
+    }
+
+    It "is true for every tool the real manifests list" {
+        $checked = 0
+        foreach ($manifest in Get-ChildItem -LiteralPath (Join-Path $script:RealRepo 'tools') -Recurse -Filter '_module.psd1') {
+            $folder = $manifest.Directory.Name
+            foreach ($item in (Import-PowerShellDataFile -LiteralPath $manifest.FullName).Items) {
+                Test-ToolExists $script:RealRepo $folder $item.Script | Should -BeTrue -Because "$folder/$($item.Script) is in the catalog"
+                $checked++
+            }
+        }
+        $checked | Should -BeGreaterThan 20
+    }
+}

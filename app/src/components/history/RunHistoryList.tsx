@@ -4,8 +4,7 @@ import clsx from "clsx";
 import { useRunHistoryStore, type RunHistoryEntry } from "../../stores/useRunHistoryStore";
 import { useConfirmDestructive } from "../../hooks/useConfirmDestructive";
 import { rpcCall } from "../../lib/ipc";
-import { toolStillShips } from "../../lib/catalogLookup";
-import type { Catalog, ToolStopResult } from "../../lib/types";
+import type { ToolExistsResult, ToolStopResult } from "../../lib/types";
 import { Badge } from "../primitives/Badge";
 import { Button } from "../primitives/Button";
 import { ToolConsole } from "../ToolConsole";
@@ -141,17 +140,22 @@ const RunHistoryRow = memo(function RunHistoryRow({ entry, now, compact, busy, o
   const confirmDestructive = useConfirmDestructive();
   const removeRun = useRunHistoryStore((s) => s.removeRun);
 
-  // History outlives the tools it recorded. The catalog says whether this
-  // row's tool still ships; it is asked for only once a row with a "Run
-  // again" button has been opened, and it is the same cached answer the
-  // palette and the Control Center use (it cannot change while the app runs).
-  const { data: catalog } = useQuery({
-    queryKey: ["catalog.get"],
-    queryFn: () => rpcCall<Catalog>("catalog.get"),
+  // History outlives the tools it recorded: 4.8.0 removed about half of
+  // them, and their rows still offered "Run again", which could only answer
+  // "Tool script not found". The sidecar is asked whether this row's script
+  // exists - the same lookup tool.run does - once a row with a "Run again"
+  // button has been opened. Not the catalog: Doctor and Close-Out are tools
+  // with no catalog entry. The answer cannot change while the app runs, so
+  // it is kept; and anything short of a clear "no" (not asked yet, the
+  // sidecar not answering) leaves the button where it was.
+  const { data: toolCheck } = useQuery({
+    queryKey: ["catalog.toolExists", entry.folder, entry.script],
+    queryFn: () => rpcCall<ToolExistsResult>("catalog.toolExists", { folder: entry.folder, script: entry.script }),
     staleTime: Infinity,
+    retry: false,
     enabled: everOpened && !!onRunAgain,
   });
-  const stillShips = toolStillShips(catalog, entry.folder, entry.script);
+  const stillShips = toolCheck?.exists !== false;
 
   function toggle() {
     setOpen((v) => {

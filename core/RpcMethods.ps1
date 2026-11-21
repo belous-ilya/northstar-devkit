@@ -952,6 +952,22 @@ function Invoke-DevKitRpcMethod {
         'catalog.get' {
             return Get-DevKitCatalogPayload -RootPath $RepoRoot
         }
+        'catalog.toolExists' {
+            # Whether folder/script names a tool this install can run - the
+            # same resolution tool.run does, without running anything. Run
+            # history asks before offering "Run again" for a row that may
+            # have been recorded by an earlier release. The catalog cannot
+            # answer this: Doctor and Close-Out are tools with no catalog
+            # entry (their folders have no manifest).
+            $folder = [string](Get-DevKitRpcParam $Params 'folder' '')
+            $scriptName = [string](Get-DevKitRpcParam $Params 'script' '')
+            $exists = $false
+            try {
+                $null = Resolve-DevKitToolScriptPath -ToolsRoot (Join-Path $RepoRoot 'tools') -Folder $folder -ScriptName $scriptName
+                $exists = $true
+            } catch { }
+            return [ordered]@{ exists = $exists }
+        }
         'settings.get' {
             return Get-DevKitSettings
         }
