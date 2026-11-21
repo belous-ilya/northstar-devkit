@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { usePolledRpc } from "../../../hooks/usePolledRpc";
 import { useProjectStore } from "../../../stores/useProjectStore";
@@ -69,16 +69,35 @@ function TreeNode({ node, depth, ctl }: { node: DirChild; depth: number; ctl: Tr
   const error = ctl.errorByPath[node.FullName];
   const kids = ctl.childrenByPath[node.FullName];
 
+  // A folder row opens and closes its folder, so it is a button: reachable
+  // with Tab, operated with Enter or Space, and announced with its state.
+  // It was a bare clickable div - invisible to the keyboard and to a screen
+  // reader. A file row does nothing and stays plain text.
+  const folderProps = node.IsDirectory
+    ? {
+        role: "button" as const,
+        tabIndex: 0,
+        "aria-expanded": isExpanded,
+        onClick: () => ctl.onToggle(node),
+        onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault(); // Space would scroll the tray
+          ctl.onToggle(node);
+        },
+      }
+    : {};
+
   return (
     <div>
       <div
         className={clsx("files-panel__row", node.IsDirectory && "files-panel__row--dir")}
-        onClick={() => node.IsDirectory && ctl.onToggle(node)}
         style={{ paddingLeft: 6 + depth * 14 }}
         title={node.FullName}
+        {...folderProps}
       >
-        <span className="files-panel__caret">{node.IsDirectory ? (isExpanded ? "▾" : "▸") : ""}</span>
-        <span className="files-panel__icon">{node.IsDirectory ? (isExpanded ? "📂" : "📁") : fileIcon(node.Name)}</span>
+        {/* The caret and the icon repeat what aria-expanded and the name already say. */}
+        <span className="files-panel__caret" aria-hidden="true">{node.IsDirectory ? (isExpanded ? "▾" : "▸") : ""}</span>
+        <span className="files-panel__icon" aria-hidden="true">{node.IsDirectory ? (isExpanded ? "📂" : "📁") : fileIcon(node.Name)}</span>
         <span className="files-panel__name">{node.Name}</span>
         {isLoading && <span className="files-panel__loading-inline">...</span>}
       </div>
