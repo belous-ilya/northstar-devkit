@@ -65,7 +65,7 @@ if (-not $Force) {
     Write-Host "    - node_modules" -ForegroundColor Gray
     Write-Host "    - package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock (put back if the reinstall fails)" -ForegroundColor Gray
     Write-Host ""
-    if (-not (Confirm-DevKitDestructiveAction -Action "delete everything listed above, then reinstall")) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete everything listed above, then reinstall")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

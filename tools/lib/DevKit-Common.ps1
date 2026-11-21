@@ -315,6 +315,15 @@ function Confirm-DevKitDestructiveAction {
         confirm, e.g. 'NUKE'. If omitted, a simple y/N prompt is used.
     .PARAMETER Force
         Bypass the prompt entirely (the caller's own -Force switch).
+    .PARAMETER Always
+        Ask even when the user has turned the confirmDestructive setting
+        off. For a prompt that is the tool's whole point or a choice between
+        steps rather than a second "are you sure": "Kill Process by Port
+        (With Confirmation)" exists next to a no-confirm twin, and Git
+        Cleanup asks about each step separately. These tools asked
+        unconditionally before they used this gate; -Always keeps that,
+        while still gaining the safe refusal where nobody can answer.
+        -Force still bypasses it.
     .OUTPUTS
         [bool] $true if the action should proceed.
     #>
@@ -322,13 +331,16 @@ function Confirm-DevKitDestructiveAction {
         [Parameter(Mandatory = $true)][string]$Action,
         [string[]]$AffectedPaths = @(),
         [string]$TypedPhrase,
-        [switch]$Force
+        [switch]$Force,
+        [switch]$Always
     )
 
     if ($Force) { return $true }
 
-    $settings = Get-DevKitSettings
-    if (-not $settings.preferences.confirmDestructive) { return $true }
+    if (-not $Always) {
+        $settings = Get-DevKitSettings
+        if (-not $settings.preferences.confirmDestructive) { return $true }
+    }
 
     Write-Host "  This will: $Action" -ForegroundColor Yellow
     foreach ($p in $AffectedPaths) { Write-Host "    - $p" -ForegroundColor Gray }

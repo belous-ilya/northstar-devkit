@@ -71,7 +71,18 @@ $unusedNetworks = docker network ls -q -f "type=custom" 2>$null | Where-Object {
 
 $containerCount = ($exitedContainers | Measure-Object).Count
 $danglingCount = ($danglingImages | Measure-Object).Count
-$volumeCount = ($unusedVolumes | Measure-Object).Count
+# What the volume step will really take. It runs 'docker volume prune',
+# and since Docker 23 that removes unused ANONYMOUS volumes only - a named
+# volume ('myapp_pgdata') survives it. Counting every unused volume made
+# the summary and the preview threaten data this tool never touches.
+$prunableVolumes = $unusedVolumes
+$dockerMajor = 0
+try { $dockerMajor = [int](("$(docker version --format '{{.Server.Version}}' 2>$null)" -split '\.')[0]) } catch { $dockerMajor = 0 }
+if ($dockerMajor -ge 23) {
+    $prunableVolumes = docker volume ls -q -f "dangling=true" -f "label=com.docker.volume.anonymous" 2>$null | Where-Object { $_ }
+}
+$volumeCount = ($prunableVolumes | Measure-Object).Count
+$keptNamedVolumeCount = [math]::Max(0, ($unusedVolumes | Measure-Object).Count - $volumeCount)
 $networkCount = ($unusedNetworks | Measure-Object).Count
 
 # When -AllUnused is set, compute a REAL "all unused images" count instead of
@@ -149,8 +160,10 @@ Write-Host "    Dangling images:    $danglingCount" -ForegroundColor $(if($dangl
 if ($AllUnused) {
     Write-Host "    All unused images:  $unusedImageCount" -ForegroundColor $(if($unusedImageCount -gt 0){'Yellow'}else{'Green'})
 }
-if ($Volumes -or $AllUnused) {
-    Write-Host "    Unused volumes:     $volumeCount" -ForegroundColor $(if($volumeCount -gt 0){'Yellow'}else{'Green'})
+# Shown only for -Volumes: no other mode removes a volume.
+if ($Volumes) {
+    $keptNote = if ($keptNamedVolumeCount -gt 0) { " ($keptNamedVolumeCount unused named volume(s) are kept)" } else { '' }
+    Write-Host "    Unused volumes:     $volumeCount$keptNote" -ForegroundColor $(if($volumeCount -gt 0){'Yellow'}else{'Green'})
 }
 if ($AllUnused) {
     Write-Host "    Custom networks:    $networkCount" -ForegroundColor $(if($networkCount -gt 0){'Yellow'}else{'Green'})
@@ -207,10 +220,13 @@ if ($DryRun) {
     }
     
 
-    if ($Volumes -or $AllUnused) {
+    if ($Volumes) {
         if ($volumeCount -gt 0) {
             Write-Host "`n  Unused volumes that would be removed (their data is not recoverable):" -ForegroundColor Yellow
-            $unusedVolumes | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            $prunableVolumes | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+        if ($keptNamedVolumeCount -gt 0) {
+            Write-Host "`n  Unused NAMED volumes, kept ('docker volume prune' leaves them): $keptNamedVolumeCount" -ForegroundColor Green
         }
     }
 
@@ -230,7 +246,7 @@ if (-not $Force) {
         # disclose that here so users aren't surprised by it after confirming.
         $confirmAction = "run the Docker cleanup described above, including a build cache prune"
     }
-    if (-not (Confirm-DevKitDestructiveAction -Action $confirmAction)) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action $confirmAction)) {
         Write-Host "`n  Cancelled.`n" -ForegroundColor Gray
         exit 0
     }

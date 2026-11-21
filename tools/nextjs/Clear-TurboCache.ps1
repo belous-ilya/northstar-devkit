@@ -62,7 +62,7 @@ if (-not $found) {
 }
 
 if (-not $Force) {
-    if (-not (Confirm-DevKitDestructiveAction -Action "delete the Turbopack caches listed above")) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete the Turbopack caches listed above")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

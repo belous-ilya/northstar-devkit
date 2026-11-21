@@ -62,7 +62,7 @@ if (-not $Force) {
     Write-Host "    - package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, bun.lock (put back if the reinstall fails)" -ForegroundColor Gray
     Write-Host "    - .next, .turbo, and package-manager caches (node_modules\.cache, node_modules\.vite)" -ForegroundColor Gray
     Write-Host ""
-    if (-not (Confirm-DevKitDestructiveAction -Action "delete everything listed above, then reinstall" -TypedPhrase 'nuke')) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete everything listed above, then reinstall" -TypedPhrase 'nuke')) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

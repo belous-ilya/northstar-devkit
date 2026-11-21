@@ -65,7 +65,7 @@ foreach ($proc in $nodeProcesses) {
 Write-Host ""
 
 if (-not $Force) {
-    if (-not (Confirm-DevKitDestructiveAction -Action "stop $count Node.js process(es)")) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "stop $count Node.js process(es)")) {
         Write-Host "  Cancelled.`n" -ForegroundColor Gray
         exit 0
     }

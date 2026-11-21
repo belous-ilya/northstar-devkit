@@ -386,3 +386,111 @@ Describe "Docker-Cleanup.ps1 reclaimable-space reading" {
         $script:DockerCleanupText.Contains('Unused volumes that would be removed') | Should -BeTrue
     }
 }
+
+Describe "prompts that ask whatever the confirmDestructive setting says" {
+
+    BeforeAll {
+        $global:DevKitCommonLoaded = $false
+        . (Join-Path $script:RepoRoot 'tools\lib\DevKit-Common.ps1')
+    }
+
+    BeforeEach {
+        Mock Write-Host { }
+        Mock Get-DevKitSettings { return [pscustomobject]@{ preferences = [pscustomobject]@{ confirmDestructive = $false } } }
+        Mock Test-DevKitCanPrompt { return $true }
+        Mock Read-Host { return 'n' }
+    }
+
+    It "-Always asks even with the setting off, and a 'no' is a no" {
+        Confirm-DevKitDestructiveAction -Always -Action 'x' | Should -BeFalse
+        Should -Invoke Read-Host -Times 1 -Exactly
+    }
+
+    It "-Always still yields to -Force and still refuses where nobody can answer" {
+        Confirm-DevKitDestructiveAction -Always -Force -Action 'x' | Should -BeTrue
+        Should -Invoke Read-Host -Times 0
+        Mock Test-DevKitCanPrompt { return $false }
+        Confirm-DevKitDestructiveAction -Always -Action 'x' | Should -BeFalse
+        Should -Invoke Read-Host -Times 0
+    }
+
+    It "is what every tool that used to ask unconditionally still does" {
+        # These asked with a bare Read-Host before they moved to the shared
+        # gate. Without -Always, turning confirmDestructive off would have
+        # made "Kill Process by Port (With Confirmation)" kill without
+        # asking, and Git Cleanup run every step it used to offer as a choice.
+        $tools = @(
+            'nextjs\Clear-NextCache.ps1', 'nextjs\Clear-TurboCache.ps1', 'nextjs\Next-FullClean.ps1',
+            'node\Remove-NodeModules.ps1', 'node\Nuke-And-Reinstall.ps1',
+            'ports\Kill-AllNode.ps1', 'ports\Kill-Port.ps1',
+            'git\Git-SyncFork.ps1', 'git\Git-Cleanup.ps1', 'docker\Docker-Cleanup.ps1'
+        )
+        foreach ($tool in $tools) {
+            $ast = Get-ScriptAst "tools\$tool"
+            $calls = @($ast.FindAll({ param($n)
+                        $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Confirm-DevKitDestructiveAction' }, $true))
+            $calls.Count | Should -BeGreaterThan 0 -Because "$tool confirms before acting"
+            foreach ($call in $calls) { $call.Extent.Text | Should -Match ' -Always ' -Because "$tool asked unconditionally before" }
+        }
+    }
+}
+
+Describe "Docker-Nuke.ps1 treats an already-removed target as removed" {
+
+    BeforeAll {
+        $text = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'tools\docker\Docker-Nuke.ps1'))
+        $found = [regex]::Match($text, '\$alreadyGone = ''([^'']+)''')
+        $found.Success | Should -BeTrue
+        $script:AlreadyGone = $found.Groups[1].Value
+        $script:NukeSource = $text
+    }
+
+    It "recognizes what docker says about a container, volume or image that is gone" {
+        # 'docker stop' auto-removes a --rm container; the 'docker rm' that
+        # follows then gets these. Verbatim Docker CLI wording.
+        'Error response from daemon: No such container: 3f2a9c1b7d44' | Should -Match $script:AlreadyGone
+        'Error response from daemon: removal of container 3f2a9c1b7d44 is already in progress' | Should -Match $script:AlreadyGone
+        'Error response from daemon: get 05bd650a2102: no such volume' | Should -Match $script:AlreadyGone
+        'Error response from daemon: No such image: abcdef012345' | Should -Match $script:AlreadyGone
+    }
+
+    It "does not swallow a real failure" {
+        'Error response from daemon: remove myapp_pgdata: volume is in use - [5d1f]' | Should -Not -Match $script:AlreadyGone
+        'Error response from daemon: conflict: unable to delete 1a2b3c (cannot be forced) - image has dependent child images' | Should -Not -Match $script:AlreadyGone
+    }
+
+    It "judges each removal by what is still there afterwards" {
+        $script:NukeSource.Contains('$containersLeft = @(docker ps -aq 2>$null | Where-Object { $containers -contains $_ })') | Should -BeTrue
+        $script:NukeSource.Contains('$volumesLeft = @(docker volume ls -q 2>$null | Where-Object { $volumes -contains $_ })') | Should -BeTrue
+        $script:NukeSource.Contains('$imagesLeft = @(docker images -q 2>$null | Where-Object { $images -contains $_ })') | Should -BeTrue
+    }
+}
+
+Describe "Docker-Cleanup.ps1 previews only the volumes it can remove" {
+
+    BeforeAll {
+        $script:CleanupSource = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'tools\docker\Docker-Cleanup.ps1'))
+    }
+
+    It "counts anonymous volumes only on Docker 23+, where 'volume prune' keeps named ones" {
+        $script:CleanupSource.Contains('-f "label=com.docker.volume.anonymous"') | Should -BeTrue
+        $script:CleanupSource.Contains('if ($dockerMajor -ge 23) {') | Should -BeTrue
+    }
+
+    It "lists volumes in the dry run only for -Volumes, the one mode that removes any" {
+        $block = $script:CleanupSource.IndexOf('Unused volumes that would be removed')
+        $gate = $script:CleanupSource.LastIndexOf('if ($Volumes) {', $block)
+        $gate | Should -BeGreaterThan -1
+        ($block - $gate) | Should -BeLessThan 200
+        $script:CleanupSource.Contains('if ($Volumes -or $AllUnused) {') | Should -BeFalse
+    }
+}
+
+Describe "Git-Cleanup.ps1 names the repository it acts on" {
+
+    It "prints the repository root and flags it when it is not the folder given" {
+        $ast = Get-ScriptAst 'tools\git\Git-Cleanup.ps1'
+        @(Get-GitCalls -Ast $ast | Where-Object { $_.Text -match 'rev-parse --show-toplevel' }).Count | Should -Be 1
+        $ast.Extent.Text.Contains('it is the repository that CONTAINS it') | Should -BeTrue
+    }
+}

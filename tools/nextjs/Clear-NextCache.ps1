@@ -47,7 +47,7 @@ if (-not (Test-Path $nextPath)) {
 }
 
 if (-not $Force) {
-    if (-not (Confirm-DevKitDestructiveAction -Action "delete the .next folder")) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete the .next folder")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

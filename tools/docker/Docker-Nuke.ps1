@@ -90,6 +90,13 @@ function Invoke-DevKitDockerBatch {
     return @{ Output = $output; Failed = $failed }
 }
 
+# A target that is already gone is the outcome this tool wants, not a
+# failure: 'docker stop' auto-removes any container started with --rm (and
+# its anonymous volumes), so the removal that follows is told "No such
+# container". Each removal step is therefore judged by what is still THERE
+# afterwards, and these messages are not shown as errors.
+$alreadyGone = '(?i)no such (container|volume|image)|is already in progress'
+
 # Get current state
 $containers = docker ps -aq 2>$null | Where-Object { $_ }
 $images = docker images -q 2>$null | Where-Object { $_ }
@@ -206,8 +213,9 @@ if ($containerCount -gt 0) {
         }
     }
     if ($stopHadErrors -or $stopResult.Failed) {
+        # Not counted as a problem: the forced removal below is what
+        # decides whether a container survived.
         Write-Host "  WARNING: Some containers may not have stopped cleanly." -ForegroundColor Yellow
-        $script:problems++
     } else {
         Write-Host "  DONE: All containers stopped." -ForegroundColor Green
     }
@@ -220,6 +228,7 @@ if ($containerCount -gt 0) {
     # a container started after the user typed NUKE was never shown to them.
     $removeResult = Invoke-DevKitDockerBatch -Command @('rm', '-f') -Ids @($containers)
     foreach ($line in $removeResult.Output) {
+        if ($line -match $alreadyGone) { continue }
         if ($line -match 'error|Error') {
             Write-Host "    ERROR: $line" -ForegroundColor Red
             $removeHadErrors = $true
@@ -227,7 +236,9 @@ if ($containerCount -gt 0) {
             Write-Host "    Removed: $line" -ForegroundColor DarkGray
         }
     }
-    if ($removeHadErrors -or $removeResult.Failed) {
+    $containersLeft = @(docker ps -aq 2>$null | Where-Object { $containers -contains $_ })
+    $relistFailed = ($LASTEXITCODE -ne 0)
+    if ($containersLeft.Count -gt 0 -or ($relistFailed -and ($removeHadErrors -or $removeResult.Failed))) {
         Write-Host "  WARNING: Some containers may not have been removed cleanly." -ForegroundColor Yellow
         $script:problems++
     } else {
@@ -247,6 +258,7 @@ if (-not $KeepImages -and $imageCount -gt 0) {
     # -q repeats an id once per tag; each id is removed once.
     $imagesResult = Invoke-DevKitDockerBatch -Command @('rmi', '-f') -Ids @($images | Select-Object -Unique)
     foreach ($line in $imagesResult.Output) {
+        if ($line -match $alreadyGone) { continue }
         if ($line -match 'Untagged|Deleted') {
             Write-Host "    $line" -ForegroundColor DarkGray
         } elseif ($line -match 'error|Error') {
@@ -254,7 +266,9 @@ if (-not $KeepImages -and $imageCount -gt 0) {
             $imagesHadErrors = $true
         }
     }
-    if ($imagesHadErrors -or $imagesResult.Failed) {
+    $imagesLeft = @(docker images -q 2>$null | Where-Object { $images -contains $_ })
+    $relistFailed = ($LASTEXITCODE -ne 0)
+    if ($imagesLeft.Count -gt 0 -or ($relistFailed -and ($imagesHadErrors -or $imagesResult.Failed))) {
         Write-Host "  WARNING: Some images may not have been removed cleanly." -ForegroundColor Yellow
         $script:problems++
     } else {
@@ -276,6 +290,7 @@ if (-not $KeepVolumes -and $volumeCount -gt 0) {
     # Reuse the list captured up front instead of re-querying.
     $volumesResult = Invoke-DevKitDockerBatch -Command @('volume', 'rm') -Ids @($volumes)
     foreach ($line in $volumesResult.Output) {
+        if ($line -match $alreadyGone) { continue }
         # Named volumes ('myapp_pgdata') are not hex ids: the old "starts
         # with a hex digit, show 12 characters" test skipped most of them
         # and threw on any short name that happened to start with a-f.
@@ -286,7 +301,9 @@ if (-not $KeepVolumes -and $volumeCount -gt 0) {
             Write-Host "    Removed: $line" -ForegroundColor DarkGray
         }
     }
-    if ($volumesHadErrors -or $volumesResult.Failed) {
+    $volumesLeft = @(docker volume ls -q 2>$null | Where-Object { $volumes -contains $_ })
+    $relistFailed = ($LASTEXITCODE -ne 0)
+    if ($volumesLeft.Count -gt 0 -or ($relistFailed -and ($volumesHadErrors -or $volumesResult.Failed))) {
         Write-Host "  WARNING: Some volumes may not have been removed cleanly." -ForegroundColor Yellow
         $script:problems++
     } else {

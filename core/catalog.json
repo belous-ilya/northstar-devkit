@@ -29,12 +29,12 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Name": "Port",
-              "Min": 1,
-              "Prompt": "Enter port number",
               "Type": "Int",
-              "InvalidMessage": "Invalid port number."
+              "Min": 1,
+              "Max": 65535,
+              "Prompt": "Enter port number",
+              "InvalidMessage": "Invalid port number.",
+              "Name": "Port"
             }
           ],
           "staticArgs": {
@@ -45,19 +45,19 @@
           "key": "3",
           "label": "Kill Process by PID",
           "script": "Kill-Port.ps1",
-          "help": "Kills a specific process by PID that you enter directly, with no port lookup. Refuses PID 0 and 4 (reserved system processes) and the current DevKit process's own PID. Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (a plain y/n prompt, not the shared Confirm-DevKitDestructiveAction gate), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming.",
+          "help": "Kills a specific process by PID that you enter directly, with no port lookup. Refuses PID 0 and 4 (reserved system processes) and the current DevKit process's own PID. Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (it always asks, whatever the confirmDestructive setting), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming.",
           "caution": true,
           "requiresProject": false,
           "projectArgName": null,
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 2147483647,
-              "Name": "ProcessId",
-              "Min": 1,
-              "Prompt": "Enter PID to kill",
               "Type": "Int",
-              "InvalidMessage": "Invalid PID."
+              "Min": 1,
+              "Max": 2147483647,
+              "Prompt": "Enter PID to kill",
+              "InvalidMessage": "Invalid PID.",
+              "Name": "ProcessId"
             }
           ],
           "staticArgs": null
@@ -66,7 +66,7 @@
           "key": "4",
           "label": "Kill All Node Processes",
           "script": "Kill-AllNode.ps1",
-          "help": "Finds every running process named 'node' and kills them all. Lists each one (PID, CPU, start time) before acting. Safety note: mutates real system state - prompts 'Kill all N process(es)? (y/n)' before stopping any of them (a plain y/n prompt, not the shared Confirm-DevKitDestructiveAction gate), and re-verifies each process's identity immediately before killing it to guard against a PID being reused while you were confirming. This menu item does not pass -Force, so you'll always see the prompt; the script supports -Force directly for automation.",
+          "help": "Finds every running process named 'node' and kills them all. Lists each one (PID, CPU, start time) before acting. Safety note: mutates real system state - prompts 'Kill all N process(es)? (y/n)' before stopping any of them (it always asks, whatever the confirmDestructive setting), and re-verifies each process's identity immediately before killing it to guard against a PID being reused while you were confirming. This menu item does not pass -Force, so you'll always see the prompt; the script supports -Force directly for automation.",
           "caution": true,
           "requiresProject": false,
           "projectArgName": null,
@@ -85,12 +85,12 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Name": "Port",
-              "Min": 1,
-              "Prompt": "Enter port number",
               "Type": "Int",
-              "InvalidMessage": "Invalid port number."
+              "Min": 1,
+              "Max": 65535,
+              "Prompt": "Enter port number",
+              "InvalidMessage": "Invalid port number.",
+              "Name": "Port"
             }
           ],
           "staticArgs": {
@@ -101,19 +101,19 @@
           "key": "6",
           "label": "Kill Process by Port Number (With Confirmation)",
           "script": "Kill-Port.ps1",
-          "help": "Finds the process listening on a port you enter, shows its PID/name/path, and asks for confirmation before killing it (Kill-Port.ps1 -Port X, no -Force). Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (a plain y/n prompt, not the shared Confirm-DevKitDestructiveAction gate), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming.",
+          "help": "Finds the process listening on a port you enter, shows its PID/name/path, and asks for confirmation before killing it (Kill-Port.ps1 -Port X, no -Force). Safety note: mutates real system state - prompts 'Kill process NAME (PID: X)? (y/n)' before stopping it (it always asks, whatever the confirmDestructive setting), and re-verifies the process's identity immediately before killing to guard against the PID being reused while you were confirming.",
           "caution": true,
           "requiresProject": false,
           "projectArgName": null,
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Name": "Port",
-              "Min": 1,
-              "Prompt": "Enter port number",
               "Type": "Int",
-              "InvalidMessage": "Invalid port number."
+              "Min": 1,
+              "Max": 65535,
+              "Prompt": "Enter port number",
+              "InvalidMessage": "Invalid port number.",
+              "Name": "Port"
             }
           ],
           "staticArgs": null
@@ -141,8 +141,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter URL to test (blank = scan listening dev ports)",
               "Optional": true,
+              "Prompt": "Enter URL to test (blank = scan listening dev ports)",
               "Name": "Url",
               "Type": "String"
             }
@@ -180,8 +180,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Reinstall dependencies afterwards?",
               "Optional": true,
+              "Prompt": "Reinstall dependencies afterwards?",
               "Name": "Reinstall",
               "Type": "YesNo"
             }
@@ -223,8 +223,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
               "InvalidMessage": "Enter a script name.",
+              "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
               "Name": "Name",
               "Type": "String"
             }
@@ -242,8 +242,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Delete the folders it lists? (No = report only)",
               "Optional": true,
+              "Prompt": "Delete the folders it lists? (No = report only)",
               "Name": "Apply",
               "Type": "YesNo"
             }
@@ -305,18 +305,18 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Clear Turbopack cache too?",
               "Optional": true,
+              "Prompt": "Clear Turbopack cache too?",
               "Name": "Turbo",
               "Type": "YesNo"
             },
             {
-              "Max": 65535,
-              "Name": "Port",
-              "Min": 0,
-              "Prompt": "Port (0 = package default; press Enter for default)",
               "Type": "Int",
-              "Optional": true
+              "Min": 0,
+              "Optional": true,
+              "Max": 65535,
+              "Prompt": "Port (0 = package default; press Enter for default)",
+              "Name": "Port"
             }
           ],
           "staticArgs": null
@@ -340,22 +340,22 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Name": "Port",
-              "Min": 0,
-              "Prompt": "Port (0 = Vite default; press Enter for default)",
               "Type": "Int",
-              "Optional": true
+              "Min": 0,
+              "Optional": true,
+              "Max": 65535,
+              "Prompt": "Port (0 = Vite default; press Enter for default)",
+              "Name": "Port"
             },
             {
-              "Prompt": "Skip the dependency install (faster when nothing changed)?",
               "Optional": true,
+              "Prompt": "Skip the dependency install (faster when nothing changed)?",
               "Name": "SkipInstall",
               "Type": "YesNo"
             },
             {
-              "Prompt": "Expose the server on the local network (--host)?",
               "Optional": true,
+              "Prompt": "Expose the server on the local network (--host)?",
               "Name": "ExposeHost",
               "Type": "YesNo"
             }
@@ -373,16 +373,16 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 65535,
-              "Name": "Port",
-              "Min": 1,
-              "Prompt": "Preview port (press Enter for 4173)",
               "Type": "Int",
-              "Optional": true
+              "Min": 1,
+              "Optional": true,
+              "Max": 65535,
+              "Prompt": "Preview port (press Enter for 4173)",
+              "Name": "Port"
             },
             {
-              "Prompt": "Skip the build and preview the existing output?",
               "Optional": true,
+              "Prompt": "Skip the build and preview the existing output?",
               "Name": "SkipBuild",
               "Type": "YesNo"
             }
@@ -408,8 +408,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Preview only - show what would change and change nothing?",
               "Optional": true,
+              "Prompt": "Preview only - show what would change and change nothing?",
               "Name": "DryRun",
               "Type": "YesNo"
             }
@@ -439,8 +439,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Rebase onto upstream instead of merging?",
               "Optional": true,
+              "Prompt": "Rebase onto upstream instead of merging?",
               "Name": "Rebase",
               "Type": "YesNo"
             }
@@ -458,13 +458,13 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Max": 720,
-              "Name": "Hours",
-              "Min": 1,
-              "Prompt": "How many hours back? (blank = 24)",
               "Type": "Int",
+              "Min": 1,
               "Optional": true,
-              "InvalidMessage": "Invalid hours."
+              "Max": 720,
+              "Prompt": "How many hours back? (blank = 24)",
+              "InvalidMessage": "Invalid hours.",
+              "Name": "Hours"
             }
           ],
           "staticArgs": null
@@ -488,14 +488,14 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Preview only - list what would be removed and change nothing?",
               "Optional": true,
+              "Prompt": "Preview only - list what would be removed and change nothing?",
               "Name": "DryRun",
               "Type": "YesNo"
             },
             {
-              "Prompt": "Keep images too (remove containers only)?",
               "Optional": true,
+              "Prompt": "Keep images too (remove containers only)?",
               "Name": "KeepImages",
               "Type": "YesNo"
             }
@@ -515,8 +515,8 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Preview only - list what would be removed and change nothing?",
               "Optional": true,
+              "Prompt": "Preview only - list what would be removed and change nothing?",
               "Name": "DryRun",
               "Type": "YesNo"
             }
@@ -527,27 +527,27 @@
           "key": "3",
           "label": "Docker Cleanup (selective)",
           "script": "Docker-Cleanup.ps1",
-          "help": "Selective, less destructive than Docker Nuke - removes stopped containers and dangling images by default; answering yes to 'every unused image' (-AllUnused) widens image removal to every unused (not just untagged) image and also prunes unused custom networks; answering yes to volumes (-Volumes) additionally prunes unused volumes. Also cleans the build cache and reports estimated reclaimable disk space. Use this for routine disk-space cleanup that leaves in-use resources alone. Safety note: mutates real Docker state - prompts with a plain y/n confirmation unless -Force is passed (this script predates the shared Confirm-DevKitDestructiveAction gate that Docker Nuke uses, so it does not honor the confirmDestructive setting); answer yes to the preview question (-DryRun) to list the affected containers/images with no changes made.",
+          "help": "Selective, less destructive than Docker Nuke - removes stopped containers and dangling images by default; answering yes to 'every unused image' (-AllUnused) widens image removal to every unused (not just untagged) image and also prunes unused custom networks; answering yes to volumes (-Volumes) additionally runs 'docker volume prune', which on Docker 23 and later removes unused ANONYMOUS volumes only - named volumes are kept. Also cleans the build cache and reports estimated reclaimable disk space. Use this for routine disk-space cleanup that leaves in-use resources alone. Safety note: mutates real Docker state - asks for confirmation unless -Force is passed (it always asks, whatever the confirmDestructive setting); answer yes to the preview question (-DryRun) to list the affected containers/images with no changes made.",
           "caution": true,
           "requiresProject": false,
           "projectArgName": null,
           "requiresFile": null,
           "prompts": [
             {
-              "Prompt": "Preview only - list what would be removed and change nothing?",
               "Optional": true,
+              "Prompt": "Preview only - list what would be removed and change nothing?",
               "Name": "DryRun",
               "Type": "YesNo"
             },
             {
-              "Prompt": "Also remove every unused image and unused network (not just dangling ones)?",
               "Optional": true,
+              "Prompt": "Also remove every unused image and unused network (not just dangling ones)?",
               "Name": "AllUnused",
               "Type": "YesNo"
             },
             {
-              "Prompt": "Also remove unused volumes (their data is deleted)?",
               "Optional": true,
+              "Prompt": "Also remove unused volumes (their data is deleted)?",
               "Name": "Volumes",
               "Type": "YesNo"
             }

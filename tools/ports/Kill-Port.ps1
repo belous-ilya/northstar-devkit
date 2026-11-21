@@ -122,7 +122,7 @@ if ($refusal) {
 Write-Host ""
 
 if (-not $Force) {
-    if (-not (Confirm-DevKitDestructiveAction -Action "stop $($process.ProcessName) (PID $ProcessId)")) {
+    if (-not (Confirm-DevKitDestructiveAction -Always -Action "stop $($process.ProcessName) (PID $ProcessId)")) {
         Write-DevKitInfo "Cancelled."
         exit 0
     }

@@ -161,7 +161,7 @@ try {
 
     # Confirm
     if (-not $Force) {
-        if (-not (Confirm-DevKitDestructiveAction -Action "sync $Branch with $UpstreamRemote/$Branch (rewrites the fork branch when rebasing)")) {
+        if (-not (Confirm-DevKitDestructiveAction -Always -Action "sync $Branch with $UpstreamRemote/$Branch (rewrites the fork branch when rebasing)")) {
             Write-Host "`n  Cancelled.`n" -ForegroundColor Gray
             exit 0
         }

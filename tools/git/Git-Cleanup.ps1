@@ -73,6 +73,25 @@ if ($LASTEXITCODE -ne 0 -or $insideWorkTree -ne 'true') {
     exit 1
 }
 
+# Everything below acts on the WHOLE repository, wherever inside it -Path
+# points. Name it, and say so plainly when it is not the folder that was
+# given: a project folder that merely sits inside a larger repository (a
+# monorepo, a dotfiles repo in the home folder) would otherwise have that
+# outer repository's branches pruned with nothing on screen to show it.
+$repoRoot = (git -C $targetPath rev-parse --show-toplevel 2>$null | Out-String).Trim()
+if ($repoRoot) {
+    $repoRootNative = $repoRoot -replace '/', '\'
+    Write-DevKitInfo "Repository: $repoRootNative"
+    # --show-prefix is empty exactly at the repository root. Comparing the
+    # two paths as text would misfire on a short (8.3) or differently
+    # spelled form of the same folder.
+    $insidePrefix = (git -C $targetPath rev-parse --show-prefix 2>$null | Out-String).Trim()
+    if ($insidePrefix) {
+        Write-Host "  NOTE: that is not the folder you gave - it is the repository that CONTAINS it." -ForegroundColor Yellow
+        Write-Host "        Branch pruning and garbage collection apply to the whole repository." -ForegroundColor Yellow
+    }
+}
+
 # Every step that fails is counted, so the run cannot end on "cleaned" (and
 # exit 0) after printing errors.
 $script:failures = 0
@@ -161,7 +180,7 @@ if ($mergedBranches) {
     if ($DryRun) {
         Write-Host "  [DRY RUN] Would delete these branches" -ForegroundColor Magenta
     } else {
-        $deleteBranches = Confirm-DevKitDestructiveAction -Action "delete the merged branches listed above (git branch -d)" -Force:$Force
+        $deleteBranches = Confirm-DevKitDestructiveAction -Always -Action "delete the merged branches listed above (git branch -d)" -Force:$Force
         if ($deleteBranches) {
             foreach ($branch in $mergedBranches) {
                 try {
@@ -246,7 +265,7 @@ if ($DryRun) {
     Write-Host "`n  Skipping pre-reflog garbage collection (will run once after reflog clear)." -ForegroundColor Gray
 } else {
     $gcAction = if ($Aggressive) { "run AGGRESSIVE garbage collection (--prune=now is irreversible)" } else { "run garbage collection" }
-    $runGc = Confirm-DevKitDestructiveAction -Action $gcAction -Force:$Force
+    $runGc = Confirm-DevKitDestructiveAction -Always -Action $gcAction -Force:$Force
     if ($runGc) {
         Write-Host ""
         Invoke-DevKitGitGc -Thorough:$Aggressive
@@ -260,7 +279,7 @@ if ($ClearReflog) {
     if ($DryRun) {
         Write-Host "  [DRY RUN] Would clear reflog" -ForegroundColor Magenta
     } else {
-        if (Confirm-DevKitDestructiveAction -Action "clear the reflog (irreversible)" -Force:$Force) {
+        if (Confirm-DevKitDestructiveAction -Always -Action "clear the reflog (irreversible)" -Force:$Force) {
             Write-Host "  Clearing reflog..." -ForegroundColor Cyan
             git reflog expire --expire=now --all 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             if ($LASTEXITCODE -ne 0) {
@@ -277,7 +296,7 @@ if ($ClearReflog) {
         # above is skipped), so it runs here regardless of the reflog answer
         # above - otherwise declining the reflog prompt would mean gc never
         # runs at all for this invocation.
-        if (Confirm-DevKitDestructiveAction -Action "run garbage collection with --prune=now (irreversible)" -Force:$Force) {
+        if (Confirm-DevKitDestructiveAction -Always -Action "run garbage collection with --prune=now (irreversible)" -Force:$Force) {
             Invoke-DevKitGitGc -Thorough
         } else {
             Write-Host "  Skipped garbage collection." -ForegroundColor Yellow

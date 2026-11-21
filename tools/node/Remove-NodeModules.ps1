@@ -75,7 +75,7 @@ if (-not (Test-Path $nmPath)) {
     }
 
     if (-not $Force) {
-        if (-not (Confirm-DevKitDestructiveAction -Action "delete node_modules")) {
+        if (-not (Confirm-DevKitDestructiveAction -Always -Action "delete node_modules")) {
             Write-DevKitInfo "Cancelled."
             exit 0
         }
