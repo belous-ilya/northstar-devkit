@@ -907,6 +907,19 @@ function Stop-DevKitProcessById {
         $result.Note = "Refusing to kill $($proc.ProcessName) (pid $ProcessId): it is a Windows system process."
         return $result
     }
+    # The same floor every kill tool shares (tools/lib/DevKit-Common.ps1) -
+    # which, unlike the classification above, also covers DevKit's OWN
+    # process tree: this code runs inside the sidecar, and a click on the
+    # sidecar's or the app's row in the Top Memory list used to kill the
+    # thing answering the click. Guarded with Get-Command because this file
+    # is also dot-sourced on its own by some tests.
+    if (Get-Command Get-DevKitKillRefusalReason -ErrorAction SilentlyContinue) {
+        $refusal = Get-DevKitKillRefusalReason -ProcessId $ProcessId -Name $proc.ProcessName -ProtectedPids (Get-DevKitOwnProcessTreeIds)
+        if ($refusal) {
+            $result.Note = "Refusing to kill $($proc.ProcessName) (pid $ProcessId): $refusal."
+            return $result
+        }
+    }
     $name = $proc.ProcessName
     try {
         Stop-Process -Id $ProcessId -Force -ErrorAction Stop
@@ -2350,7 +2363,11 @@ function Get-DevKitProjectNotes {
     if (-not (Test-Path -LiteralPath $NotesFile)) { return @() }
     $key = Get-DevKitNotesProjectKey -ProjectPath $ProjectPath
     try {
-        $data = Get-Content -LiteralPath $NotesFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        # ReadAllText, not Get-Content: the store is written as UTF-8 without
+        # a BOM, which Windows PowerShell 5.1's Get-Content would decode as
+        # ANSI - turning every non-ASCII character in a note into mojibake
+        # that the next save would then write back for good.
+        $data = [System.IO.File]::ReadAllText($NotesFile) | ConvertFrom-Json -ErrorAction Stop
         if (-not $data.projects) { return @() }
         $entry = $data.projects.PSObject.Properties[$key]
         if (-not $entry) { return @() }
@@ -2428,15 +2445,22 @@ function Get-DevKitProjectStoreOthers {
     if ([string]::IsNullOrWhiteSpace($text)) { return $projects }
 
     $data = $null
+    $usable = $false
     try {
         $data = $text | ConvertFrom-Json -ErrorAction Stop
+        # Valid JSON of the wrong shape (no "projects" object) is as
+        # unusable as invalid JSON, and gets the same copy-aside.
+        $usable = ($null -ne $data -and $data.PSObject.Properties.Match('projects').Count -gt 0)
     } catch {
+        $usable = $false
+    }
+    if (-not $usable) {
         $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmssfff')
         [System.IO.File]::WriteAllText("$Path.corrupt-$stamp", $text, (New-Object System.Text.UTF8Encoding $false))
         return $projects
     }
 
-    if ($data -and $data.projects) {
+    if ($data.projects) {
         foreach ($p in $data.projects.PSObject.Properties) {
             # @(...) so a one-entry project stays a JSON ARRAY on the way
             # back out - member access unrolls single-element arrays, and
@@ -2469,15 +2493,30 @@ function Write-DevKitProjectStore {
     $temp = "$Path.tmp-$PID-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
     try {
         [System.IO.File]::WriteAllText($temp, $json, (New-Object System.Text.UTF8Encoding $false))
-        if (Test-Path -LiteralPath $Path) {
-            # File.Replace, not Move-with-overwrite: it exists on the .NET
-            # Framework the powershell.exe 5.1 fallback runs on, too.
-            # [NullString]::Value, not $null: PowerShell hands a .NET string
-            # parameter "" for $null, and Replace rejects an empty backup path.
-            [System.IO.File]::Replace($temp, $Path, [NullString]::Value)
-        } else {
-            [System.IO.File]::Move($temp, $Path)
+        # A reader (notes.get polls every 10s) can hold the file for an
+        # instant; the swap retries a few times rather than failing a save
+        # the old in-place write would have completed.
+        $lastError = $null
+        foreach ($attempt in 1..4) {
+            try {
+                if (Test-Path -LiteralPath $Path) {
+                    # File.Replace, not Move-with-overwrite: it exists on the
+                    # .NET Framework the powershell.exe 5.1 fallback runs on,
+                    # too. [NullString]::Value, not $null: PowerShell hands a
+                    # .NET string parameter "" for $null, and Replace rejects
+                    # an empty backup path.
+                    [System.IO.File]::Replace($temp, $Path, [NullString]::Value)
+                } else {
+                    [System.IO.File]::Move($temp, $Path)
+                }
+                $lastError = $null
+                break
+            } catch {
+                $lastError = $_
+                Start-Sleep -Milliseconds 60
+            }
         }
+        if ($lastError) { throw $lastError }
     } finally {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
     }
@@ -2585,7 +2624,9 @@ function Get-DevKitProjectOnDeck {
     if (-not (Test-Path -LiteralPath $OnDeckFile)) { return @() }
     $key = Get-DevKitNotesProjectKey -ProjectPath $ProjectPath
     try {
-        $data = Get-Content -LiteralPath $OnDeckFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        # ReadAllText for the same reason as Get-DevKitProjectNotes: the
+        # store is BOM-less UTF-8.
+        $data = [System.IO.File]::ReadAllText($OnDeckFile) | ConvertFrom-Json -ErrorAction Stop
         if (-not $data.projects) { return @() }
         $entry = $data.projects.PSObject.Properties[$key]
         if (-not $entry) { return @() }

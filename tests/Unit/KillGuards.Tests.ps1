@@ -177,3 +177,47 @@ Describe "the port tools use the guards" {
         }
     }
 }
+
+Describe "the guard comes before the kill" {
+
+    It "<tool> asks for a refusal reason earlier in the file than its first Stop-Process" -ForEach @(
+        @{ tool = 'Kill-Port.ps1' }
+        @{ tool = 'Kill-AllNode.ps1' }
+        @{ tool = 'Scan-Ports.ps1' }
+    ) {
+        # Presence alone would be satisfied by a guard placed after the kill.
+        $path = Join-Path (Join-Path $script:RepoRoot 'tools\ports') $tool
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$null)
+        $commands = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))
+        $firstGuard = @($commands | Where-Object { $_.GetCommandName() -eq 'Get-DevKitKillRefusalReason' } | ForEach-Object { $_.Extent.StartOffset } | Sort-Object)[0]
+        $firstKill = @($commands | Where-Object { $_.GetCommandName() -eq 'Stop-Process' } | ForEach-Object { $_.Extent.StartOffset } | Sort-Object)[0]
+        $firstGuard | Should -BeLessThan $firstKill
+    }
+}
+
+Describe "the widget's kill button (Stop-DevKitProcessById)" {
+
+    BeforeAll {
+        . (Join-Path $script:RepoRoot 'core\DevKit-WidgetCore.ps1')
+    }
+
+    It "refuses to stop DevKit's own process tree, and never reaches Stop-Process" {
+        # Inside the app this code runs in the sidecar, so "own tree" is the
+        # sidecar and the app above it - the rows a user is most likely to
+        # mis-click in the Top Memory list. Stop-Process is mocked so that a
+        # broken guard fails the assertion instead of killing the test run.
+        Mock Stop-Process { }
+        $result = Stop-DevKitProcessById -ProcessId $PID
+        $result.Stopped | Should -BeFalse
+        $result.Note | Should -Match "DevKit's own process tree"
+        Should -Invoke Stop-Process -Times 0 -Exactly
+    }
+
+    It "still stops an ordinary process" {
+        Mock Stop-Process { }
+        Mock Get-DevKitOwnProcessTreeIds { , @(1) }
+        $result = Stop-DevKitProcessById -ProcessId $PID
+        $result.Stopped | Should -BeTrue
+        Should -Invoke Stop-Process -Times 1 -Exactly
+    }
+}

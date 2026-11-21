@@ -100,7 +100,11 @@ if ($netshExit -ne 0 -and $rawNetworks -match "location") {
 Write-DevKitDone
 
 $networks = ConvertFrom-DevKitWlanScan -RawOutput $rawNetworks
-$current = @(ConvertFrom-DevKitWlanInterface -RawOutput (netsh wlan show interfaces | Out-String) | Where-Object { $_.Connected }) | Select-Object -First 1
+# Both library calls below return their array behind a unary comma, so they
+# are assigned BEFORE being filtered: piped straight into Where-Object, the
+# filter would receive the whole array as a single item.
+$allInterfaces = ConvertFrom-DevKitWlanInterface -RawOutput (netsh wlan show interfaces | Out-String)
+$current = @($allInterfaces | Where-Object { $_.Connected }) | Select-Object -First 1
 
 if ($networks.Count -eq 0) {
     Write-Host "  No WiFi networks could be read." -ForegroundColor Yellow
@@ -148,7 +152,8 @@ if ($current) {
 }
 
 # Only the channels worth a second look: crowded, or reported busy.
-$busy = @(Get-DevKitWifiChannelLoad -Networks $networks | Where-Object {
+$channelLoad = Get-DevKitWifiChannelLoad -Networks $networks
+$busy = @($channelLoad | Where-Object {
         $_.Overlapping -ge 3 -or ($null -ne $_.Utilization -and $_.Utilization -ge 50)
     })
 if ($busy.Count -gt 0) {

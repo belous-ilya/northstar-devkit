@@ -29,11 +29,11 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Max": 65535,
+              "Type": "Int",
               "InvalidMessage": "Invalid port number.",
               "Min": 1,
-              "Type": "Int",
               "Name": "Port",
-              "Max": 65535,
               "Prompt": "Enter port number"
             }
           ],
@@ -52,11 +52,11 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Max": 2147483647,
+              "Type": "Int",
               "InvalidMessage": "Invalid PID.",
               "Min": 1,
-              "Type": "Int",
               "Name": "ProcessId",
-              "Max": 2147483647,
               "Prompt": "Enter PID to kill"
             }
           ],
@@ -85,11 +85,11 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Max": 65535,
+              "Type": "Int",
               "InvalidMessage": "Invalid port number.",
               "Min": 1,
-              "Type": "Int",
               "Name": "Port",
-              "Max": 65535,
               "Prompt": "Enter port number"
             }
           ],
@@ -108,11 +108,11 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Max": 65535,
+              "Type": "Int",
               "InvalidMessage": "Invalid port number.",
               "Min": 1,
-              "Type": "Int",
               "Name": "Port",
-              "Max": 65535,
               "Prompt": "Enter port number"
             }
           ],
@@ -141,10 +141,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
-              "Type": "String",
               "Prompt": "Enter URL to test (blank = scan listening dev ports)",
-              "Name": "Url"
+              "Name": "Url",
+              "Optional": true,
+              "Type": "String"
             }
           ],
           "staticArgs": null
@@ -216,10 +216,10 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Type": "String",
-              "InvalidMessage": "Enter a script name.",
               "Prompt": "Enter the package.json script name to run (e.g. dev, build, test)",
-              "Name": "Name"
+              "InvalidMessage": "Enter a script name.",
+              "Name": "Name",
+              "Type": "String"
             }
           ],
           "staticArgs": null
@@ -291,17 +291,17 @@
           "requiresFile": null,
           "prompts": [
             {
-              "Optional": true,
-              "Type": "YesNo",
               "Prompt": "Clear Turbopack cache too?",
-              "Name": "Turbo"
+              "Name": "Turbo",
+              "Optional": true,
+              "Type": "YesNo"
             },
             {
+              "Optional": true,
+              "Type": "Int",
               "Min": 0,
               "Max": 65535,
-              "Optional": true,
               "Name": "Port",
-              "Type": "Int",
               "Prompt": "Port (0 = package default; press Enter for default)"
             }
           ],
@@ -394,11 +394,11 @@
           "requiresFile": null,
           "prompts": [
             {
+              "Max": 720,
+              "Type": "Int",
               "InvalidMessage": "Invalid hours.",
               "Min": 1,
-              "Type": "Int",
               "Name": "Hours",
-              "Max": 720,
               "Optional": true,
               "Prompt": "How many hours back? (blank = 24)"
             }

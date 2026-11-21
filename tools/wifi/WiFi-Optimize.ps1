@@ -96,8 +96,10 @@ function Exit-DevKitWifi {
     # Every exit pauses for Enter when a real console is attached, and never
     # under the Control Center's headless runner (-NonInteractive, stdin
     # closed), where Read-Host would throw.
+    # -Force means "do not stop to ask me anything", so a scripted run with a
+    # console attached must not sit at this prompt forever either.
     param([int]$Code = 0)
-    if (-not [Console]::IsInputRedirected) { Read-Host "`nPress Enter to exit" | Out-Null }
+    if (-not $Force -and -not [Console]::IsInputRedirected) { Read-Host "`nPress Enter to exit" | Out-Null }
     exit $Code
 }
 
@@ -131,30 +133,6 @@ function Read-DevKitDnsBackup {
     return $null
 }
 
-function Test-DevKitDnsIsStatic {
-    <#
-    .SYNOPSIS
-        Whether an adapter's DNS for one address family is set by hand
-        (static) rather than handed out by the network.
-    .DESCRIPTION
-        Get-DnsClientServerAddress reports the addresses in use either way,
-        so it cannot answer this. The adapter's registry key can: a
-        non-empty NameServer value is a manual setting.
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$InterfaceGuid,
-        [ValidateSet('IPv4', 'IPv6')][string]$AddressFamily = 'IPv4'
-    )
-    $service = if ($AddressFamily -eq 'IPv6') { 'Tcpip6' } else { 'Tcpip' }
-    $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters\Interfaces\$InterfaceGuid"
-    try {
-        $value = (Get-ItemProperty -LiteralPath $key -Name NameServer -ErrorAction Stop).NameServer
-        return (-not [string]::IsNullOrWhiteSpace([string]$value))
-    } catch {
-        return $false
-    }
-}
-
 function Get-DevKitWifiDnsState {
     <#
     .SYNOPSIS
@@ -169,10 +147,39 @@ function Get-DevKitWifiDnsState {
         InterfaceAlias = $adapter.Name
         InterfaceGuid  = $guid
         IPv4           = @((Get-DnsClientServerAddress -InterfaceIndex $Snapshot.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
-        IPv6           = @((Get-DnsClientServerAddress -InterfaceIndex $Snapshot.InterfaceIndex -AddressFamily IPv6 -ErrorAction Stop).ServerAddresses)
+        # IPv6 is best-effort throughout: an adapter with IPv6 unbound has no
+        # IPv6 DNS to read or set, and that must not block the IPv4 change.
+        IPv6           = @(try { (Get-DnsClientServerAddress -InterfaceIndex $Snapshot.InterfaceIndex -AddressFamily IPv6 -ErrorAction Stop).ServerAddresses } catch { })
         IPv4Static     = (Test-DevKitDnsIsStatic -InterfaceGuid $guid -AddressFamily IPv4)
         IPv6Static     = (Test-DevKitDnsIsStatic -InterfaceGuid $guid -AddressFamily IPv6)
     }
+}
+
+function Resolve-DevKitWifiDnsAdapter {
+    <#
+    .SYNOPSIS
+        The WiFi adapter a saved DNS state belongs to, found by its GUID
+        (then by name) - never by the saved interface index.
+    .DESCRIPTION
+        Interface indexes are reassigned by Windows (a driver reinstall, a
+        USB adapter, a new virtual switch). Restoring by the index in the
+        undo file could reset the DNS of whatever adapter holds that number
+        today - an Ethernet port, a VPN. The GUID stays with the adapter.
+        Throws when the adapter is gone or is not a WiFi adapter.
+    #>
+    param([Parameter(Mandatory = $true)]$State)
+
+    $adapters = @(Get-NetAdapter -ErrorAction Stop)
+    $match = $null
+    if ([string]$State.InterfaceGuid) {
+        $match = $adapters | Where-Object { [string]$_.InterfaceGuid -eq [string]$State.InterfaceGuid } | Select-Object -First 1
+    }
+    if (-not $match -and [string]$State.InterfaceAlias) {
+        $match = $adapters | Where-Object { $_.Name -eq [string]$State.InterfaceAlias } | Select-Object -First 1
+    }
+    if (-not $match) { throw "the adapter the settings were saved from ('$($State.InterfaceAlias)') is no longer on this PC" }
+    if ($match.PhysicalMediaType -ne 'Native 802.11') { throw "'$($match.Name)' is not a WiFi adapter" }
+    return $match
 }
 
 function Restore-DevKitWifiDns {
@@ -183,13 +190,46 @@ function Restore-DevKitWifiDns {
         Throws on failure.
     #>
     param([Parameter(Mandatory = $true)]$State)
+    $adapter = Resolve-DevKitWifiDnsAdapter -State $State
     $plan = Get-DevKitDnsRestorePlan -Backup $State
-    Set-DnsClientServerAddress -InterfaceIndex $State.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
+    Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
     if ($plan.IPv4.Count -gt 0) {
-        Set-DnsClientServerAddress -InterfaceIndex $State.InterfaceIndex -ServerAddresses $plan.IPv4 -ErrorAction Stop
+        Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses $plan.IPv4 -ErrorAction Stop
     }
     if ($plan.IPv6.Count -gt 0) {
-        Set-DnsClientServerAddress -InterfaceIndex $State.InterfaceIndex -ServerAddresses $plan.IPv6 -ErrorAction Stop
+        try {
+            Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses $plan.IPv6 -ErrorAction Stop
+        } catch {
+            Write-Host "  WARNING: IPv6 DNS could not be re-applied ($($_.Exception.Message)); IPv4 DNS is restored." -ForegroundColor Yellow
+        }
+    }
+}
+
+function Save-DevKitWifiDnsUndo {
+    <#
+    .SYNOPSIS
+        Writes the DNS undo file from a captured state when - and only when -
+        Test-DevKitDnsBackupNeeded says the file may be replaced. Prints the
+        step. Throws when the state has to be saved and cannot be.
+    #>
+    param([Parameter(Mandatory = $true)]$State)
+
+    Write-DevKitStep "Saving today's DNS settings"
+    $needsBackup = Test-DevKitDnsBackupNeeded -ExistingBackup (Read-DevKitDnsBackup) `
+        -CurrentServers @($State.IPv4 + $State.IPv6) `
+        -InterfaceAlias $State.InterfaceAlias `
+        -CurrentIsStatic ([bool]($State.IPv4Static -or $State.IPv6Static))
+    if ($needsBackup) {
+        if (-not (Test-Path -LiteralPath $DnsBackupDir)) { New-Item -ItemType Directory -Path $DnsBackupDir -Force | Out-Null }
+        $State | ConvertTo-Json | Set-Content -LiteralPath $DnsBackupPath -Encoding UTF8 -ErrorAction Stop
+        Write-DevKitDone
+        Write-DevKitInfo "Saved to $DnsBackupPath"
+    } else {
+        # The servers in place are ones DevKit applied on an earlier run. The
+        # undo file already holds the settings from before THAT - overwriting
+        # it would lose them.
+        Write-DevKitSkip
+        Write-DevKitInfo "Keeping the existing undo file (it holds the settings from before DevKit's earlier change)."
     }
 }
 
@@ -254,6 +294,7 @@ function Get-DevKitWifiActionText {
     param([string]$Action, $Diagnosis)
     switch ($Action) {
         'FlushDns' { return "Clear this PC's DNS cache." }
+        'RestoreAutoDns' { return "Put this adapter's DNS back to automatic, so this network can hand out its own. Today's settings are saved first; undo with -RestoreDns." }
         'SwitchDns' { return "Switch DNS to $($Diagnosis.BestDns.Name) ($(@($Diagnosis.BestDns.Servers) -join ', ')). Today's settings are saved first; undo with -RestoreDns." }
         'RenewLease' { return "Ask the router for a fresh address (a brief disconnect)." }
         'RestartAdapter' { return "Turn the WiFi adapter off and on (disconnects for a few seconds)." }
@@ -291,7 +332,14 @@ function Invoke-DevKitWifiSpeedTest {
             $buffer = New-Object byte[] 65536
             [long]$total = 0
             while ($watch.Elapsed.TotalSeconds -lt $window) {
-                $read = $stream.Read($buffer, 0, $buffer.Length)
+                # ReadAsync with a bounded wait, not a blocking Read: once the
+                # headers have arrived HttpClient's own timeout no longer
+                # applies, so a connection that stalls mid-download would
+                # hang this tool (and, run from the app, hold its one tool
+                # lane) until someone killed it.
+                $pending = $stream.ReadAsync($buffer, 0, $buffer.Length)
+                if (-not $pending.Wait(5000)) { throw "the download stalled" }
+                $read = $pending.Result
                 if ($read -le 0) { break }
                 $total += $read
             }
@@ -341,11 +389,6 @@ if ($RestoreDns) {
     Write-Host "     https://www.northstarcoding.com" -ForegroundColor Gray
     Write-Host ""
 
-    if (-not (Test-DevKitAdmin)) {
-        Write-Host "  ERROR: Administrator privileges required to change DNS settings." -ForegroundColor Red
-        Exit-DevKitWifi -Code 1
-    }
-
     $dnsBackup = Read-DevKitDnsBackup
     if (-not $dnsBackup) {
         Write-DevKitError "No DNS undo file found - checked both:"
@@ -357,17 +400,42 @@ if ($RestoreDns) {
     }
 
     $plan = Get-DevKitDnsRestorePlan -Backup $dnsBackup
+    $describe = {
+        param($Addresses)
+        if (@($Addresses).Count -gt 0) { @($Addresses) -join ', ' } else { 'automatic (from the network)' }
+    }
+    Write-DevKitInfo "Saved $($dnsBackup.Timestamp) from '$($dnsBackup.InterfaceAlias)':"
+    Write-DevKitInfo "  IPv4 DNS: $(& $describe $plan.IPv4)"
+    Write-DevKitInfo "  IPv6 DNS: $(& $describe $plan.IPv6)"
+    Write-Host ""
+
+    # The read-only switches mean read-only here too, and the same
+    # confirmation rules apply as for a fix: this changes a real setting.
+    if ($readOnlyRun) {
+        Write-DevKitInfo "Dry run: this is what Undo DNS would restore. Nothing was changed."
+        Exit-DevKitWifi -Code 0
+    }
+    if (-not (Test-DevKitAdmin)) {
+        Write-Host "  ERROR: Administrator privileges required to change DNS settings. Nothing was changed." -ForegroundColor Red
+        Exit-DevKitWifi -Code 1
+    }
+    if (-not $Force) {
+        if ([Console]::IsInputRedirected) {
+            Write-DevKitInfo "Confirmation required but this session is non-interactive - re-run with -Force to apply. Nothing was changed."
+            exit 0
+        }
+        $confirm = Read-Host "  Restore these DNS settings? (y/n)"
+        if ($confirm -ne 'y') {
+            Write-Host "  Cancelled. Nothing was changed.`n" -ForegroundColor Gray
+            exit 0
+        }
+    }
+
     Write-DevKitStep "Restoring DNS on $($dnsBackup.InterfaceAlias)"
     try {
         Restore-DevKitWifiDns -State $dnsBackup
+        Clear-DnsClientCache -ErrorAction SilentlyContinue
         Write-DevKitDone
-        $describe = {
-            param($Addresses)
-            if (@($Addresses).Count -gt 0) { @($Addresses) -join ', ' } else { 'automatic (from the network)' }
-        }
-        Write-DevKitInfo "IPv4 DNS: $(& $describe $plan.IPv4)"
-        Write-DevKitInfo "IPv6 DNS: $(& $describe $plan.IPv6)"
-        Write-DevKitInfo "Restored from the settings saved $($dnsBackup.Timestamp)"
     } catch {
         Write-DevKitFail "Could not restore DNS: $($_.Exception.Message)"
         Exit-DevKitWifi -Code 1
@@ -384,7 +452,7 @@ Write-Host "   NORTHSTAR DevKit - WiFi $(if ($readOnlyRun) { 'CHECK' } else { 'C
 Write-Host "     https://www.northstarcoding.com" -ForegroundColor Gray
 Write-Host ""
 
-Write-DevKitStep "Measuring the connection (about 15 seconds)"
+Write-DevKitStep "Measuring the connection (about 10 seconds)"
 $before = Get-DevKitWifiSnapshot
 Write-DevKitDone
 
@@ -422,7 +490,15 @@ if ($diagnosis.Actions.Count -eq 0) {
     }
 }
 
-$canMeasureSpeed = ($before.Connected -and $before.GatewayPing -and $before.GatewayPing.PacketLossPct -lt 100)
+# "Can a speed test even run?" is answered by what lies BEYOND the router -
+# a router that ignores ping says nothing about the connection through it.
+function Test-DevKitWifiOnline {
+    param($Snapshot)
+    if (-not $Snapshot -or -not $Snapshot.Connected) { return $false }
+    if ([string]$Snapshot.Portal -eq 'open') { return $true }
+    return [bool]($Snapshot.InternetPing -and [int]$Snapshot.InternetPing.PacketLossPct -lt 100)
+}
+$canMeasureSpeed = Test-DevKitWifiOnline -Snapshot $before
 
 if ($readOnlyRun -or $diagnosis.Actions.Count -eq 0) {
     if (-not $Fast -and $canMeasureSpeed) {
@@ -468,6 +544,7 @@ Write-Host "  FIXING" -ForegroundColor Cyan
 $failedActions = 0
 $dnsBeforeChange = $null
 $dnsSwitched = $false
+$dnsMadeAutomatic = $false
 $restartNeeded = $false
 
 foreach ($action in $diagnosis.Actions) {
@@ -485,25 +562,10 @@ foreach ($action in $diagnosis.Actions) {
 
         'SwitchDns' {
             $target = $diagnosis.BestDns
-            Write-DevKitStep "Saving today's DNS settings"
+            $ipv6Note = $null
             try {
                 $dnsBeforeChange = Get-DevKitWifiDnsState -Snapshot $before
-                $needsBackup = Test-DevKitDnsBackupNeeded -ExistingBackup (Read-DevKitDnsBackup) `
-                    -CurrentServers @($dnsBeforeChange.IPv4 + $dnsBeforeChange.IPv6) `
-                    -InterfaceAlias $dnsBeforeChange.InterfaceAlias `
-                    -CurrentIsStatic ($dnsBeforeChange.IPv4Static -or $dnsBeforeChange.IPv6Static)
-                if ($needsBackup) {
-                    if (-not (Test-Path -LiteralPath $DnsBackupDir)) { New-Item -ItemType Directory -Path $DnsBackupDir -Force | Out-Null }
-                    $dnsBeforeChange | ConvertTo-Json | Set-Content -LiteralPath $DnsBackupPath -Encoding UTF8 -ErrorAction Stop
-                    Write-DevKitDone
-                    Write-DevKitInfo "Saved to $DnsBackupPath"
-                } else {
-                    # The servers in place are ones DevKit applied on an
-                    # earlier run. The undo file already holds the settings
-                    # from before THAT - overwriting it would lose them.
-                    Write-DevKitSkip
-                    Write-DevKitInfo "Keeping the existing undo file (it holds the settings from before DevKit's earlier change)."
-                }
+                Save-DevKitWifiDnsUndo -State $dnsBeforeChange
             } catch {
                 # Without a saved state there is no undo and no rollback, so
                 # the DNS change does not happen at all.
@@ -517,17 +579,47 @@ foreach ($action in $diagnosis.Actions) {
             try {
                 Set-DnsClientServerAddress -InterfaceIndex $before.InterfaceIndex -ServerAddresses @($target.Servers) -ErrorAction Stop
                 if (@($target.IPv6).Count -gt 0) {
-                    Set-DnsClientServerAddress -InterfaceIndex $before.InterfaceIndex -ServerAddresses @($target.IPv6) -ErrorAction Stop
+                    # Best-effort: an adapter with IPv6 unbound cannot take
+                    # IPv6 DNS, and that is no reason to undo the IPv4 change.
+                    try {
+                        Set-DnsClientServerAddress -InterfaceIndex $before.InterfaceIndex -ServerAddresses @($target.IPv6) -ErrorAction Stop
+                    } catch {
+                        $ipv6Note = "IPv6 DNS left as it was: $($_.Exception.Message)"
+                    }
                 }
                 $applied = @((Get-DnsClientServerAddress -InterfaceIndex $before.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop).ServerAddresses)
                 if ($applied -notcontains $target.Servers[0]) { throw "Windows reports DNS as $($applied -join ', ')" }
                 Clear-DnsClientCache -ErrorAction SilentlyContinue
                 $dnsSwitched = $true
                 Write-DevKitDone
+                if ($ipv6Note) { Write-DevKitInfo $ipv6Note }
             } catch {
                 Write-DevKitFail "Could not set DNS: $($_.Exception.Message)"
                 $failedActions++
                 try { Restore-DevKitWifiDns -State $dnsBeforeChange } catch { Write-Host "  WARNING: could not put the previous DNS back either: $($_.Exception.Message)" -ForegroundColor Yellow }
+            }
+        }
+
+        'RestoreAutoDns' {
+            try {
+                $dnsBeforeChange = Get-DevKitWifiDnsState -Snapshot $before
+                Save-DevKitWifiDnsUndo -State $dnsBeforeChange
+            } catch {
+                Write-DevKitFail "Could not save the current DNS settings ($($_.Exception.Message)) - leaving DNS unchanged."
+                $dnsBeforeChange = $null
+                $failedActions++
+                break
+            }
+
+            Write-DevKitStep "Putting DNS back to automatic"
+            try {
+                Set-DnsClientServerAddress -InterfaceIndex $before.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
+                Clear-DnsClientCache -ErrorAction SilentlyContinue
+                $dnsMadeAutomatic = $true
+                Write-DevKitDone
+            } catch {
+                Write-DevKitFail "Could not reset DNS: $($_.Exception.Message)"
+                $failedActions++
             }
         }
 
@@ -557,6 +649,9 @@ foreach ($action in $diagnosis.Actions) {
             } catch {
                 Write-DevKitFail $_.Exception.Message
                 $failedActions++
+                # A restart is a disable followed by an enable. If it failed
+                # between the two, do not leave the adapter switched off.
+                try { Enable-NetAdapter -Name $before.InterfaceAlias -Confirm:$false -ErrorAction Stop } catch { }
             }
         }
 
@@ -590,9 +685,16 @@ Write-DevKitDone
 if ($dnsSwitched -and $dnsBeforeChange) {
     $dnsNow = $after.DnsCurrent
     $dnsThen = $before.DnsCurrent
-    $broken = (-not $dnsNow -or $null -eq $dnsNow.MedianMs -or [int]$dnsNow.FailurePct -ge 50)
-    $slower = (-not $broken -and $dnsThen -and $null -ne $dnsThen.MedianMs -and
+    # Only a MEASURED failure counts. No DNS reading at all means the
+    # connection is not back yet (adapter still reconnecting, no address) -
+    # that says nothing about the new servers, and rolling a good switch back
+    # for it would be wrong.
+    $broken = ($dnsNow -and ($null -eq $dnsNow.MedianMs -or [int]$dnsNow.FailurePct -ge 50))
+    $slower = ($dnsNow -and -not $broken -and $dnsThen -and $null -ne $dnsThen.MedianMs -and
         ([double]$dnsNow.MedianMs -gt ([double]$dnsThen.MedianMs + [math]::Max(20, 0.5 * [double]$dnsThen.MedianMs))))
+    if (-not $dnsNow) {
+        Write-DevKitInfo "The connection is not back yet, so the new DNS could not be checked. If names do not resolve once it is, run this tool with -RestoreDns."
+    }
     if ($broken -or $slower) {
         Write-Host "  WARNING: the new DNS $(if ($broken) { 'is not answering' } else { 'answers slower than the old one did' }) - putting the previous settings back." -ForegroundColor Yellow
         Write-DevKitStep "Restoring the previous DNS"
@@ -629,7 +731,7 @@ switch ($comparison.Overall) {
     default { Write-Host "  RESULT: no measurable change. What is slowing this connection is not something these fixes reach." -ForegroundColor Gray }
 }
 
-if (-not $Fast -and $after.Connected -and $after.GatewayPing -and $after.GatewayPing.PacketLossPct -lt 100) {
+if (-not $Fast -and (Test-DevKitWifiOnline -Snapshot $after)) {
     Write-Host ""
     Invoke-DevKitWifiSpeedTest
 }
@@ -641,6 +743,9 @@ Write-Host ""
 Write-Host "  Finished in $duration seconds." -ForegroundColor Gray
 if ($dnsSwitched) {
     Write-Host "  DNS is now $($diagnosis.BestDns.Name). Undo anytime: .\WiFi-Optimize.ps1 -RestoreDns" -ForegroundColor Gray
+}
+if ($dnsMadeAutomatic) {
+    Write-Host "  DNS is now automatic (handed out by this network). The previous manual settings can be put back with -RestoreDns." -ForegroundColor Gray
 }
 if ($restartNeeded) {
     Write-Host ""

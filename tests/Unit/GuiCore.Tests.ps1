@@ -214,8 +214,9 @@ Describe "Get-DevKitGuiCatalog (against the real manifests)" {
         $wifi = @($script:catalog | ForEach-Object { $_.Modules } | Where-Object { $_.Folder -eq 'wifi' })[0]
         $fast = @($wifi.Items | Where-Object { $_.StaticArgs -and $_.StaticArgs['Fast'] })
         $fast.Count | Should -Be 1
-        # And the static args survive argument resolution as the switch the
-        # script itself declares (StaticArgs merge last and win).
+        # And the static args survive argument resolution (StaticArgs merge
+        # last and win). WiFi-FastMode.ps1 deliberately does not DECLARE
+        # -Fast - it absorbs it; see that script's header note.
         $rendered = ConvertTo-DevKitToolArguments -Item $fast[0] -Values @{}
         $rendered['Fast'] | Should -BeTrue
     }

@@ -205,3 +205,41 @@ Describe "Save-DevKitProjectOnDeck store safety" {
         @(Get-DevKitProjectOnDeck -ProjectPath 'D:\A' -OnDeckFile $script:DeckFile).Count | Should -Be 1
     }
 }
+
+Describe "store encoding and shape" {
+
+    BeforeEach {
+        $script:StoreFile = Join-Path $TestDrive "notes-$([guid]::NewGuid().ToString('N')).json"
+    }
+
+    It "round-trips non-ASCII text exactly" {
+        # The store is written as UTF-8 without a BOM. The readers must
+        # decode it the same way: Windows PowerShell 5.1's Get-Content reads
+        # a BOM-less file as ANSI, and the mojibake would then be saved back.
+        # Built from code points so this test file's own encoding is not
+        # part of the test.
+        $text = "caf$([char]0x00E9) $([char]0x2014) $([char]0x043F)$([char]0x0440)$([char]0x0438)$([char]0x0432)$([char]0x0435)$([char]0x0442)"
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @((New-TestNote $text)) -NotesFile $script:StoreFile
+        $r = @(Get-DevKitProjectNotes -ProjectPath 'D:\A' -NotesFile $script:StoreFile)
+        $r[0].Text | Should -Be $text
+        # And on disk it is real UTF-8 with no BOM.
+        $bytes = [System.IO.File]::ReadAllBytes($script:StoreFile)
+        ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -BeFalse
+        [System.Text.Encoding]::UTF8.GetString($bytes) | Should -Match ([regex]::Escape($text))
+    }
+
+    It "copies aside a store that is valid JSON of the wrong shape before rebuilding it" {
+        Set-Content -LiteralPath $script:StoreFile -Value '{ "notes": [ "from some other tool" ] }'
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @((New-TestNote 'fresh')) -NotesFile $script:StoreFile
+        $copies = @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:StoreFile) -Filter ((Split-Path -Leaf $script:StoreFile) + '.corrupt-*'))
+        $copies.Count | Should -Be 1
+        (Get-Content -LiteralPath $copies[0].FullName -Raw) | Should -Match 'from some other tool'
+    }
+
+    It "does not copy aside an empty but well-formed store" {
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @((New-TestNote 'x')) -NotesFile $script:StoreFile
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @() -NotesFile $script:StoreFile
+        Save-DevKitProjectNotes -ProjectPath 'D:\B' -Notes @((New-TestNote 'y')) -NotesFile $script:StoreFile
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:StoreFile) -Filter ((Split-Path -Leaf $script:StoreFile) + '.corrupt-*')).Count | Should -Be 0
+    }
+}

@@ -39,6 +39,12 @@
 # saw the functions.
 if (Get-Command Get-DevKitWifiDiagnosis -ErrorAction SilentlyContinue) { return }
 
+# Windows PowerShell 5.1 does not load System.Net.Http by default (PowerShell
+# 7 does). Without this the sign-in-page probe and the speed test cannot even
+# be constructed there - and a probe that silently reads "offline" would let
+# the optimizer change DNS behind a sign-in page.
+try { Add-Type -AssemblyName System.Net.Http -ErrorAction Stop } catch { }
+
 # ==================== PARSERS (pure) ====================
 
 function ConvertTo-DevKitWifiBand {
@@ -151,7 +157,7 @@ function ConvertFrom-DevKitWlanScan {
         if ($value -match '^(\d{1,3})\s*%$') { $bss.Signal = [int]$matches[1]; continue }
         if ($value -match '^\d+\s*\(\s*(\d{1,3})\s*%\s*\)$') { $bss.Utilization = [int]$matches[1]; continue }
         if ($value -match '^802\.11') { $bss.RadioType = $value; continue }
-        if ($value -match 'GHz') { $bss.Band = $value; continue }
+        if ($value -match 'GHz') { if (-not $bss.Band) { $bss.Band = $value }; continue }
         if ($value -match '^\d{1,3}$') {
             if ($key -eq 'Channel' -or $bss.Channel -eq 0) {
                 # English label, or (other locales) the first bare number in
@@ -214,9 +220,12 @@ function ConvertFrom-DevKitWlanInterface {
             continue
         }
         if (-not $current) {
-            # Non-English output has no "Name" label; the first labelled
-            # line after the "There is 1 interface" sentence is the name.
-            if ($value -match 'interface' -or $key -match 'interface') { continue }
+            # Non-English output has no "Name" label; the first line that
+            # actually carries a value is the name. The "There is 1 interface
+            # on the system:" sentence ends in a colon with nothing after it
+            # in every language, so an empty value is what marks it - not
+            # the English word "interface".
+            if (-not $value) { continue }
             $current = & $newInterface
             $current.Name = $value
             continue
@@ -232,7 +241,9 @@ function ConvertFrom-DevKitWlanInterface {
         if ($key -match 'BSSID' -and $value -match $macPattern) { $current.Bssid = $value.ToLowerInvariant(); continue }
         if ($value -match '^(\d{1,3})\s*%$') { $current.SignalPercent = [int]$matches[1]; continue }
         if ($value -match '^802\.11') { $current.RadioType = $value; continue }
-        if ($value -match 'GHz') { $current.Band = $value; $afterBand = $true; continue }
+        # First GHz value only: the Band line comes before "Profile", and a
+        # profile named "Home-2.4GHz" must not overwrite the real band.
+        if ($value -match 'GHz') { if (-not $current.Band) { $current.Band = $value; $afterBand = $true }; continue }
         if ($key -match '\(Mbps\)' -and $value -match '^\d+(?:[.,]\d+)?$') {
             $rate = [double]($value -replace ',', '.')
             if ($null -eq $current.RxMbps) { $current.RxMbps = $rate } elseif ($null -eq $current.TxMbps) { $current.TxMbps = $rate }
@@ -388,7 +399,11 @@ function Get-DevKitWifiScanAdvice {
         }
 
         if ($myAp) {
-            $load = @(Get-DevKitWifiChannelLoad -Networks $Networks | Where-Object { $_.Band -eq [string]$myAp.Band -and $_.Channel -eq [int]$myAp.Channel }) | Select-Object -First 1
+            # Assigned BEFORE filtering: the function returns its array behind
+            # a unary comma, so piping the call straight into Where-Object
+            # would hand the filter the whole array as one item.
+            $allLoad = Get-DevKitWifiChannelLoad -Networks $Networks
+            $load = @($allLoad | Where-Object { $_.Band -eq [string]$myAp.Band -and $_.Channel -eq [int]$myAp.Channel }) | Select-Object -First 1
             if ($null -ne $myAp.Utilization -and [int]$myAp.Utilization -ge 60) {
                 $advice += (& $add 'warn' "Your access point reports its channel $($myAp.Utilization)% busy. That is congestion at the router, not a problem on this PC.")
             } elseif ($load -and $load.Band -eq '2.4 GHz' -and $load.Overlapping -ge 5) {
@@ -443,8 +458,15 @@ function Get-DevKitWifiDiagnosis {
 
         Action codes, in the order they are applied:
           FlushDns        clear the local resolver cache
+          RestoreAutoDns  put the adapter's DNS back to automatic - planned
+                          when DNS that was set by hand (usually by an
+                          earlier DevKit run on another network) is failing
+                          here. A network that blocks outside DNS, as sign-in
+                          pages do, only works with its own.
           SwitchDns       point the adapter at the fastest working resolver
-                          (BestDns); never while a sign-in page is in the way
+                          (BestDns); never while a sign-in page is in the
+                          way, and never together with -Deep (the stack
+                          reset can discard it)
           RenewLease      release/renew the DHCP lease
           RestartAdapter  disable/enable the WiFi adapter
           ResetStack      Winsock + TCP/IP reset (needs a restart) - ONLY
@@ -477,7 +499,7 @@ function Get-DevKitWifiDiagnosis {
     $finding = { param($Code, $Severity, $Message) [PSCustomObject]@{ Code = $Code; Severity = $Severity; Message = $Message } }
     $result = {
         param($F, $A, $B)
-        $ordered = @('FlushDns', 'SwitchDns', 'RenewLease', 'RestartAdapter', 'ResetStack' | Where-Object { $A -contains $_ })
+        $ordered = @('FlushDns', 'RestoreAutoDns', 'SwitchDns', 'RenewLease', 'RestartAdapter', 'ResetStack' | Where-Object { $A -contains $_ })
         [PSCustomObject]@{
             Findings = @($F)
             Actions  = @($ordered)
@@ -509,12 +531,22 @@ function Get-DevKitWifiDiagnosis {
     }
 
     $gateway = $Snapshot.GatewayPing
-    if ($gateway -and [int]$gateway.PacketLossPct -ge 100) {
-        $findings += (& $finding 'GatewayUnreachable' 'error' "The router ($($Snapshot.Gateway)) does not answer at all.")
-        $actions += 'RenewLease', 'RestartAdapter'
-        return (& $result $findings $actions $null)
-    }
-    if ($gateway -and ([int]$gateway.PacketLossPct -ge 10 -or [double]$gateway.AverageLatency -gt 30 -or [double]$gateway.JitterMs -gt 30)) {
+    $internet = $Snapshot.InternetPing
+    $gatewaySilent = ($gateway -and [int]$gateway.PacketLossPct -ge 100)
+    if ($gatewaySilent) {
+        # A router that ignores ping is not a dead router. Guest and
+        # enterprise gateways drop ICMP, and so does a VPN that blocks LAN
+        # access - with the internet working fine. Only when nothing beyond
+        # it answers either is the link really down; bouncing the adapter on
+        # a working connection would drop the VPN for nothing.
+        $beyondAnswers = ([string]$Snapshot.Portal -eq 'open') -or ($internet -and [int]$internet.PacketLossPct -lt 100)
+        if (-not $beyondAnswers) {
+            $findings += (& $finding 'GatewayUnreachable' 'error' "The router ($($Snapshot.Gateway)) does not answer, and nothing beyond it does either.")
+            $actions += 'RenewLease', 'RestartAdapter'
+            return (& $result $findings $actions $null)
+        }
+        $findings += (& $finding 'GatewayPingBlocked' 'info' 'The router does not answer ping, but the connection through it works - so the link to the router could not be measured.')
+    } elseif ($gateway -and ([int]$gateway.PacketLossPct -ge 20 -or [double]$gateway.AverageLatency -gt 30 -or [double]$gateway.JitterMs -gt 30)) {
         $findings += (& $finding 'PoorLink' 'warn' ("The link to the router itself is unstable ({0} ms average, {1}% lost). That is radio quality - interference or distance - and no setting on this PC fixes it." -f [math]::Round([double]$gateway.AverageLatency, 0), [int]$gateway.PacketLossPct))
     }
 
@@ -523,7 +555,6 @@ function Get-DevKitWifiDiagnosis {
         $findings += (& $finding 'CaptivePortal' 'warn' 'This network is showing a sign-in page. Open a browser and sign in first - until then nothing here can help, and changing DNS would break the sign-in page.')
     }
 
-    $internet = $Snapshot.InternetPing
     if ($internet) {
         if ([int]$internet.PacketLossPct -ge 100) {
             if ([string]$Snapshot.Portal -eq 'open') {
@@ -531,7 +562,9 @@ function Get-DevKitWifiDiagnosis {
             } elseif (-not $portalInTheWay) {
                 $findings += (& $finding 'NoInternet' 'error' 'The router answers but the internet does not. The outage is past the router (its uplink or the provider) - nothing on this PC fixes that.')
             }
-        } elseif ([int]$internet.PacketLossPct -ge 10) {
+        } elseif ([int]$internet.PacketLossPct -ge 20) {
+            # 20, not 10: with ten pings a single lost one is 10%, and one
+            # stray packet must not flip a healthy connection to "lossy".
             $findings += (& $finding 'InternetLoss' 'warn' "$($internet.PacketLossPct)% of packets to the internet are being lost.")
         } elseif ([double]$internet.AverageLatency -gt 150) {
             $findings += (& $finding 'HighLatency' 'warn' ("High latency to the internet ({0} ms)." -f [math]::Round([double]$internet.AverageLatency, 0)))
@@ -549,14 +582,28 @@ function Get-DevKitWifiDiagnosis {
 
     if ($current) {
         $dnsBroken = ([int]$current.FailurePct -ge 50 -or $null -eq $current.MedianMs)
-        if ($dnsBroken) {
+        $dnsIsStatic = [bool]$Snapshot.DnsIsStatic
+        if ($dnsBroken -and $dnsIsStatic) {
+            # DNS pinned on the adapter (by hand, or by an earlier DevKit run
+            # on another network) is failing HERE. The usual reason is a
+            # network that only lets its own DNS through - every sign-in page
+            # does. Another public resolver would be blocked the same way;
+            # the fix is to hand DNS back to the network. Allowed behind a
+            # sign-in page too: it is what makes the page reachable.
+            $findings += (& $finding 'StaticDnsFailing' 'error' "DNS on this adapter is set by hand ($(@($current.Servers) -join ', ')) and is not answering on this network. Networks with a sign-in page only let their own DNS through.")
+            $actions += 'FlushDns'
+            if (-not $KeepDns) { $actions += 'RestoreAutoDns' }
+        } elseif ($dnsBroken) {
             $findings += (& $finding 'DnsFailing' 'error' 'The DNS servers this network handed out are failing to answer.')
             $actions += 'FlushDns'
-            if ($bestDns -and -not $KeepDns -and -not $portalInTheWay) { $actions += 'SwitchDns' }
-        } elseif ($bestDns -and ([double]$current.MedianMs - [double]$bestDns.MedianMs) -ge 20 -and [double]$current.MedianMs -ge (1.5 * [double]$bestDns.MedianMs)) {
+            if ($bestDns -and -not $KeepDns -and -not $portalInTheWay -and -not $Deep) { $actions += 'SwitchDns' }
+        } elseif ($bestDns -and ([double]$current.MedianMs - [double]$bestDns.MedianMs) -ge 30 -and [double]$current.MedianMs -ge (2 * [double]$bestDns.MedianMs)) {
+            # A deliberately high bar (30 ms AND twice as slow): the DNS in
+            # use may be someone's choice - a filtering or company resolver -
+            # and a marginal gain is not worth overriding it.
             $message = "DNS is slow: the current servers answer in {0} ms, {1} answers in {2} ms." -f [math]::Round([double]$current.MedianMs, 0), $bestDns.Name, [math]::Round([double]$bestDns.MedianMs, 0)
-            if ($KeepDns -or $portalInTheWay) {
-                $findings += (& $finding 'DnsSlow' 'info' "$message Left alone as requested.")
+            if ($KeepDns -or $portalInTheWay -or $Deep) {
+                $findings += (& $finding 'DnsSlow' 'info' "$message Left alone.")
             } else {
                 $findings += (& $finding 'DnsSlow' 'warn' $message)
                 $actions += 'SwitchDns'
@@ -574,8 +621,12 @@ function Compare-DevKitWifiSnapshot {
         and overall - the "did that actually help?" the old tool never asked.
     .DESCRIPTION
         Pure. Lower is better for every metric here. A change only counts
-        when it clears both 5 units and 15% of the earlier value, so normal
-        run-to-run noise reads as "same" instead of a false win or loss.
+        when it clears both the metric's own floor and 15% of the earlier
+        value, so normal run-to-run noise reads as "same" instead of a false
+        win or loss. The floors for the loss and failure percentages sit
+        above what a single stray packet (10% of ten pings) or a single
+        failed lookup (20% of five) produces - one unlucky packet must not
+        cancel out a real improvement elsewhere.
     .OUTPUTS
         PSCustomObject: Rows (Metric, Before, After, Unit, Verdict =
         'better'|'worse'|'same'|'n/a'), Overall ('better'|'worse'|'same').
@@ -586,12 +637,12 @@ function Compare-DevKitWifiSnapshot {
     )
 
     $metrics = @(
-        @{ Name = 'Router latency'; Unit = 'ms'; Get = { param($s) if ($s.GatewayPing) { $s.GatewayPing.AverageLatency } } }
-        @{ Name = 'Router packet loss'; Unit = '%'; Get = { param($s) if ($s.GatewayPing) { $s.GatewayPing.PacketLossPct } } }
-        @{ Name = 'Internet latency'; Unit = 'ms'; Get = { param($s) if ($s.InternetPing) { $s.InternetPing.AverageLatency } } }
-        @{ Name = 'Internet packet loss'; Unit = '%'; Get = { param($s) if ($s.InternetPing) { $s.InternetPing.PacketLossPct } } }
-        @{ Name = 'DNS answer time'; Unit = 'ms'; Get = { param($s) if ($s.DnsCurrent) { $s.DnsCurrent.MedianMs } } }
-        @{ Name = 'DNS failures'; Unit = '%'; Get = { param($s) if ($s.DnsCurrent) { $s.DnsCurrent.FailurePct } } }
+        @{ Name = 'Router latency'; Unit = 'ms'; Min = 5; Get = { param($s) if ($s.GatewayPing) { $s.GatewayPing.AverageLatency } } }
+        @{ Name = 'Router packet loss'; Unit = '%'; Min = 20; Get = { param($s) if ($s.GatewayPing) { $s.GatewayPing.PacketLossPct } } }
+        @{ Name = 'Internet latency'; Unit = 'ms'; Min = 5; Get = { param($s) if ($s.InternetPing) { $s.InternetPing.AverageLatency } } }
+        @{ Name = 'Internet packet loss'; Unit = '%'; Min = 20; Get = { param($s) if ($s.InternetPing) { $s.InternetPing.PacketLossPct } } }
+        @{ Name = 'DNS answer time'; Unit = 'ms'; Min = 5; Get = { param($s) if ($s.DnsCurrent) { $s.DnsCurrent.MedianMs } } }
+        @{ Name = 'DNS failures'; Unit = '%'; Min = 40; Get = { param($s) if ($s.DnsCurrent) { $s.DnsCurrent.FailurePct } } }
     )
 
     $rows = @()
@@ -603,7 +654,7 @@ function Compare-DevKitWifiSnapshot {
         $verdict = 'n/a'
         if ($null -ne $b -and $null -ne $a) {
             $delta = [double]$a - [double]$b
-            $threshold = [math]::Max(5, 0.15 * [math]::Abs([double]$b))
+            $threshold = [math]::Max([double]$metric.Min, 0.15 * [math]::Abs([double]$b))
             if ($delta -le -$threshold) { $verdict = 'better'; $better++ }
             elseif ($delta -ge $threshold) { $verdict = 'worse'; $worse++ }
             else { $verdict = 'same' }
@@ -715,40 +766,43 @@ function Measure-DevKitPingLatency {
     .SYNOPSIS
         Pings a target and reports average latency, jitter and packet loss.
     .DESCRIPTION
-        Test-Connection reports Latency/ResponseTime = 0 on a timeout, not
-        $null, so averaging every reply (success or not) silently folds
-        packet loss into the average as artificially-good 0ms readings. This
-        averages only replies that actually succeeded and reports loss
-        separately. Handles both PowerShell 7's Test-Connection
-        (Status/Latency) and Windows PowerShell 5.1's (StatusCode/
-        ResponseTime).
+        Uses System.Net.NetworkInformation.Ping directly rather than
+        Test-Connection, for three reasons: it behaves identically under
+        PowerShell 7 and Windows PowerShell 5.1 (Test-Connection's output
+        shape differs between them, and on a timeout it reports 0 ms rather
+        than nothing, which folds packet loss into the average as
+        artificially good readings); the pings can be 100 ms apart instead
+        of a second, so ten of them take about a second instead of ten; and
+        ten samples make one stray lost packet 10% rather than 20% or 25%.
 
-        Jitter is the mean difference between consecutive replies - the
-        number that explains a call breaking up while "average ping" looks
-        fine.
+        Only replies that actually succeeded are averaged; loss is reported
+        separately. Jitter is the mean difference between consecutive
+        replies - the number that explains a call breaking up while
+        "average ping" looks fine.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ComputerName,
-        [int]$Count = 4
+        [int]$Count = 10,
+        [int]$TimeoutMs = 1000
     )
 
-    $pingArgs = @{ ComputerName = $ComputerName; Count = $Count; ErrorAction = 'SilentlyContinue' }
-    # PowerShell 7 waits 5 s per unanswered ping by default - 25 s to learn
-    # that a dead router is dead. One second is plenty on a local network and
-    # still generous for the internet. (Windows PowerShell 5.1 has no such
-    # parameter and already times out in about a second.)
-    if ((Get-Command Test-Connection).Parameters.ContainsKey('TimeoutSeconds')) { $pingArgs['TimeoutSeconds'] = 1 }
-    $replies = @(Test-Connection @pingArgs)
-    $sent = [math]::Max($replies.Count, $Count)
-
-    $successful = @($replies | Where-Object {
-            ($_.PSObject.Properties.Match('Status').Count -gt 0 -and $_.Status -eq 'Success') -or
-            ($_.PSObject.Properties.Match('StatusCode').Count -gt 0 -and $_.StatusCode -eq 0)
-        })
-
-    $latencies = @($successful | ForEach-Object {
-            if ($_.PSObject.Properties.Match('Latency').Count -gt 0) { [double]$_.Latency } else { [double]$_.ResponseTime }
-        })
+    $latencies = @()
+    $pinger = New-Object System.Net.NetworkInformation.Ping
+    try {
+        foreach ($attempt in 1..$Count) {
+            try {
+                $reply = $pinger.Send($ComputerName, $TimeoutMs)
+                if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                    $latencies += [double]$reply.RoundtripTime
+                }
+            } catch {
+                # Unresolvable name, no route, adapter down: a lost ping.
+            }
+            if ($attempt -lt $Count) { Start-Sleep -Milliseconds 100 }
+        }
+    } finally {
+        $pinger.Dispose()
+    }
 
     $average = $null
     $jitter = $null
@@ -764,9 +818,9 @@ function Measure-DevKitPingLatency {
     return [PSCustomObject]@{
         AverageLatency = $average
         JitterMs       = $jitter
-        PacketLossPct  = [int][math]::Round((($sent - $successful.Count) / $sent) * 100, 0)
-        Sent           = $sent
-        Received       = $successful.Count
+        PacketLossPct  = [int][math]::Round((($Count - $latencies.Count) / $Count) * 100, 0)
+        Sent           = $Count
+        Received       = $latencies.Count
     }
 }
 
@@ -833,7 +887,10 @@ function Test-DevKitCaptivePortal {
         expected body means open internet; a redirect or any other body
         means something is answering in its place - a sign-in page.
     .OUTPUTS
-        'open' | 'portal' | 'offline'
+        'open' | 'portal' | 'offline' | 'unknown'
+        'unknown' means the probe itself could not be built (no HTTP client
+        in this PowerShell) - which is NOT evidence of an outage, and must
+        never be read as "no sign-in page here".
     #>
     param([int]$TimeoutSeconds = 5)
 
@@ -844,6 +901,12 @@ function Test-DevKitCaptivePortal {
         $handler.AllowAutoRedirect = $false
         $client = New-Object System.Net.Http.HttpClient($handler)
         $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSeconds)
+    } catch {
+        if ($client) { $client.Dispose() }
+        if ($handler) { $handler.Dispose() }
+        return 'unknown'
+    }
+    try {
         $response = $client.GetAsync('http://www.msftconnecttest.com/connecttest.txt').GetAwaiter().GetResult()
         $status = [int]$response.StatusCode
         if ($status -ge 300 -and $status -lt 400) { return 'portal' }
@@ -927,13 +990,37 @@ function Invoke-DevKitWlanRescan {
     }
 }
 
+function Test-DevKitDnsIsStatic {
+    <#
+    .SYNOPSIS
+        Whether an adapter's DNS for one address family is set by hand
+        (static) rather than handed out by the network. Read-only.
+    .DESCRIPTION
+        Get-DnsClientServerAddress reports the addresses in use either way,
+        so it cannot answer this. The adapter's registry key can: a
+        non-empty NameServer value is a manual setting.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$InterfaceGuid,
+        [ValidateSet('IPv4', 'IPv6')][string]$AddressFamily = 'IPv4'
+    )
+    $service = if ($AddressFamily -eq 'IPv6') { 'Tcpip6' } else { 'Tcpip' }
+    $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$service\Parameters\Interfaces\$InterfaceGuid"
+    try {
+        $value = (Get-ItemProperty -LiteralPath $key -Name NameServer -ErrorAction Stop).NameServer
+        return (-not [string]::IsNullOrWhiteSpace([string]$value))
+    } catch {
+        return $false
+    }
+}
+
 function Get-DevKitWifiSnapshot {
     <#
     .SYNOPSIS
         One read-only measurement pass over the WiFi connection: adapter,
         signal, address, router, internet, sign-in page, DNS.
     .DESCRIPTION
-        Changes nothing. Takes roughly 5-15 seconds (pings and DNS lookups
+        Changes nothing. Takes roughly 5-10 seconds (pings and DNS lookups
         run for real). The output is what Get-DevKitWifiDiagnosis reads and
         what Compare-DevKitWifiSnapshot compares.
     .PARAMETER SkipDnsCandidates
@@ -946,7 +1033,7 @@ function Get-DevKitWifiSnapshot {
         AdapterPresent = $false; InterfaceIndex = $null; InterfaceAlias = ''; Connected = $false
         Ssid = ''; Bssid = ''; SignalPercent = $null; Band = ''; Channel = 0; RadioType = ''; RxMbps = $null; TxMbps = $null
         IPv4 = ''; Gateway = ''; Portal = 'unknown'
-        GatewayPing = $null; InternetPing = $null; DnsCurrent = $null; DnsCandidates = @()
+        GatewayPing = $null; InternetPing = $null; DnsCurrent = $null; DnsCandidates = @(); DnsIsStatic = $false
     }
 
     # PhysicalMediaType (not just "wireless-looking name") keeps this
@@ -965,7 +1052,11 @@ function Get-DevKitWifiSnapshot {
     $snapshot.InterfaceAlias = $adapter.Name
 
     $rawInterfaces = (netsh wlan show interfaces | Out-String)
-    $wlan = @(ConvertFrom-DevKitWlanInterface -RawOutput $rawInterfaces | Where-Object { $_.Connected }) | Select-Object -First 1
+    # Assigned before filtering - the parser returns its array behind a unary
+    # comma, and piping the call straight into Where-Object would test all
+    # adapters as one item (two disconnected adapters would read as connected).
+    $allWlan = ConvertFrom-DevKitWlanInterface -RawOutput $rawInterfaces
+    $wlan = @($allWlan | Where-Object { $_.Connected -and (-not $_.Name -or $_.Name -eq $adapter.Name) }) | Select-Object -First 1
     if ($wlan) {
         $snapshot.Connected = $true
         $snapshot.Ssid = $wlan.Ssid; $snapshot.Bssid = $wlan.Bssid; $snapshot.SignalPercent = $wlan.SignalPercent
@@ -987,11 +1078,14 @@ function Get-DevKitWifiSnapshot {
         return [PSCustomObject]$snapshot
     }
 
-    $snapshot.GatewayPing = Measure-DevKitPingLatency -ComputerName $snapshot.Gateway -Count 5
-    if ($snapshot.GatewayPing.PacketLossPct -ge 100) { return [PSCustomObject]$snapshot }
+    # No early return when the router stays silent: plenty of gateways ignore
+    # ping while the connection through them works, and the diagnosis needs
+    # the probes below to tell the two apart.
+    $snapshot.GatewayPing = Measure-DevKitPingLatency -ComputerName $snapshot.Gateway
+    $snapshot.DnsIsStatic = (Test-DevKitDnsIsStatic -InterfaceGuid ([string]$adapter.InterfaceGuid) -AddressFamily IPv4)
 
     $snapshot.Portal = Test-DevKitCaptivePortal
-    $snapshot.InternetPing = Measure-DevKitPingLatency -ComputerName '1.1.1.1' -Count 5
+    $snapshot.InternetPing = Measure-DevKitPingLatency -ComputerName '1.1.1.1'
 
     $servers = @(Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             ForEach-Object { $_.ServerAddresses })
