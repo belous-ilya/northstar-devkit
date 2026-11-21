@@ -237,13 +237,10 @@ impl OwnedArgValue {
     }
 }
 
-/// Renders the ordered arg list to argv, matching
-/// `ConvertTo-DevKitArgumentString`'s rendering rules: `true` becomes a
-/// bare `-Key` switch, `false`/omitted values are skipped entirely, and
-/// everything else becomes a `-Key`, `value` pair. Unlike the GUI (which
-/// builds one shell command-line string for `wt.exe`/conhost and so must
-/// quote-escape each value), this returns separate argv entries for direct
-/// `std::process::Command` use, which needs no manual quoting.
+/// Renders the ordered arg list to argv: `true` becomes a bare `-Key`
+/// switch, `false`/omitted values are skipped entirely, and everything else
+/// becomes a `-Key`, `value` pair. These are separate argv entries for
+/// direct `std::process::Command` use, so no value needs quoting by hand.
 fn render_args(ordered: &[(String, OwnedArgValue)]) -> Vec<String> {
     let mut out = Vec::new();
     for (key, value) in ordered {

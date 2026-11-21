@@ -34,7 +34,6 @@ tools\git\Git-SyncFork.bat
 tools\git\Git-SyncFork.ps1
 tools\lib\DevKit-Common.ps1
 tools\lib\DevKit-McpList.ps1
-tools\lib\DevKit-UI.ps1
 tools\lib\DevKit-WiFi.ps1
 tools\nextjs\_module.psd1
 tools\nextjs\Clear-NextCache.bat

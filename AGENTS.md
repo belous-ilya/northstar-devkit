@@ -150,8 +150,8 @@ DevKit/
 │   │                          # real implementation (both the CLI and the
 │   │                          # Control Center run these same scripts - see
 │   │                          # "App Architecture" below)
-│   ├── lib/                        # DevKit-Common.ps1, DevKit-UI.ps1,
-│   │                              # DevKit-McpList.ps1
+│   ├── lib/                        # DevKit-Common.ps1, DevKit-McpList.ps1,
+│   │                              # DevKit-WiFi.ps1
 │   ├── ports/ node/ nextjs/ vite/ git/ docker/ wifi/   # the 7 catalog
 │   │                              # categories - each: script+.bat pairs
 │   │                              # plus one _module.psd1 manifest

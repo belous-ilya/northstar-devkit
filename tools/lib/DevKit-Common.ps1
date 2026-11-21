@@ -53,12 +53,6 @@ if (Test-Path -LiteralPath $devKitUtilityManifestPath) {
     Import-Module $devKitUtilityManifestPath -Force -ErrorAction SilentlyContinue
 }
 
-# Animation/color engine (gradient text, startup banner, spinner) - split
-# out of this file so the terminal-capability probing and ANSI rendering
-# live in one place. Dot-sourced here so every function below (and every
-# script that dot-sources DevKit-Common.ps1) can call it directly.
-. (Join-Path $PSScriptRoot "DevKit-UI.ps1")
-
 # ==================== SETTINGS ====================
 
 function Get-DevKitJsonReadArgs {

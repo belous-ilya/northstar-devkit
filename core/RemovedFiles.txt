@@ -24,6 +24,7 @@ tools\diagnostics\Test-DevKitUpdate.bat
 tools\diagnostics\Test-DevKitUpdate.ps1
 tools\lib\DevKit-McpAddFlow.ps1
 tools\lib\DevKit-McpCatalog.ps1
+tools\lib\DevKit-UI.ps1
 tools\maintenance\_module.psd1
 tools\maintenance\Clear-DiskJunk.bat
 tools\maintenance\Clear-DiskJunk.ps1

@@ -75,7 +75,7 @@ Describe "tool scripts hand file cmdlets their paths literally" {
     BeforeDiscovery {
         $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         $script:ToolScripts = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tools') -Recurse -Filter '*.ps1' |
-                Where-Object { $_.FullName -notmatch '\\tools\\(system|wifi)\\' -and $_.Name -notin 'DevKit-UI.ps1', 'DevKit-WiFi.ps1', 'DevKit-McpList.ps1' } |
+                Where-Object { $_.FullName -notmatch '\\tools\\(system|wifi)\\' -and $_.Name -notin 'DevKit-WiFi.ps1', 'DevKit-McpList.ps1' } |
                 ForEach-Object { @{ Name = $_.FullName.Substring($repoRoot.Length + 1); FullName = $_.FullName } })
     }
 
