@@ -180,6 +180,14 @@ $script:RunRegistry = [System.Collections.Concurrent.ConcurrentDictionary[string
 # lanes exactly as RunRegistry is.
 $script:ToolLaneGate = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
 
+# Extra arguments for the ConvertFrom-Json that parses each request line:
+# -DateKind String where this PowerShell has it (7.5+), nothing elsewhere
+# (5.1 never converts; 7.0 - 7.4 cannot be told not to, and the store
+# writers put such values back as ISO text - see ConvertTo-DevKitStoredText
+# in tools/lib/DevKit-Common.ps1, which documents the failure).
+$script:RequestJsonArgs = @{}
+if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $script:RequestJsonArgs = @{ DateKind = 'String' } }
+
 # ==================== WRITER RUNSPACE ====================
 # The only code in this process allowed to touch [Console]::Out.
 
@@ -568,7 +576,12 @@ while (-not $shuttingDown) {
     if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
 
     try {
-        $request = $rawLine | ConvertFrom-Json -ErrorAction Stop
+        # @RequestJsonArgs: keep date-looking strings as strings. Without it
+        # PowerShell 7 hands every handler a [datetime] for a note, an On-Deck
+        # item or a tool argument that happens to read like an ISO timestamp
+        # (and for every updatedAt the UI sends), and their [string] casts
+        # then store "11/21/2026 10:00:00" in place of what was typed.
+        $request = $rawLine | ConvertFrom-Json @script:RequestJsonArgs -ErrorAction Stop
     } catch {
         Write-DevKitRpcDiag "malformed request line, ignored: $rawLine"
         continue

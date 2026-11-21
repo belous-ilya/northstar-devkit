@@ -243,3 +243,85 @@ Describe "store encoding and shape" {
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:StoreFile) -Filter ((Split-Path -Leaf $script:StoreFile) + '.corrupt-*')).Count | Should -Be 0
     }
 }
+
+Describe "date-looking text survives the stores" {
+
+    # PowerShell 7's ConvertFrom-Json turns any string shaped like an ISO
+    # date into a [datetime]; the readers then cast it with [string], which
+    # gives "11/21/2026 10:00:00" - zone lost, an offset stamp shifted to
+    # local time - and the next save wrote that back for good. Windows
+    # PowerShell 5.1 never converted, so these pass there either way; on 7
+    # they failed before Get-DevKitJsonReadArgs / ConvertTo-DevKitStoredText.
+
+    BeforeEach {
+        $script:DateNotesFile = Join-Path $TestDrive "notes-dates-$([guid]::NewGuid().ToString('N')).json"
+        $script:DateDeckFile = Join-Path $TestDrive "ondeck-dates-$([guid]::NewGuid().ToString('N')).json"
+        $script:Stamp = '2026-11-21T10:00:00.0000000Z'
+        $script:DateText = '2026-11-21T10:00:00+02:00'
+    }
+
+    It "keeps a note's timestamp and a timestamp-shaped note exactly as written, across save -> read -> save -> read" {
+        $note = [PSCustomObject]@{ Id = 'n1'; Text = $script:DateText; Color = 'amber'; UpdatedAt = $script:Stamp }
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @($note) -NotesFile $script:DateNotesFile
+        $first = @(Get-DevKitProjectNotes -ProjectPath 'D:\A' -NotesFile $script:DateNotesFile)
+        $first[0].Text | Should -BeExactly $script:DateText
+        $first[0].UpdatedAt | Should -BeExactly $script:Stamp
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes $first -NotesFile $script:DateNotesFile
+        $second = @(Get-DevKitProjectNotes -ProjectPath 'D:\A' -NotesFile $script:DateNotesFile)
+        $second[0].Text | Should -BeExactly $script:DateText
+        $second[0].UpdatedAt | Should -BeExactly $script:Stamp
+        [System.IO.File]::ReadAllText($script:DateNotesFile) | Should -Not -Match '11/21/2026'
+    }
+
+    It "leaves ANOTHER project's timestamps alone when one project saves" {
+        $other = [PSCustomObject]@{ Id = 'o1'; Text = $script:DateText; Color = 'amber'; UpdatedAt = $script:Stamp }
+        Save-DevKitProjectNotes -ProjectPath 'D:\Other' -Notes @($other) -NotesFile $script:DateNotesFile
+        $mine = [PSCustomObject]@{ Id = 'm1'; Text = 'plain'; Color = 'amber'; UpdatedAt = $script:Stamp }
+        Save-DevKitProjectNotes -ProjectPath 'D:\Mine' -Notes @($mine) -NotesFile $script:DateNotesFile
+        $back = @(Get-DevKitProjectNotes -ProjectPath 'D:\Other' -NotesFile $script:DateNotesFile)
+        $back[0].Text | Should -BeExactly $script:DateText
+        $back[0].UpdatedAt | Should -BeExactly $script:Stamp
+    }
+
+    It "keeps an On-Deck item's timestamp and timestamp-shaped text exactly as written" {
+        $item = [PSCustomObject]@{ Id = 'i1'; Text = $script:DateText; Status = 'todo'; UpdatedAt = $script:Stamp }
+        Save-DevKitProjectOnDeck -ProjectPath 'D:\A' -Items @($item) -OnDeckFile $script:DateDeckFile
+        $first = @(Get-DevKitProjectOnDeck -ProjectPath 'D:\A' -OnDeckFile $script:DateDeckFile)
+        Save-DevKitProjectOnDeck -ProjectPath 'D:\A' -Items $first -OnDeckFile $script:DateDeckFile
+        $second = @(Get-DevKitProjectOnDeck -ProjectPath 'D:\A' -OnDeckFile $script:DateDeckFile)
+        $second[0].Text | Should -BeExactly $script:DateText
+        $second[0].UpdatedAt | Should -BeExactly $script:Stamp
+    }
+
+    It "writes a value that arrives as a DateTime back as ISO text, never culture-style" {
+        # What an RPC request parsed by PowerShell 7.0 - 7.4 hands the writer.
+        $asDate = [datetime]::new(2026, 11, 21, 10, 0, 0, [System.DateTimeKind]::Utc)
+        ConvertTo-DevKitStoredText $asDate | Should -BeExactly '2026-11-21T10:00:00.0000000Z'
+        ConvertTo-DevKitStoredText 'plain text' | Should -BeExactly 'plain text'
+        ConvertTo-DevKitStoredText $null | Should -BeExactly ''
+        $note = [PSCustomObject]@{ Id = 'n1'; Text = 'x'; Color = 'amber'; UpdatedAt = $asDate }
+        Save-DevKitProjectNotes -ProjectPath 'D:\A' -Notes @($note) -NotesFile $script:DateNotesFile
+        [System.IO.File]::ReadAllText($script:DateNotesFile) | Should -Match '"updatedAt":\s*"2026-11-21T10:00:00\.0000000Z"'
+    }
+
+    It "asks ConvertFrom-Json to keep date strings wherever this PowerShell can" {
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $jsonArgs | Should -BeOfType [hashtable]
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $jsonArgs.DateKind | Should -Be 'String'
+            ('{"t":"2026-11-21T10:00:00+02:00"}' | ConvertFrom-Json @jsonArgs).t | Should -BeOfType [string]
+        } else {
+            $jsonArgs.Count | Should -Be 0
+        }
+    }
+
+    It "parses RPC request lines the same way" {
+        $sidecar = Join-Path $script:RepoRoot 'core\Invoke-DevKitRpc.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($sidecar, [ref]$null, [ref]$null)
+        $parses = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'ConvertFrom-Json' }, $true))
+        $parses.Count | Should -BeGreaterThan 0
+        foreach ($call in $parses) { $call.Extent.Text | Should -Match '@script:RequestJsonArgs' }
+        [System.IO.File]::ReadAllText($sidecar) | Should -Match "RequestJsonArgs = @\{ DateKind = 'String' \}"
+    }
+}

@@ -2640,7 +2640,8 @@ function Get-DevKitProjectNotes {
         # a BOM, which Windows PowerShell 5.1's Get-Content would decode as
         # ANSI - turning every non-ASCII character in a note into mojibake
         # that the next save would then write back for good.
-        $data = [System.IO.File]::ReadAllText($NotesFile) | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = [System.IO.File]::ReadAllText($NotesFile) | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         if (-not $data.projects) { return @() }
         $entry = $data.projects.PSObject.Properties[$key]
         if (-not $entry) { return @() }
@@ -2649,9 +2650,9 @@ function Get-DevKitProjectNotes {
             if ($null -eq $n) { continue }
             $notes += [PSCustomObject]@{
                 Id        = [string]$n.id
-                Text      = [string]$n.text
+                Text      = ConvertTo-DevKitStoredText $n.text
                 Color     = [string]$n.color
-                UpdatedAt = [string]$n.updatedAt
+                UpdatedAt = ConvertTo-DevKitStoredText $n.updatedAt
             }
         }
         return $notes
@@ -2720,7 +2721,8 @@ function Get-DevKitProjectStoreOthers {
     $data = $null
     $usable = $false
     try {
-        $data = $text | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = $text | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         # Valid JSON of the wrong shape (no "projects" object) is as
         # unusable as invalid JSON, and gets the same copy-aside.
         $usable = ($null -ne $data -and $data.PSObject.Properties.Match('projects').Count -gt 0)
@@ -2821,9 +2823,9 @@ function Save-DevKitProjectNotes {
         if ($null -eq $n) { continue }
         $list += [ordered]@{
             id        = [string]$n.Id
-            text      = [string]$n.Text
+            text      = ConvertTo-DevKitStoredText $n.Text
             color     = [string]$n.Color
-            updatedAt = [string]$n.UpdatedAt
+            updatedAt = ConvertTo-DevKitStoredText $n.UpdatedAt
         }
     }
     if ($list.Count -gt 0) { $projects[$key] = $list }
@@ -2899,7 +2901,8 @@ function Get-DevKitProjectOnDeck {
     try {
         # ReadAllText for the same reason as Get-DevKitProjectNotes: the
         # store is BOM-less UTF-8.
-        $data = [System.IO.File]::ReadAllText($OnDeckFile) | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = [System.IO.File]::ReadAllText($OnDeckFile) | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         if (-not $data.projects) { return @() }
         $entry = $data.projects.PSObject.Properties[$key]
         if (-not $entry) { return @() }
@@ -2908,9 +2911,9 @@ function Get-DevKitProjectOnDeck {
             if ($null -eq $i) { continue }
             $items += [PSCustomObject]@{
                 Id        = [string]$i.id
-                Text      = [string]$i.text
+                Text      = ConvertTo-DevKitStoredText $i.text
                 Status    = Get-DevKitOnDeckStatus -Status ([string]$i.status)
-                UpdatedAt = [string]$i.updatedAt
+                UpdatedAt = ConvertTo-DevKitStoredText $i.updatedAt
             }
         }
         return $items
@@ -2943,9 +2946,9 @@ function Save-DevKitProjectOnDeck {
         if ($null -eq $i) { continue }
         $list += [ordered]@{
             id        = [string]$i.Id
-            text      = [string]$i.Text
+            text      = ConvertTo-DevKitStoredText $i.Text
             status    = Get-DevKitOnDeckStatus -Status ([string]$i.Status)
-            updatedAt = [string]$i.UpdatedAt
+            updatedAt = ConvertTo-DevKitStoredText $i.UpdatedAt
         }
     }
     if ($list.Count -gt 0) { $projects[$key] = $list }

@@ -61,6 +61,49 @@ if (Test-Path $devKitUtilityManifestPath) {
 
 # ==================== SETTINGS ====================
 
+function Get-DevKitJsonReadArgs {
+    <#
+    .SYNOPSIS
+        Extra arguments for every ConvertFrom-Json that reads DevKit's own
+        data (the stores, and RPC requests): @{ DateKind = 'String' } where
+        the cmdlet has that parameter, else an empty table.
+    .DESCRIPTION
+        PowerShell 7 turns any JSON string that LOOKS like an ISO date into a
+        [datetime]. DevKit's data is full of such strings (updatedAt,
+        lastUsedUtc, lastUpdateCheckUtc - and a note can simply be one), and
+        every reader then did [string]$value, which renders a DateTime as
+        "11/21/2026 10:00:00": the zone is gone, a "+02:00" stamp has been
+        shifted to local time, and the next save wrote that back for good.
+        Windows PowerShell 5.1 never converted, so the two shells disagreed
+        about the same file. -DateKind String (PowerShell 7.5+) keeps the
+        text as written. ConvertTo-DevKitStoredText covers 7.0 - 7.4.
+    #>
+    if ($null -eq $script:DevKitJsonReadArgs) {
+        $script:DevKitJsonReadArgs = @{}
+        try {
+            if ((Get-Command ConvertFrom-Json -ErrorAction Stop).Parameters.ContainsKey('DateKind')) {
+                $script:DevKitJsonReadArgs = @{ DateKind = 'String' }
+            }
+        } catch { }
+    }
+    return $script:DevKitJsonReadArgs
+}
+
+function ConvertTo-DevKitStoredText {
+    <#
+    .SYNOPSIS
+        A value read from JSON, as the text that was written. Undoes
+        PowerShell 7's date coercion where Get-DevKitJsonReadArgs could not
+        prevent it (7.0 - 7.4): a DateTime comes back as a round-trip ISO
+        string, never as the culture-style text a plain [string] cast gives.
+    #>
+    param($Value)
+    if ($Value -is [datetime] -or $Value -is [datetimeoffset]) {
+        return $Value.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    return [string]$Value
+}
+
 function Read-DevKitStoreFile {
     <#
     .SYNOPSIS
@@ -177,7 +220,8 @@ function Get-DevKitSettings {
 
     try {
         if ([string]::IsNullOrWhiteSpace($raw)) { return $defaults }
-        $data = $raw | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         if (-not $data.preferences) { return $defaults }
         # Fill in any preference missing from an older/partial file rather
         # than failing outright, so adding a new setting later never breaks
@@ -221,7 +265,8 @@ function Set-DevKitSettings {
         try {
             if ($null -ne $raw) {
                 if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                    $onDisk = $raw | ConvertFrom-Json -ErrorAction Stop
+                    $jsonArgs = Get-DevKitJsonReadArgs
+                    $onDisk = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
                     if ($onDisk.preferences -and $Settings.preferences) {
                         foreach ($prop in @($Settings.preferences.PSObject.Properties.Name)) {
                             $onDisk.preferences | Add-Member -MemberType NoteProperty -Name $prop -Value $Settings.preferences.$prop -Force
@@ -1737,7 +1782,8 @@ function Save-DevKitProjectRegistry {
         try {
             if ($null -ne $raw) {
                 if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                    $onDisk = $raw | ConvertFrom-Json -ErrorAction Stop
+                    $jsonArgs = Get-DevKitJsonReadArgs
+                    $onDisk = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
                     if ($null -ne $onDisk.projects) {
                         $callerIds = @($Registry.projects | ForEach-Object { $_.id })
                         $kept = @()
@@ -1785,7 +1831,8 @@ function Get-DevKitProjectRegistry {
 
     try {
         if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
-        $data = $raw | ConvertFrom-Json -ErrorAction Stop
+        $jsonArgs = Get-DevKitJsonReadArgs
+        $data = $raw | ConvertFrom-Json @jsonArgs -ErrorAction Stop
         # ConvertFrom-Json returns a bare PSCustomObject (not a 1-item array)
         # when "projects" has exactly one element - always wrap with @().
         $projects = @($data.projects)
