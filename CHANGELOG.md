@@ -52,6 +52,22 @@ the whole app fixes the first batch of what it found.
   stronger access point of your own network when one is in range.
 - Renewing the address is scoped to the WiFi adapter; it used to release
   every adapter, Ethernet included.
+- **Docker Nuke keeps volumes unless you pick the item that says
+  otherwise.** One click used to delete every volume - local database data
+  included - behind a generic confirmation. There are now two items: the
+  default removes containers and images and keeps volumes; "Everything,
+  Including Volumes" is separate and says what it costs.
+- Tools that have a preview now offer it in the Run dialog (Docker Nuke,
+  Docker Cleanup, Git Cleanup), and the options their help text always
+  advertised are finally reachable there: keep images, unused volumes,
+  rebase, reinstall, port, skip install, skip build, delete-or-report.
+- Git Cleanup runs a plain `git gc`. It used to run
+  `gc --aggressive --prune=now` every time, deleting every unreachable
+  object immediately; that is now the explicit `-Aggressive` switch.
+- Clear NPM Cache and Check NPM Cache Size act on the active project's
+  package manager instead of always falling back to npm.
+- Run Package Script no longer asks "this cannot be undone" before every
+  `npm run dev`.
 - Panels stop polling while the docked widget is collapsed to its sliver,
   and refresh once when they come back into view instead of showing
   pre-hide data as live for a full interval.
@@ -96,6 +112,42 @@ the whole app fixes the first batch of what it found.
   form over the old tool's console and Stop button.
 - The admin badge polled the sidecar every minute for a value that cannot
   change while the app runs.
+- **Quitting DevKit left a running tool behind.** A tool still running at
+  exit (a dev server, a long build) survived the app, kept its port, and
+  held the exit up for 5 to 9 seconds. The background process now stops
+  its tool, and everything that tool started, before it exits.
+- **Errors from a running tool were invisible until it ended** - and for a
+  tool that never ends, never shown. A Next or Vite compile error now
+  appears in the Run dialog as it happens.
+- Non-English text in tool output (a path under `C:\Users\José`, any
+  non-Latin text) arrived as `?` or a replacement character.
+- A settings or project-list file that could not be READ for an instant
+  (another DevKit process replacing it, antivirus) was treated as corrupt:
+  quarantined and reset to defaults. And a save that could not read the
+  file first replaced it with the one setting being saved. Unreadable is
+  now told apart from corrupt, and a save that cannot see the file fails
+  instead of overwriting it.
+- **Nuke-and-Reinstall and Next.js Full Clean could leave a project with
+  neither `node_modules` nor a lock file**: they deleted both before
+  finding out the package manager was missing or the install failed. They
+  now check first, stop if `node_modules` is locked by a running process
+  (it used to be reported as "skipped"), and put the lock files back when
+  the install fails.
+- Removing a `node_modules` that is a junction emptied the folder it
+  pointed at; only the link is removed now.
+- **Sync Fork with rebase could silently overwrite commits on your fork**:
+  it fetched the fork just before force-pushing, which made
+  `--force-with-lease` protect nothing. The fork's tip is now recorded
+  before the rebase, the sync refuses when the fork has commits the
+  checkout lacks, and the push is pinned to that exact commit.
+- Build-and-Preview deleted the previous `dist` when the project builds to
+  a different folder; it now notices, restores it, and says which option
+  to set. It also refuses an output folder that holds source files.
+
+### Security
+
+- `tool.run` executed any `.ps1` it was given a path to, elevated. It now
+  runs only scripts inside the tools folder.
 
 ## [4.7.0] - 2026-09-20
 
