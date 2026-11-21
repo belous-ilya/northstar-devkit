@@ -147,6 +147,44 @@ function Test-DevKitRpcConfirmedFlag {
     return (([string]$Value).Trim() -ieq 'true')
 }
 
+function Resolve-DevKitToolScriptPath {
+    <#
+    .SYNOPSIS
+        The full path of a tool script for tool.run, or a thrown error when
+        folder/script do not name a .ps1 file inside the tools folder.
+    .DESCRIPTION
+        folder and script arrive from the UI (and from persisted run-history
+        rows), and used to be joined onto the tools root and run as given -
+        so 'folder = ..\..\somewhere' executed any .ps1 on the machine,
+        elevated and with -ExecutionPolicy Bypass. The app's own callers
+        never send that, which is exactly why nothing should accept it.
+
+        The check is on the RESOLVED path, so every spelling of "up and out"
+        (.., mixed separators, an absolute path, a drive-relative one) fails
+        the same way. A directory, or a file that is not a .ps1, is refused
+        too - Test-Path alone accepted both.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ToolsRoot,
+        [AllowEmptyString()][string]$Folder = '',
+        [AllowEmptyString()][string]$ScriptName = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Folder) -or [string]::IsNullOrWhiteSpace($ScriptName)) {
+        throw 'tool.run requires a folder and a script.'
+    }
+    $root = [System.IO.Path]::GetFullPath($ToolsRoot).TrimEnd('\', '/')
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $root $Folder) $ScriptName))
+    $inside = $candidate.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+    if (-not $inside -or [System.IO.Path]::GetExtension($candidate) -ne '.ps1') {
+        throw "Not a DevKit tool: $Folder/$ScriptName"
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        throw "Tool script not found: $candidate"
+    }
+    return $candidate
+}
+
 function Add-DevKitForceArgument {
     <#
     .SYNOPSIS
@@ -1072,10 +1110,7 @@ function Invoke-DevKitRpcMethod {
                 # for why this is opt-in and what it fixes.
                 $confirmed = Test-DevKitRpcConfirmedFlag (Get-DevKitRpcParam $Params 'confirmed' $false)
 
-                $scriptPath = Join-Path (Join-Path $RepoRoot 'tools') (Join-Path $folder $script)
-                if (-not (Test-Path -LiteralPath $scriptPath)) {
-                    throw "Tool script not found: $scriptPath"
-                }
+                $scriptPath = Resolve-DevKitToolScriptPath -ToolsRoot (Join-Path $RepoRoot 'tools') -Folder $folder -ScriptName $script
 
                 $toolArgs = @($toolArgs | ForEach-Object { [string]$_ })
                 if ($confirmed) {
@@ -1104,6 +1139,13 @@ function Invoke-DevKitRpcMethod {
                 $psi.RedirectStandardInput = $true
                 $psi.UseShellExecute = $false
                 $psi.CreateNoWindow = $true
+                # Decode the child's pipes as UTF-8, stated rather than
+                # inherited. The tools switch their own output to UTF-8 when
+                # it is redirected (tools/lib/DevKit-Common.ps1, top), so the
+                # two ends now agree by declaration instead of by accident.
+                $utf8 = New-Object System.Text.UTF8Encoding $false
+                $psi.StandardOutputEncoding = $utf8
+                $psi.StandardErrorEncoding = $utf8
                 # The Run dialog renders output as plain text, so pwsh's styled
                 # error formatting must not reach it: in the app's clean child
                 # environment (no TERM/NO_COLOR hint) pwsh defaults $PSStyle to
@@ -1130,29 +1172,45 @@ function Invoke-DevKitRpcMethod {
                 $exitCode = -1
                 $cancelled = $false
                 try {
-                    # Drain stderr concurrently via an async Task so a chatty stderr
-                    # stream can never fill its pipe buffer and deadlock the child
-                    # while we're synchronously draining stdout below.
-                    $stderrTask = $proc.StandardError.ReadToEndAsync()
-
-                    # This is the read that blocks the tool lane for the whole
-                    # run, and the reason tool.stop cannot be answered here. It
-                    # unblocks on EOF, which arrives only once EVERY process
-                    # holding the child's stdout write handle is gone - hence
+                    # BOTH streams are read line by line and forwarded as they
+                    # arrive. stderr used to be collected whole and emitted
+                    # only after stdout closed - so an error from step 2 of a
+                    # tool appeared after its last line, out of context, and
+                    # for a tool that never exits (a dev server) it never
+                    # appeared at all: a Next or Vite compile error was
+                    # invisible in the Run dialog, while the buffer holding it
+                    # grew for the life of the run.
+                    #
+                    # One pending ReadLineAsync per stream, and WaitAny over
+                    # whichever are still open. A stream is finished when its
+                    # read returns $null (EOF). This loop is what blocks the
+                    # tool lane for the whole run, and the reason tool.stop
+                    # cannot be answered here; EOF arrives only once EVERY
+                    # process holding the child's pipe handles is gone - hence
                     # Stop-DevKitToolRun killing the tree rather than the child.
-                    while (-not $proc.StandardOutput.EndOfStream) {
-                        $outLine = $proc.StandardOutput.ReadLine()
-                        if ($null -ne $outLine) {
-                            & $EmitEvent 'tool.output' $runId @{ stream = 'stdout'; line = $outLine }
+                    $readers = @{
+                        stdout = $proc.StandardOutput.ReadLineAsync()
+                        stderr = $proc.StandardError.ReadLineAsync()
+                    }
+                    while ($readers.Count -gt 0) {
+                        $names = @($readers.Keys)
+                        $pending = [System.Threading.Tasks.Task[]]@($names | ForEach-Object { $readers[$_] })
+                        $index = [System.Threading.Tasks.Task]::WaitAny($pending)
+                        $name = $names[$index]
+                        # .Result rethrows a faulted read (a tree kill landing
+                        # mid-read); the catch below turns that into a
+                        # terminal result.
+                        $text = $pending[$index].Result
+                        if ($null -eq $text) {
+                            $readers.Remove($name)
+                            continue
                         }
+                        if ($name -eq 'stdout' -or $text) {
+                            & $EmitEvent 'tool.output' $runId @{ stream = $name; line = $text }
+                        }
+                        $readers[$name] = if ($name -eq 'stdout') { $proc.StandardOutput.ReadLineAsync() } else { $proc.StandardError.ReadLineAsync() }
                     }
                     $proc.WaitForExit()
-                    $stderrText = $stderrTask.GetAwaiter().GetResult()
-                    if ($stderrText) {
-                        foreach ($errLine in ($stderrText -split "`r?`n")) {
-                            if ($errLine) { & $EmitEvent 'tool.output' $runId @{ stream = 'stderr'; line = $errLine } }
-                        }
-                    }
                     $exitCode = $proc.ExitCode
                 } catch {
                     # A tree kill landing mid-read can surface as a broken-pipe

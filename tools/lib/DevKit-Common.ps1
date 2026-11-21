@@ -21,6 +21,24 @@
 if (Get-Command Write-DevKitHeader -ErrorAction SilentlyContinue) { return }
 $global:DevKitCommonLoaded = $true
 
+# When output is piped (the app's Run dialog, a redirect to a file), write it
+# as UTF-8. A tool run headlessly gets its own hidden console, whose output
+# code page is the legacy OEM one - so a path under C:\Users\José, an em
+# dash, or any non-Latin text reached the app as "?" or U+FFFD (verified:
+# é arrived as FFFD, a Cyrillic letter as "?"). The app decodes the pipe as
+# UTF-8; this makes the tool, and every native command it starts (they
+# inherit the console), actually send that. Skipped when already UTF-8 -
+# which is always the case inside the RPC sidecar, whose single stdout
+# writer must never have its stream swapped underneath it - and never
+# touched for an interactive console, where the user's own code page stands.
+try {
+    if ([Console]::IsOutputRedirected -and [Console]::OutputEncoding.CodePage -ne 65001) {
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    }
+} catch {
+    # No console at all (some hosts): nothing to configure.
+}
+
 # A process relaunched via Start-Process (e.g. the GUI's MTA->STA and
 # packaged-shell hops in gui/DevKit-GUI.ps1) can have module auto-load
 # resolve Microsoft.PowerShell.Utility to a same-named module from a
