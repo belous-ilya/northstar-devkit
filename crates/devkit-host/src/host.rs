@@ -353,6 +353,20 @@ impl PsHost {
             Some(running) => {
                 let pending = running.pending.clone();
                 pending.lock().await.insert(id, tx);
+                // The generation may have died while this call was waiting
+                // for the lock. Its reader marks it dead BEFORE draining its
+                // pending map, so reading the flag after the insert leaves no
+                // gap: either the drain is still to come and takes this entry
+                // with it, or it has already run and the flag says so. Without
+                // this, a call that arrived late sat in a map nobody would
+                // ever drain again - and when the sidecar's pipes were still
+                // held open by a program it had started, the stdin write
+                // below succeeded too, so the call waited out its whole
+                // timeout (hours, for a tool run).
+                if !self.inner.alive.load(Ordering::SeqCst) {
+                    pending.lock().await.remove(&id);
+                    return Err(HostError::Disconnected);
+                }
                 // Time-boxed rather than bare: a sidecar that stopped
                 // reading its stdin wedges every later call, respawn
                 // and shutdown behind this same `running` lock. On a

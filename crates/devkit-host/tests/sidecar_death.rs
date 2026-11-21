@@ -19,8 +19,10 @@ use devkit_host::{PsHost, SidecarSpec};
 /// How long the stand-in child keeps the pipe open. Well beyond the window
 /// the host is given to notice, so only the process-exit signal can explain
 /// a pass.
-const CHILD_SECONDS: u32 = 25;
-const NOTICE_WITHIN: Duration = Duration::from_secs(10);
+const CHILD_SECONDS: u32 = 45;
+/// Generous for a cold Windows PowerShell start on a loaded build machine;
+/// still far short of CHILD_SECONDS.
+const NOTICE_WITHIN: Duration = Duration::from_secs(20);
 
 #[test]
 fn an_exited_sidecar_is_noticed_while_a_child_still_holds_its_output() {
@@ -67,7 +69,10 @@ async fn exercise() -> (bool, Duration, bool) {
             .join("v1.0")
             .join("powershell.exe"),
         script,
-        cwd: dir.clone(),
+        // NOT the scratch folder: the stand-in child inherits the working
+        // directory and holds it for its whole run, and a folder that is
+        // some process's working directory cannot be deleted.
+        cwd: std::env::temp_dir(),
         default_timeout: Duration::from_secs(5),
     };
 
@@ -87,6 +92,6 @@ async fn exercise() -> (bool, Duration, bool) {
     let respawned = noticed && host.ensure_alive().await.is_ok() && host.is_alive();
 
     host.shutdown().await;
-    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::remove_dir_all(&dir).expect("the scratch folder can be removed once the sidecar is gone");
     (noticed, noticed_after, respawned)
 }
