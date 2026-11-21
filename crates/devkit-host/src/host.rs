@@ -624,6 +624,19 @@ impl PsHost {
             if !cleared_backoff {
                 if generation_proved_healthy(spoke, uptime) {
                     inner.mark_generation_healthy(generation);
+                } else if inner.shutting_down.load(Ordering::SeqCst) {
+                    // Ended because we asked it to (`shutdown`). A one-shot
+                    // CLI command - `devkit catalog` - lives well under the
+                    // health threshold by design, and warning about that on
+                    // stderr made every such command look like it had hit a
+                    // problem. The backoff state is irrelevant either way:
+                    // nothing respawns during a shutdown.
+                    debug!(
+                        generation,
+                        spoke,
+                        uptime_ms = uptime.as_millis() as u64,
+                        "sidecar generation ended by shutdown before proving healthy"
+                    );
                 } else {
                     warn!(
                         generation,
