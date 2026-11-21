@@ -56,7 +56,7 @@ interface ScoredEntry {
 /** One flat row in the rendered list - headers are skipped by arrow navigation. */
 type Row = { kind: "header"; group: GroupName } | { kind: "item"; index: number; scored: ScoredEntry };
 
-/** Hard cap so an empty query doesn't render every one of ~65 tools at once. */
+/** Hard cap on rendered rows (tools, projects and app actions together) for an empty or broad query. */
 const MAX_RESULTS = 60;
 
 function newRequestId(): string {
@@ -130,7 +130,7 @@ export function CommandPalette() {
   // tree, which is also when the sidecar is most likely to be unreachable;
   // without this flag a failed catalog is indistinguishable from a catalog
   // with no matches, and the palette used to answer a search for a tool it
-  // simply never loaded with `Nothing matches "backup"` while 65 tools
+  // simply never loaded with `Nothing matches "backup"` while the tools
   // existed. Projects and app actions are built locally, so they keep
   // working either way - the palette degrades, it doesn't die.
   const {

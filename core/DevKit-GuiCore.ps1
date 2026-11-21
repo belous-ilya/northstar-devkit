@@ -4,7 +4,7 @@
     Pure-logic core for the DevKit desktop GUI - Northstar DevKit
 .DESCRIPTION
     Dot-sourceable, UI-free functions backing gui/DevKit-GUI.ps1: loading the
-    twelve tool-category manifests as one catalog, searching it, turning a
+    tool-category manifests (one per tools/ folder) as one catalog, searching it, turning a
     manifest item plus resolved dialog values into a script argument table
     (mirroring Invoke-DevKitTool in lib/DevKit-Common.ps1), and building the
     terminal command line used to launch a tool in Windows Terminal or a

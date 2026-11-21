@@ -86,6 +86,25 @@ the whole app fixes the first batch of what it found.
   dialog that started the run.
 - A folder in the Files panel is re-read every time it is opened (the
   listing already on screen stays until the fresh one arrives).
+- The widget loads about a quarter of the code it used to at startup
+  (110 kB instead of 450 kB): the terminal and the embedded Control Center
+  are fetched the first time they are opened.
+- Docker previews name what holds data. Dry runs of Docker Nuke and Docker
+  Cleanup now list the volumes (and networks) they would remove; they used
+  to list containers and images only.
+- Docker Nuke's confirmation says what that run will destroy. It used to
+  say "containers, images, volumes, and networks" even for the item that
+  keeps volumes.
+- Git Cleanup never offers `staging`, `production`, `prod`, `dev`,
+  `release`, `gh-pages` or anything under `release/` or `hotfix/` for
+  deletion (it protected only `main`, `master` and `develop`), and works
+  from a folder below the repository root.
+- Every destructive tool asks through one shared prompt. It honours the
+  "confirm destructive actions" setting, and where nobody can answer (a
+  run from the Control Center without approval) it declines instead of
+  crashing.
+- The update check runs once a day in an app that stays open. It ran only
+  at startup, so a widget left running for weeks never saw a release.
 - The in-app updater, and every link in the app and the docs, now point
   at `github.com/belous-ilya/northstar-devkit`. The account was renamed
   and the old address only worked through GitHub's redirect; versions
@@ -167,6 +186,26 @@ the whole app fixes the first batch of what it found.
   projects" for the whole session, and a folder that became a git
   repository after it was selected stayed "not a repository" until
   re-selected. Both now recover on their own.
+- **"Check NPM Cache Size" changed the cache.** For npm it ran
+  `npm cache verify`, which garbage-collects the cache and rewrites its
+  index (minutes on a large one). It now only measures the folder. Yarn 2+
+  projects are measured too; they used to report no cache.
+- **Docker Cleanup said "Nothing to clean up!" with build cache to
+  reclaim.** Docker prints that row without a percentage, the tool
+  required one, and the cache always counted as zero. Its "Estimated
+  reclaimable" figure also promised space that the default mode never
+  frees (images no container uses); it is now labelled as such.
+- Docker Nuke and Docker Cleanup, Git Cleanup: a step that failed still
+  ended in "COMPLETE" / "cleaned" with exit code 0. They now say so and
+  exit non-zero.
+- Docker Nuke failed outright on a machine with a few hundred volumes or
+  images (the id list overflowed the Windows command line), skipped most
+  named volumes in its output, and removed containers started after you
+  confirmed.
+- Kill Port run without a port died in PowerShell's parameter binder
+  instead of saying no port was given.
+- Files and Notes kept polling inside a closed tray when the widget
+  started with no project selected.
 
 ### Security
 
