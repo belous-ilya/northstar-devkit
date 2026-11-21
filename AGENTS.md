@@ -523,6 +523,10 @@ ever writes a line" true by construction:
   lane is exactly one worker.) This mirrors the old WPF widget's
   `MetricsRunspace`/`McpRunspace`/`WorkRunspace` split, for the same
   reason: a slow `gh pr list` call must never stall a metrics poll.
+  Only `metrics` and `work` are started at boot; the other four start the
+  first time the main thread routes a request to them (their queues exist
+  from the start, so that request waits for the import and is answered).
+  `tests/Unit/SidecarLanes.Tests.ps1` drives a real sidecar through this.
 - The **main thread** routes each request to a lane by method-name
   prefix: `metrics.*` (plus the polled read-only collectors
   `process.topCpu`/`process.topMemory`/`files.children`) -> metrics
