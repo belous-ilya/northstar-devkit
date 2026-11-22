@@ -232,6 +232,94 @@ export interface Catalog {
   loadErrors: string[];
 }
 
+// ---------- wifi.* (the WiFi tray) ----------
+// Shapes built by the ConvertTo-DevKitWifi*Report functions in
+// tools/lib/DevKit-WiFi.ps1 and pinned by tests/Unit/WiFiReports.Tests.ps1.
+// A value Windows did not report, or that was not measured, is null - never
+// 0 - so the tray can say "n/a" instead of showing a number that was never
+// read.
+
+/** wifi.status: what this PC is connected to right now. No pings, no lookups. */
+export interface WifiStatus {
+  AdapterPresent: boolean;
+  Connected: boolean;
+  /** The adapter is up, but Windows would not say what it is connected to (Location is off on Windows 11 24H2+). */
+  DetailsHidden: boolean;
+  InterfaceAlias: string;
+  Ssid: string;
+  Bssid: string;
+  SignalPercent: number | null;
+  Band: string;
+  /** 0 when unknown. */
+  Channel: number;
+  RadioType: string;
+  RxMbps: number | null;
+  TxMbps: number | null;
+  IPv4: string;
+  Gateway: string;
+  DnsServers: string[];
+  /** DNS was set by hand on the adapter rather than handed out by the network. */
+  DnsIsStatic: boolean;
+}
+
+export interface WifiPing {
+  AverageMs: number | null;
+  JitterMs: number | null;
+  LossPct: number;
+}
+
+export interface WifiFinding {
+  Code: string;
+  Severity: "error" | "warn" | "info";
+  Message: string;
+}
+
+/** wifi.measure: the full 5-10 second measurement and what it means. */
+export interface WifiMeasureReport {
+  /** ISO 8601, UTC. */
+  MeasuredAt: string;
+  Healthy: boolean;
+  /** "open" | "portal" | "offline" | "unknown" */
+  Portal: string;
+  Router: WifiPing | null;
+  Internet: WifiPing | null;
+  DnsCurrent: { Servers: string[]; MedianMs: number | null; FailurePct: number } | null;
+  DnsCandidates: { Name: string; MedianMs: number | null; FailurePct: number }[];
+  BestDns: { Name: string; MedianMs: number | null } | null;
+  Findings: WifiFinding[];
+  /** Fix codes WiFi Fix would apply, in order; empty when no setting can help. */
+  Actions: string[];
+}
+
+export interface WifiNetworkRow {
+  Ssid: string;
+  Hidden: boolean;
+  Auth: string;
+  Signal: number;
+  Bands: string[];
+  Channels: number[];
+  AccessPoints: number;
+  IsCurrent: boolean;
+}
+
+/** wifi.scan: the networks in range. */
+export interface WifiScanReport {
+  /** "started" | "denied" | "unavailable" | "skipped" */
+  RescanState: string;
+  /** "" normally; "noAdapter" or "locationOff" when the list could not be read. */
+  Problem: string;
+  Networks: WifiNetworkRow[];
+  ChannelLoad: {
+    Band: string;
+    Channel: number;
+    AccessPoints: number;
+    Overlapping: number;
+    StrongestSignal: number;
+    Utilization: number | null;
+  }[];
+  Advice: { Level: "good" | "info" | "warn"; Text: string }[];
+}
+
 // ---------- catalog.toolExists ----------
 /** Whether a folder/script pair names a tool script this install can run (core/RpcMethods.ps1). */
 export interface ToolExistsResult {

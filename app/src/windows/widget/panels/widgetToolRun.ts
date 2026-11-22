@@ -14,8 +14,8 @@ import { playSound } from "../../../lib/sounds";
 import { nextConsoleLineId, type ToolConsoleLine } from "../../../components/ToolConsole";
 
 /**
- * The widget's single tool-run channel, shared by Quick Actions and Node &
- * Ports.
+ * The widget's single tool-run channel, shared by Quick Actions, Node &
+ * Ports and the WiFi tray's fix buttons.
  *
  * ONE store, not one per panel, because the sidecar has exactly one `tool`
  * lane (core/Invoke-DevKitRpc.ps1): a second tool.run sits in that lane's
@@ -38,7 +38,7 @@ import { nextConsoleLineId, type ToolConsoleLine } from "../../../components/Too
  */
 
 /** Which panel launched the run - only that panel renders its transcript. */
-export type ToolRunSurface = "quick-actions" | "node-ports";
+export type ToolRunSurface = "quick-actions" | "node-ports" | "wifi";
 
 export interface WidgetRunSpec extends RunSpec {
   surface: ToolRunSurface;

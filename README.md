@@ -20,7 +20,8 @@ Three surfaces over one set of plain PowerShell scripts:
 
 - **Companion widget** — a small always-on window with CPU/memory/GPU/disk dials, running Node
   processes and their ports, a drawn git commit graph, open PRs and issues, MCP server status,
-  per-project notes, and one-click tools. Lives in the tray; closing it just hides it.
+  a WiFi tray (what you are connected to, a measure-and-diagnose check, nearby networks, and the
+  fix tools), per-project notes, and one-click tools. Lives in the tray; closing it just hides it.
 - **Control Center** — every tool as a searchable card with a form built from the tool's manifest.
   Output streams into the run dialog as it runs; nothing opens a separate terminal window.
 - **`devkit` CLI** — a terminal menu over the same catalog, for when you are already in a shell.

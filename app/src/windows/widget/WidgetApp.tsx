@@ -48,6 +48,11 @@ const ControlCenterApp = lazy(() =>
   import("../control-center/ControlCenterApp").then((module) => ({ default: module.ControlCenterApp })),
 );
 
+// The WiFi tray's code is fetched the first time the tray is opened (docked)
+// or its section expanded (floating): a tray pane is not mounted until then,
+// so a session that never looks at WiFi never loads it.
+const WifiPanel = lazy(() => import("./panels/WifiPanel").then((module) => ({ default: module.WifiPanel })));
+
 /** Chevron pointing toward the docked edge (collapse direction). */
 function CollapseChevron({ side }: { side: "Left" | "Right" }) {
   return (
@@ -82,6 +87,16 @@ const TRAYS: ReadonlyArray<{
   { id: "files", label: "Files", icon: "files", content: <FilesPanel /> },
   { id: "notes", label: "Notes", icon: "notes", content: <NotesOnDeckPanel /> },
   { id: "mcp", label: "MCP Servers", icon: "mcp", content: <McpPanel /> },
+  {
+    id: "wifi",
+    label: "WiFi",
+    icon: "wifi",
+    content: (
+      <Suspense fallback={<div className="panel-empty">Loading WiFi...</div>}>
+        <WifiPanel />
+      </Suspense>
+    ),
+  },
 ];
 
 /** Keeps a stored/absent flyout width inside something the window can actually show. */
@@ -245,6 +260,7 @@ export function WidgetApp() {
   }, [collapsed]);
   /** The Node & Ports Expander's open state - gates its 3s poll (see below). */
   const [nodePortsOpen, setNodePortsOpen] = useState(false);
+  const [wifiOpen, setWifiOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement | null>(null);
 
   const widthFor = useCallback(
@@ -714,6 +730,21 @@ export function WidgetApp() {
                 {!docked && (
                   <motion.div variants={item}>
                     <McpPanel />
+                  </motion.div>
+                )}
+                {/* Floating, there is no tray to open, so the WiFi panel gets
+                    the Node & Ports treatment: collapsed by default, not
+                    even mounted until first opened, and told when it is shut
+                    so it stops asking the sidecar. Left always-on it would
+                    read the connection every ten seconds for as long as the
+                    widget was on screen. */}
+                {!docked && (
+                  <motion.div variants={item}>
+                    <Expander title="WiFi" lazyMount onOpenChange={setWifiOpen}>
+                      <Suspense fallback={<div className="panel-empty">Loading WiFi...</div>}>
+                        <WifiPanel active={wifiOpen} />
+                      </Suspense>
+                    </Expander>
                   </motion.div>
                 )}
                 {!docked && (

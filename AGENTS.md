@@ -668,7 +668,13 @@ has mounted needs a handoff like the command palette's
   window grows from 40 up to 400 commits until every open-PR head fits
   (`-ExtraTips` from the gh poll), so a busy trunk can't push PRs out of
   the chart),
-  GitHub (PRs/Issues), MCP status, Notes/On-Deck, Files, Quick Actions,
+  GitHub (PRs/Issues), MCP status, WiFi (`panels/WifiPanel.tsx`: a
+  status line polled only while its tray is open, Measure and Nearby
+  networks on demand - all three read-only `wifi.*` methods - and fix
+  buttons that run the catalog's own WiFi tools through the shared
+  tool-run channel behind the caution confirm; which script and arguments
+  each button runs comes from the catalog, see `wifiActionsFromCatalog` in
+  `panels/wifiModel.ts`), Notes/On-Deck, Files, Quick Actions,
   and a collapsed-by-default embedded terminal (see below). Single-
   instance via `tauri-plugin-single-instance` (a second launch surfaces
   the existing window instead of spawning a duplicate) and a system tray
