@@ -171,10 +171,23 @@ function Import-DevKitWifiLibrary {
     if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) {
         throw "The WiFi library is missing from this install: $libraryPath"
     }
-    New-Module -Name 'DevKit.WiFi' -ArgumentList $libraryPath -ScriptBlock {
-        param($LibraryPath)
-        . $LibraryPath
-    } | Import-Module -Global -DisableNameChecking
+    # Under the sidecar's import lock, like every lane's own start-up import
+    # (see $ImportLock in Invoke-DevKitRpc.ps1): compiling a script full of
+    # parameter attributes at the same moment as another runspace is doing
+    # the same can fail with "An item with the same key has already been
+    # added", and another lane may well be starting when the tray is first
+    # opened. The lock is a lane variable; outside a lane (tests) there is
+    # none and nothing to wait for.
+    $lock = Get-Variable -Name 'ImportLock' -ValueOnly -ErrorAction SilentlyContinue
+    if ($lock) { [System.Threading.Monitor]::Enter($lock) }
+    try {
+        New-Module -Name 'DevKit.WiFi' -ArgumentList $libraryPath -ScriptBlock {
+            param($LibraryPath)
+            . $LibraryPath
+        } | Import-Module -Global -DisableNameChecking
+    } finally {
+        if ($lock) { [System.Threading.Monitor]::Exit($lock) }
+    }
 }
 
 function Resolve-DevKitToolScriptPath {

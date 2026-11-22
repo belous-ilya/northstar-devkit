@@ -111,10 +111,11 @@ function Write-DevKitRpcDiag {
 # response side continuously too, so memory stays flat in practice.
 $script:OutQueue = [System.Collections.Concurrent.BlockingCollection[string]]::new()
 
-# Shared across the three lane runspaces (passed by live reference, like the
-# queues) to SERIALIZE their DevKit.Core imports. PowerShell's script/
+# Shared across the lane runspaces (passed by live reference, like the
+# queues) to SERIALIZE their DevKit.Core imports - and any library a lane
+# loads later (Import-DevKitWifiLibrary in RpcMethods.ps1 takes it too). PowerShell's script/
 # attribute compilation caches are process-wide statics with known
-# thread-safety holes - three runspaces importing the same module chain at
+# thread-safety holes - several runspaces importing the same module chain at
 # the same instant can nondeterministically die with "An item with the same
 # key has already been added. Key: AllowEmptyString" (observed on a real
 # install: metrics lane lost the race while work/slow booted fine). Costing
@@ -271,12 +272,12 @@ function Start-DevKitRpcLane {
         # request gets an honest, immediate error instead of a silent hang.
         $importError = $null
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        # Hold $ImportLock (one live object shared by all three lanes) across
+        # Hold $ImportLock (one live object shared by all the lanes) across
         # the whole import: pwsh's compilation caches are process-wide
         # statics that concurrent same-module imports can corrupt - see the
         # lock's declaration comment. Monitor over lock{} since this is a
         # plain scriptblock, and Exit in finally so an import that THROWS
-        # can't leave the other two lanes deadlocked behind it.
+        # can't leave the other lanes deadlocked behind it.
         [System.Threading.Monitor]::Enter($ImportLock)
         try {
             Import-Module $CoreModulePath -Force -Global
@@ -494,11 +495,11 @@ $writer = Start-DevKitRpcWriter
 
 # Only the two lanes every start uses are started here: 'metrics' (the
 # gauges poll it from the first second) and 'work' (settings and the project
-# list are the first things any window asks for). The other four start the
+# list are the first things any window asks for). The others start the
 # first time a request is routed to them - see the main loop. Each lane is a
 # runspace with all of DevKit.Core imported, and a session that never opens
-# the MCP box, runs a tool, opens the Git tray or the Error Center was
-# paying for all four of those from boot for nothing. A lane started late
+# the MCP box, runs a tool, opens the Git tray, the Error Center or the WiFi
+# tray was paying for all of those from boot for nothing. A lane started late
 # costs its first request the import (a few hundred ms, once); its queue
 # exists from the start, so nothing is lost while it comes up.
 #

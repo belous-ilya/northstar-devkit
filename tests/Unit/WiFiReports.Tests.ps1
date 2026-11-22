@@ -303,3 +303,80 @@ Describe "Get-DevKitWifiSnapshot still reads the connection the same way" {
         (Get-DevKitWifiLink).AdapterPresent | Should -BeFalse
     }
 }
+
+Describe "Get-DevKitWifiSnapshot -SkipDnsCandidatesWhenOffline" {
+
+    # The app's Measure has to answer inside the sidecar's 60-second call
+    # limit. On a connection with nothing behind the router, timing the four
+    # alternative DNS services is twenty lookups that can only wait out their
+    # timeouts - after twenty silent pings and the web probe have already
+    # used most of the minute.
+
+    BeforeEach {
+        $script:Resolved = [System.Collections.Generic.List[string]]::new()
+        $script:InternetLoss = 100
+        $script:PortalState = 'offline'
+        Mock Get-DevKitWifiLink {
+            [ordered]@{
+                AdapterPresent = $true; AdapterUp = $true; InterfaceIndex = 12; InterfaceAlias = 'Wi-Fi'; InterfaceGuid = '{GUID}'
+                Connected = $true; DetailsHidden = $false
+                Ssid = 'HomeNet'; Bssid = 'aa:bb:cc:dd:ee:01'; SignalPercent = 80; Band = '5 GHz'; Channel = 36; RadioType = '802.11ax'
+                RxMbps = 300; TxMbps = 300; IPv4 = '192.168.0.21'; Gateway = '192.168.0.1'
+            }
+        }
+        Mock Measure-DevKitPingLatency {
+            if ($ComputerName -eq '192.168.0.1') {
+                return [PSCustomObject]@{ AverageLatency = 2; JitterMs = 1; PacketLossPct = 0; Sent = 10; Received = 10 }
+            }
+            $received = if ($script:InternetLoss -ge 100) { 0 } else { 10 }
+            return [PSCustomObject]@{ AverageLatency = $(if ($received) { 20 } else { $null }); JitterMs = $(if ($received) { 1 } else { $null }); PacketLossPct = $script:InternetLoss; Sent = 10; Received = $received }
+        }
+        Mock Test-DevKitCaptivePortal { $script:PortalState }
+        Mock Test-DevKitDnsIsStatic { $false }
+        Mock Get-DnsClientServerAddress { [PSCustomObject]@{ ServerAddresses = @('192.168.0.1') } }
+        Mock Measure-DevKitDnsResolver {
+            $script:Resolved.Add($Server)
+            [PSCustomObject]@{ Server = $Server; MedianMs = $null; FailurePct = 100 }
+        }
+    }
+
+    It "times only the DNS in use when nothing beyond the router answers" {
+        $snapshot = Get-DevKitWifiSnapshot -SkipDnsCandidatesWhenOffline
+        @($script:Resolved) | Should -Be @('192.168.0.1')
+        @($snapshot.DnsCandidates).Count | Should -Be 0
+        $snapshot.DnsCurrent | Should -Not -BeNullOrEmpty
+    }
+
+    It "still times the alternatives when the internet answers" {
+        $script:InternetLoss = 0
+        $script:PortalState = 'open'
+        $snapshot = Get-DevKitWifiSnapshot -SkipDnsCandidatesWhenOffline
+        $script:Resolved.Count | Should -Be 5
+        @($snapshot.DnsCandidates).Count | Should -Be 4
+    }
+
+    It "still times them on a network that only blocks ping (web access works)" {
+        $script:PortalState = 'open'
+        $null = Get-DevKitWifiSnapshot -SkipDnsCandidatesWhenOffline
+        $script:Resolved.Count | Should -Be 5
+    }
+
+    It "changes nothing for the optimizer, which does not pass the switch" {
+        $snapshot = Get-DevKitWifiSnapshot
+        $script:Resolved.Count | Should -Be 5
+        @($snapshot.DnsCandidates).Count | Should -Be 4
+    }
+
+    It "is what the app's Measure uses" {
+        Mock Get-DevKitWifiSnapshot { $script:AskedOffline = [bool]$SkipDnsCandidatesWhenOffline; [PSCustomObject]@{ AdapterPresent = $false; Connected = $false } } -ParameterFilter { $true }
+        $null = Get-DevKitWifiMeasureReport
+        $script:AskedOffline | Should -BeTrue
+    }
+
+    It "leaves the diagnosis of a dead connection as it was: no DNS switch is planned" {
+        $snapshot = Get-DevKitWifiSnapshot -SkipDnsCandidatesWhenOffline
+        $diagnosis = Get-DevKitWifiDiagnosis -Snapshot $snapshot
+        @($diagnosis.Actions) | Should -Not -Contain 'SwitchDns'
+        @($diagnosis.Findings | ForEach-Object { $_.Code }) | Should -Contain 'NoInternet'
+    }
+}

@@ -596,3 +596,45 @@ Describe "wifi.* methods (the widget's WiFi tray)" {
         }
     }
 }
+
+Describe "Import-DevKitWifiLibrary takes the sidecar's import lock" {
+
+    # Compiling a script full of parameter attributes while another runspace
+    # does the same can fail ("An item with the same key has already been
+    # added"), which is why every lane imports under one shared lock. The
+    # WiFi library is loaded later, on first use - when another lane may be
+    # starting - so it has to take the same lock.
+
+    BeforeEach {
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+        $script:LockRepo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    }
+
+    AfterAll {
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+        Remove-Variable -Name ImportLock -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It "holds the lock while the library is being loaded, and has let go afterwards" {
+        $global:ImportLock = [System.Object]::new()
+        $script:HeldDuringLoad = $null
+        Mock New-Module { $script:HeldDuringLoad = [System.Threading.Monitor]::IsEntered($global:ImportLock); return [PSCustomObject]@{ Name = 'DevKit.WiFi' } }
+        Mock Import-Module { }
+        Import-DevKitWifiLibrary -RepoRoot $script:LockRepo
+        $script:HeldDuringLoad | Should -BeTrue
+        [System.Threading.Monitor]::IsEntered($global:ImportLock) | Should -BeFalse
+    }
+
+    It "lets go of the lock when the load throws" {
+        $global:ImportLock = [System.Object]::new()
+        Mock New-Module { throw 'compile failed' }
+        { Import-DevKitWifiLibrary -RepoRoot $script:LockRepo } | Should -Throw '*compile failed*'
+        [System.Threading.Monitor]::IsEntered($global:ImportLock) | Should -BeFalse
+    }
+
+    It "loads without a lock where there is none (outside a lane)" {
+        Remove-Variable -Name ImportLock -Scope Global -ErrorAction SilentlyContinue
+        { Import-DevKitWifiLibrary -RepoRoot $script:LockRepo } | Should -Not -Throw
+        Get-Module -Name 'DevKit.WiFi' | Should -Not -BeNullOrEmpty
+    }
+}

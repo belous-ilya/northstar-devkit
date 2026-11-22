@@ -803,7 +803,7 @@ impl PsHost {
     /// SHUTDOWN section: the sidecar's main loop acks the `shutdown` RPC
     /// call *immediately* on reading it (before it starts draining
     /// anything), so a short timeout on the ack itself is fine. But the
-    /// process doesn't actually *exit* until it has drained all three lane
+    /// process doesn't actually *exit* until it has drained its lane
     /// runspaces (up to a 5s deadline there) and then the writer runspace
     /// (up to a further 2s deadline) - up to ~7s worst case. Our own
     /// post-ack wait for the child to exit has to comfortably cover that

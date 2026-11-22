@@ -1098,8 +1098,16 @@ function Get-DevKitWifiSnapshot {
     .PARAMETER SkipDnsCandidates
         Only time the DNS servers currently in use - for the "after" pass,
         where the alternatives are no longer the question.
+    .PARAMETER SkipDnsCandidatesWhenOffline
+        Do not time the alternative DNS services when nothing beyond the
+        router answered (no reply to ping from the internet, and the web
+        probe did not get through either). They are internet hosts: on a
+        dead connection each of their twenty lookups only waits out its
+        timeout. For the app's Measure, which has to answer inside the
+        sidecar's call limit; the optimizer does not pass this, so what it
+        measures is unchanged.
     #>
-    param([switch]$SkipDnsCandidates)
+    param([switch]$SkipDnsCandidates, [switch]$SkipDnsCandidatesWhenOffline)
 
     $snapshot = [ordered]@{
         AdapterPresent = $false; InterfaceIndex = $null; InterfaceAlias = ''; Connected = $false
@@ -1135,7 +1143,8 @@ function Get-DevKitWifiSnapshot {
         $snapshot.DnsCurrent = [PSCustomObject]@{ Name = 'Current'; Servers = $servers; MedianMs = $measured.MedianMs; FailurePct = $measured.FailurePct }
     }
 
-    if (-not $SkipDnsCandidates) {
+    $nothingBeyondRouter = ($snapshot.Portal -ne 'open' -and $snapshot.InternetPing -and [int]$snapshot.InternetPing.PacketLossPct -ge 100)
+    if (-not $SkipDnsCandidates -and -not ($SkipDnsCandidatesWhenOffline -and $nothingBeyondRouter)) {
         $candidates = @()
         foreach ($candidate in (Get-DevKitDnsCandidates)) {
             $measured = Measure-DevKitDnsResolver -Server $candidate.IPv4[0]
@@ -1399,7 +1408,12 @@ function Get-DevKitWifiMeasureReport {
         Read-only.
     #>
     $measuredAt = Get-Date
-    $snapshot = Get-DevKitWifiSnapshot
+    # On a connection with nothing behind the router the full pass can outrun
+    # the sidecar's 60-second call limit (ten silent pings to the router, ten
+    # to the internet, the web probe, then twenty-five lookups each waiting
+    # out its timeout) - and the app would report "did not finish" on exactly
+    # the connection someone opened the tray to look at.
+    $snapshot = Get-DevKitWifiSnapshot -SkipDnsCandidatesWhenOffline
     $diagnosis = Get-DevKitWifiDiagnosis -Snapshot $snapshot
     return ConvertTo-DevKitWifiMeasureReport -Snapshot $snapshot -Diagnosis $diagnosis -MeasuredAt $measuredAt
 }
