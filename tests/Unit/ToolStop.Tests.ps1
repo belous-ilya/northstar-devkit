@@ -26,7 +26,7 @@
     Dot-sources RpcMethods.ps1 directly (it only defines functions and the
     method registry at load time) and lifts Get-DevKitRpcLaneForMethod out of
     Invoke-DevKitRpc.ps1 by AST, since dot-sourcing THAT file would boot a
-    whole sidecar - six runspaces and a blocking stdin read loop.
+    whole sidecar - its lane runspaces and a blocking stdin read loop.
 .EXAMPLE
     Invoke-Pester -Path .\tests\Unit\ToolStop.Tests.ps1
 #>
@@ -478,6 +478,15 @@ Describe "Get-DevKitRpcLaneForMethod (lifted from Invoke-DevKitRpc.ps1)" {
         # be delivered after the thing it was meant to kill had finished.
         Get-DevKitRpcLaneForMethod -Method 'tool.stop' | Should -Be 'work'
         Get-DevKitRpcLaneForMethod -Method 'tool.stop' | Should -Not -Be 'tool'
+    }
+
+    It "gives the WiFi tray's methods a lane of their own" {
+        # wifi.measure pings for 5-10 seconds and wifi.scan waits four for
+        # the radio; on a shared lane that is a git poll or an MCP report
+        # not answering for as long.
+        foreach ($method in 'wifi.status', 'wifi.measure', 'wifi.scan') {
+            Get-DevKitRpcLaneForMethod -Method $method | Should -Be 'network'
+        }
     }
 
     It "keeps catalog.toolExists off the tool lane too" {

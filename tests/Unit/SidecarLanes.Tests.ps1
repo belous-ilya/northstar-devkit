@@ -6,7 +6,7 @@
 .DESCRIPTION
     Starts a REAL sidecar process, the way the app's host does, and talks
     NDJSON to it over its pipes. Only read-only methods are called
-    (ping, catalog.get, errors.app), then it is shut down.
+    (ping, catalog.get, errors.app, wifi.status), then it is shut down.
 
     Why a real process: the lanes are runspaces created by the script's main
     thread, and "a request queued for a lane that is not running yet is
@@ -74,6 +74,9 @@ Describe "the sidecar's lanes" {
         # 'errors' lane: not running until this request arrives.
         $script:FirstErrors = Invoke-TestRpc -Sidecar $script:Sidecar -Method 'errors.app'
         $script:SecondErrors = Invoke-TestRpc -Sidecar $script:Sidecar -Method 'errors.app'
+        # 'network' lane: the WiFi tray's. Reads the adapter list only, so it
+        # answers on a machine with no WiFi at all (a build server).
+        $script:WifiStatus = Invoke-TestRpc -Sidecar $script:Sidecar -Method 'wifi.status'
         $script:Log = Stop-TestSidecar -Sidecar $script:Sidecar
         $script:ExitCode = $script:Sidecar.Process.ExitCode
     }
@@ -104,6 +107,14 @@ Describe "the sidecar's lanes" {
     It "starts that lane once, not once per request" {
         $script:SecondErrors.ok | Should -BeTrue
         @($script:Log | Where-Object { $_ -match "starting lane 'errors'" }).Count | Should -Be 1
+    }
+
+    It "starts the network lane for the WiFi tray's first request, loading the WiFi library there" {
+        $script:WifiStatus | Should -Not -BeNullOrEmpty
+        $script:WifiStatus.ok | Should -BeTrue
+        $script:WifiStatus.result.AdapterPresent | Should -BeOfType ([bool])
+        $script:WifiStatus.result.PSObject.Properties.Name | Should -Contain 'DnsServers'
+        $script:Log | Where-Object { $_ -match "starting lane 'network' for its first request \(wifi\.status\)" } | Should -Not -BeNullOrEmpty
     }
 
     It "never starts a lane nothing asked for" {

@@ -32,7 +32,7 @@ import "./WidgetFlyout.css";
  */
 
 export type IconTheme = "outline" | "solid" | "duotone";
-export type RailIconName = "git" | "terminal" | "files" | "notes" | "mcp" | "devkit";
+export type RailIconName = "git" | "terminal" | "files" | "notes" | "mcp" | "wifi" | "devkit";
 
 const ICON_THEMES: readonly IconTheme[] = ["outline", "solid", "duotone"];
 
@@ -108,6 +108,18 @@ const GLYPHS: Record<RailIconName, Glyph> = {
         <circle cx="7" cy="16.4" r="1.1" />
         <path d="M11.2 7.6H17.6" />
         <path d="M11.2 16.4H17.6" />
+      </>
+    ),
+  },
+  // WiFi - a signal fan: the closed wedge is the silhouette (so it fills in
+  // solid and tints in duotone like every other glyph), the two arcs inside
+  // it are the waves, and the dot at the point is the source.
+  wifi: {
+    shape: <path d="M12 20.4L2.6 9.2C7.9 4.3 16.1 4.3 21.4 9.2L12 20.4Z" />,
+    inner: (
+      <>
+        <path d="M6.4 10.6C9.6 7.9 14.4 7.9 17.6 10.6" />
+        <path d="M9 13.8C10.7 12.4 13.3 12.4 15 13.8" />
       </>
     ),
   },

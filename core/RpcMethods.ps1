@@ -147,6 +147,49 @@ function Test-DevKitRpcConfirmedFlag {
     return (([string]$Value).Trim() -ieq 'true')
 }
 
+function Import-DevKitWifiLibrary {
+    <#
+    .SYNOPSIS
+        Loads tools/lib/DevKit-WiFi.ps1 into this runspace, once, the first
+        time a wifi.* method is called.
+    .DESCRIPTION
+        The WiFi library is about 1,400 lines that only the WiFi tray's three
+        methods use, so it is deliberately not part of DevKit.Core, which
+        every lane imports: only the 'network' lane ever loads it, and only
+        when the tray is first opened.
+
+        Loaded as a small module rather than dot-sourced here: a dot-source
+        inside this function would define the library's functions in this
+        function's scope, and they would be gone when it returned - so every
+        call would parse the file again (23 ms, measured). A module's
+        functions stay for the life of the runspace.
+    #>
+    param([Parameter(Mandatory)][string]$RepoRoot)
+
+    if (Get-Module -Name 'DevKit.WiFi') { return }
+    $libraryPath = Join-Path $RepoRoot 'tools\lib\DevKit-WiFi.ps1'
+    if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) {
+        throw "The WiFi library is missing from this install: $libraryPath"
+    }
+    # Under the sidecar's import lock, like every lane's own start-up import
+    # (see $ImportLock in Invoke-DevKitRpc.ps1): compiling a script full of
+    # parameter attributes at the same moment as another runspace is doing
+    # the same can fail with "An item with the same key has already been
+    # added", and another lane may well be starting when the tray is first
+    # opened. The lock is a lane variable; outside a lane (tests) there is
+    # none and nothing to wait for.
+    $lock = Get-Variable -Name 'ImportLock' -ValueOnly -ErrorAction SilentlyContinue
+    if ($lock) { [System.Threading.Monitor]::Enter($lock) }
+    try {
+        New-Module -Name 'DevKit.WiFi' -ArgumentList $libraryPath -ScriptBlock {
+            param($LibraryPath)
+            . $LibraryPath
+        } | Import-Module -Global -DisableNameChecking
+    } finally {
+        if ($lock) { [System.Threading.Monitor]::Exit($lock) }
+    }
+}
+
 function Resolve-DevKitToolScriptPath {
     <#
     .SYNOPSIS
@@ -951,6 +994,22 @@ function Invoke-DevKitRpcMethod {
         # ---------- catalog / settings ----------
         'catalog.get' {
             return Get-DevKitCatalogPayload -RootPath $RepoRoot
+        }
+        # ---- wifi.*: the widget's WiFi tray. All three only read; anything
+        # that changes a network setting is a tool run (tools/wifi), behind
+        # its confirmation. They ride their own lane ('network').
+        'wifi.status' {
+            Import-DevKitWifiLibrary -RepoRoot $RepoRoot
+            return Get-DevKitWifiStatusReport
+        }
+        'wifi.measure' {
+            Import-DevKitWifiLibrary -RepoRoot $RepoRoot
+            return Get-DevKitWifiMeasureReport
+        }
+        'wifi.scan' {
+            Import-DevKitWifiLibrary -RepoRoot $RepoRoot
+            $rescan = ((Get-DevKitRpcParam $Params 'rescan' $false) -eq $true)
+            return Get-DevKitWifiScanReport -Rescan:$rescan
         }
         'catalog.toolExists' {
             # Whether folder/script names a tool this install can run - the

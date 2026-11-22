@@ -18,9 +18,9 @@
       - ONE dedicated writer runspace owns [Console]::Out. It drains a
         single BlockingCollection[string] ($script:OutQueue) and is the
         only code in the whole process that calls WriteLine/Flush.
-      - SIX dedicated LANE runspaces (metrics / slow / work / errors /
-        mcp / tool). 'metrics' and 'work' start at boot; the other four
-        start the first time a request is routed to them (see BOOT), so a
+      - SEVEN dedicated LANE runspaces (metrics / slow / work / errors /
+        mcp / tool / network). 'metrics' and 'work' start at boot; the other
+        five start the first time a request is routed to them (see BOOT), so a
         session that never uses one never pays for it. Once started,
         each owns a persistent PowerShell runspace with DevKit.Core
         imported once (imports serialized across lanes - see $ImportLock),
@@ -111,10 +111,11 @@ function Write-DevKitRpcDiag {
 # response side continuously too, so memory stays flat in practice.
 $script:OutQueue = [System.Collections.Concurrent.BlockingCollection[string]]::new()
 
-# Shared across the three lane runspaces (passed by live reference, like the
-# queues) to SERIALIZE their DevKit.Core imports. PowerShell's script/
+# Shared across the lane runspaces (passed by live reference, like the
+# queues) to SERIALIZE their DevKit.Core imports - and any library a lane
+# loads later (Import-DevKitWifiLibrary in RpcMethods.ps1 takes it too). PowerShell's script/
 # attribute compilation caches are process-wide statics with known
-# thread-safety holes - three runspaces importing the same module chain at
+# thread-safety holes - several runspaces importing the same module chain at
 # the same instant can nondeterministically die with "An item with the same
 # key has already been added. Key: AllowEmptyString" (observed on a real
 # install: metrics lane lost the race while work/slow booted fine). Costing
@@ -146,10 +147,17 @@ $script:LaneQueues = @{
     #   lane it starved every git.overview/github.* poll into timeouts.
     mcp     = [System.Collections.Concurrent.BlockingCollection[object]]::new()
     tool    = [System.Collections.Concurrent.BlockingCollection[object]]::new()
+    # - network: wifi.* (the widget's WiFi tray). wifi.measure runs real
+    #   pings and DNS lookups for 5-10 seconds and wifi.scan waits four
+    #   seconds for the radio; on any shared lane that is 5-10 seconds of
+    #   something else not answering (a git poll on 'slow', an MCP report on
+    #   'mcp'). Like every lane but the first two it is not started until
+    #   something asks for it, so the tray being there costs nothing.
+    network = [System.Collections.Concurrent.BlockingCollection[object]]::new()
 }
 
 # Live handle on every tool run currently in flight, keyed by runId, shared
-# by reference with all six lanes exactly as the queues above are.
+# by reference with all the lanes exactly as the queues above are.
 #
 # It exists for one reason: tool.stop cannot be answered on the lane that
 # owns the run. The tool lane spends a whole run blocked draining the child's
@@ -264,12 +272,12 @@ function Start-DevKitRpcLane {
         # request gets an honest, immediate error instead of a silent hang.
         $importError = $null
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        # Hold $ImportLock (one live object shared by all three lanes) across
+        # Hold $ImportLock (one live object shared by all the lanes) across
         # the whole import: pwsh's compilation caches are process-wide
         # statics that concurrent same-module imports can corrupt - see the
         # lock's declaration comment. Monitor over lock{} since this is a
         # plain scriptblock, and Exit in finally so an import that THROWS
-        # can't leave the other two lanes deadlocked behind it.
+        # can't leave the other lanes deadlocked behind it.
         [System.Threading.Monitor]::Enter($ImportLock)
         try {
             Import-Module $CoreModulePath -Force -Global
@@ -388,6 +396,7 @@ function Get-DevKitRpcLaneForMethod {
     # must never ride behind UI browsing.
     if ($Method -eq 'process.topCpu' -or $Method -eq 'process.topMemory' -or $Method -eq 'files.children') { return 'metrics' }
     if ($Method -like 'mcp.*') { return 'mcp' }
+    if ($Method -like 'wifi.*') { return 'network' }
     # tool.stop is the ONE tool.* method that must not ride the tool lane.
     # By the time anyone asks to cancel a run, that lane is - by definition -
     # blocked inside the very run being cancelled, draining its child's
@@ -486,11 +495,11 @@ $writer = Start-DevKitRpcWriter
 
 # Only the two lanes every start uses are started here: 'metrics' (the
 # gauges poll it from the first second) and 'work' (settings and the project
-# list are the first things any window asks for). The other four start the
+# list are the first things any window asks for). The others start the
 # first time a request is routed to them - see the main loop. Each lane is a
 # runspace with all of DevKit.Core imported, and a session that never opens
-# the MCP box, runs a tool, opens the Git tray or the Error Center was
-# paying for all four of those from boot for nothing. A lane started late
+# the MCP box, runs a tool, opens the Git tray, the Error Center or the WiFi
+# tray was paying for all of those from boot for nothing. A lane started late
 # costs its first request the import (a few hundred ms, once); its queue
 # exists from the start, so nothing is lost while it comes up.
 #

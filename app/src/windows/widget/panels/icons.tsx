@@ -20,6 +20,18 @@ const base: IconProps = {
   strokeLinejoin: "round",
 };
 
+/** WiFi - three arcs over a dot. */
+export function WifiIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M1.8 6.2C5.4 2.9 10.6 2.9 14.2 6.2" />
+      <path d="M4 8.6C6.3 6.5 9.7 6.5 12 8.6" />
+      <path d="M6.2 11C7.2 10.1 8.8 10.1 9.8 11" />
+      <circle cx="8" cy="13.1" r="0.7" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /** Node & Ports - an activity/pulse line (running processes). */
 export function PulseIcon(props: IconProps) {
   return (

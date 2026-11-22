@@ -753,3 +753,55 @@ Describe "Test-DevEndpoint.ps1 does not send HTTP to database ports" {
         @([regex]::Matches($text, 'Invoke-DevKitEndpointProbe -TargetUrl "http://localhost')).Count | Should -Be 1
     }
 }
+
+Describe "WiFi-Optimize.ps1 upload measurement survives a stalled request" {
+
+    # Seen on a real connection: downloads and pings fine, and about one
+    # upload request in five unanswered for ten seconds or more. Each request
+    # was left to the client's 30-second timeout, so one stall failed the
+    # whole measurement half a minute later with nothing to report. The speed
+    # test talks to the internet and cannot be unit-tested; these read the
+    # parsed script for the properties that fix it. (Run for real with
+    # -DiagnoseOnly, which changes nothing.)
+
+    BeforeAll {
+        $ast = Get-ScriptAst 'tools\wifi\WiFi-Optimize.ps1'
+        $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-DevKitWifiSpeedTest' }, $true)
+        $script:SpeedTest = $fn.Extent.Text
+        $script:Calls = @($fn.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true))
+    }
+
+    It "gives every upload request its own limit instead of the client's 30 seconds" {
+        $post = @($script:Calls | Where-Object { $_.Member.Extent.Text -eq 'PostAsync' })
+        $post.Count | Should -Be 1
+        # url, content, cancellation token
+        $post[0].Arguments.Count | Should -Be 3
+        $post[0].Arguments[2].Extent.Text | Should -Be '$limit.Token'
+        $script:SpeedTest | Should -Match '\$pending\.Wait\(\$stallSeconds \* 1000\)'
+        $script:SpeedTest | Should -Match '\$stallSeconds = \d+'
+        [int]([regex]::Match($script:SpeedTest, '\$stallSeconds = (\d+)').Groups[1].Value) | Should -BeLessThan 30
+    }
+
+    It "never waits on an upload request without a limit" {
+        # The old form: .GetAwaiter().GetResult() straight on PostAsync.
+        $script:SpeedTest | Should -Not -Match 'PostAsync\([^)]*\)\.GetAwaiter\(\)\.GetResult\(\)'
+    }
+
+    It "gives a stalled request up, so its connection is released" {
+        $script:SpeedTest | Should -Match '\$limit\.Cancel\(\)'
+        $script:SpeedTest | Should -Match '\$limit\.Dispose\(\)'
+    }
+
+    It "reports what got through before a stall, and says the figure includes the wait" {
+        $stallAt = $script:SpeedTest.IndexOf('$stalled = $true')
+        $report = $script:SpeedTest.IndexOf('Write-Host "  Upload:')
+        $stallAt | Should -BeGreaterThan -1
+        $report | Should -BeGreaterThan $stallAt
+        $script:SpeedTest | Should -Match 'The upload stalled part-way'
+    }
+
+    It "fails only when nothing at all was uploaded" {
+        $script:SpeedTest | Should -Match 'if \(\$sent -le 0\)'
+        $script:SpeedTest | Should -Match 'the first upload request got no answer in \$stallSeconds seconds'
+    }
+}

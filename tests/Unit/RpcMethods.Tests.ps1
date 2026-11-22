@@ -520,3 +520,121 @@ Describe "tool.run does not start a tool once shutdown has begun" {
         Test-Path -LiteralPath $script:Marker | Should -BeTrue
     }
 }
+
+Describe "wifi.* methods (the widget's WiFi tray)" {
+
+    # All three only read. They load the WiFi library on first use - it is
+    # not part of DevKit.Core, which every lane imports - and hand back the
+    # library's reports unchanged.
+
+    BeforeAll {
+        $script:WifiRepo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+    }
+
+    AfterAll {
+        # Loaded globally by design; do not leave it behind for the test
+        # files that run after this one.
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+    }
+
+    It "loads the WiFi library once, on the first call" {
+        Get-Module -Name 'DevKit.WiFi' | Should -BeNullOrEmpty
+        Import-DevKitWifiLibrary -RepoRoot $script:WifiRepo
+        $first = Get-Module -Name 'DevKit.WiFi'
+        $first | Should -Not -BeNullOrEmpty
+        Import-DevKitWifiLibrary -RepoRoot $script:WifiRepo
+        @(Get-Module -Name 'DevKit.WiFi').Count | Should -Be 1
+        [object]::ReferenceEquals($first, (Get-Module -Name 'DevKit.WiFi')) | Should -BeTrue
+    }
+
+    It "makes the three report functions available after loading" {
+        Import-DevKitWifiLibrary -RepoRoot $script:WifiRepo
+        foreach ($name in 'Get-DevKitWifiStatusReport', 'Get-DevKitWifiMeasureReport', 'Get-DevKitWifiScanReport') {
+            Get-Command -Name $name -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        }
+    }
+
+    It "says so plainly when the library is missing from the install" {
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+        { Import-DevKitWifiLibrary -RepoRoot (Join-Path $TestDrive 'no-such-install') } | Should -Throw '*WiFi library is missing*'
+    }
+
+    Context "each method returns its report" {
+
+        BeforeEach {
+            Import-DevKitWifiLibrary -RepoRoot $script:WifiRepo
+            Set-Variable -Name RepoRoot -Value $script:WifiRepo
+            $script:RescanAsked = $null
+            Mock Get-DevKitWifiStatusReport { [ordered]@{ AdapterPresent = $true; Ssid = 'HomeNet' } }
+            Mock Get-DevKitWifiMeasureReport { [ordered]@{ Healthy = $true; Findings = @() } }
+            Mock Get-DevKitWifiScanReport { $script:RescanAsked = [bool]$Rescan; [ordered]@{ RescanState = 'skipped'; Networks = @() } }
+        }
+
+        It "wifi.status" {
+            (Invoke-DevKitRpcMethod -Method 'wifi.status' -Params $null -EmitEvent {}).Ssid | Should -Be 'HomeNet'
+            Should -Invoke Get-DevKitWifiStatusReport -Times 1 -Exactly
+        }
+
+        It "wifi.measure" {
+            (Invoke-DevKitRpcMethod -Method 'wifi.measure' -Params $null -EmitEvent {}).Healthy | Should -BeTrue
+            Should -Invoke Get-DevKitWifiMeasureReport -Times 1 -Exactly
+        }
+
+        It "wifi.scan reads the cached list unless a fresh scan is asked for" {
+            $null = Invoke-DevKitRpcMethod -Method 'wifi.scan' -Params $null -EmitEvent {}
+            $script:RescanAsked | Should -BeFalse
+            $null = Invoke-DevKitRpcMethod -Method 'wifi.scan' -Params ([pscustomobject]@{ rescan = $false }) -EmitEvent {}
+            $script:RescanAsked | Should -BeFalse
+            $null = Invoke-DevKitRpcMethod -Method 'wifi.scan' -Params ([pscustomobject]@{ rescan = $true }) -EmitEvent {}
+            $script:RescanAsked | Should -BeTrue
+        }
+
+        It "wifi.scan does not take a truthy string for a yes" {
+            $null = Invoke-DevKitRpcMethod -Method 'wifi.scan' -Params ([pscustomobject]@{ rescan = 'false' }) -EmitEvent {}
+            $script:RescanAsked | Should -BeFalse
+        }
+    }
+}
+
+Describe "Import-DevKitWifiLibrary takes the sidecar's import lock" {
+
+    # Compiling a script full of parameter attributes while another runspace
+    # does the same can fail ("An item with the same key has already been
+    # added"), which is why every lane imports under one shared lock. The
+    # WiFi library is loaded later, on first use - when another lane may be
+    # starting - so it has to take the same lock.
+
+    BeforeEach {
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+        $script:LockRepo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    }
+
+    AfterAll {
+        if (Get-Module -Name 'DevKit.WiFi') { Remove-Module -Name 'DevKit.WiFi' -Force }
+        Remove-Variable -Name ImportLock -Scope Global -ErrorAction SilentlyContinue
+    }
+
+    It "holds the lock while the library is being loaded, and has let go afterwards" {
+        $global:ImportLock = [System.Object]::new()
+        $script:HeldDuringLoad = $null
+        Mock New-Module { $script:HeldDuringLoad = [System.Threading.Monitor]::IsEntered($global:ImportLock); return [PSCustomObject]@{ Name = 'DevKit.WiFi' } }
+        Mock Import-Module { }
+        Import-DevKitWifiLibrary -RepoRoot $script:LockRepo
+        $script:HeldDuringLoad | Should -BeTrue
+        [System.Threading.Monitor]::IsEntered($global:ImportLock) | Should -BeFalse
+    }
+
+    It "lets go of the lock when the load throws" {
+        $global:ImportLock = [System.Object]::new()
+        Mock New-Module { throw 'compile failed' }
+        { Import-DevKitWifiLibrary -RepoRoot $script:LockRepo } | Should -Throw '*compile failed*'
+        [System.Threading.Monitor]::IsEntered($global:ImportLock) | Should -BeFalse
+    }
+
+    It "loads without a lock where there is none (outside a lane)" {
+        Remove-Variable -Name ImportLock -Scope Global -ErrorAction SilentlyContinue
+        { Import-DevKitWifiLibrary -RepoRoot $script:LockRepo } | Should -Not -Throw
+        Get-Module -Name 'DevKit.WiFi' | Should -Not -BeNullOrEmpty
+    }
+}

@@ -515,15 +515,15 @@ ever writes a line" true by construction:
 - **One writer runspace** owns `[Console]::Out` exclusively. It drains a
   single `BlockingCollection<string>` queue and is the only code in the
   whole process calling `WriteLine`/`Flush`.
-- **Six lane runspaces** (`metrics`, `mcp`, `tool`, `slow`, `errors`,
-  `work`), each one persistent runspace with `DevKit.Core` imported once, each draining its
+- **Seven lane runspaces** (`metrics`, `mcp`, `tool`, `slow`, `errors`,
+  `work`, `network`), each one persistent runspace with `DevKit.Core` imported once, each draining its
   own request queue and processing one request at a time, pushing its
   response onto the writer's queue when done. (These are plain runspaces,
   not `RunspacePool`s, despite sometimes being described that way - each
   lane is exactly one worker.) This mirrors the old WPF widget's
   `MetricsRunspace`/`McpRunspace`/`WorkRunspace` split, for the same
   reason: a slow `gh pr list` call must never stall a metrics poll.
-  Only `metrics` and `work` are started at boot; the other four start the
+  Only `metrics` and `work` are started at boot; the other five start the
   first time the main thread routes a request to them (their queues exist
   from the start, so that request waits for the import and is answered).
   `tests/Unit/SidecarLanes.Tests.ps1` drives a real sidecar through this.
@@ -533,7 +533,10 @@ ever writes a line" true by construction:
   lane; `mcp.*` -> mcp lane; `tool.*` -> tool lane, EXCEPT `tool.stop`,
   which goes to work (the tool lane is by definition busy inside the run
   being stopped); `errors.*` -> errors lane; `git.*`/`github.*` -> slow
-  lane; everything else -> work lane. `Get-DevKitRpcLaneForMethod` in
+  lane; `wifi.*` (the widget's WiFi tray: `wifi.status`, `wifi.measure`,
+  `wifi.scan`, all read-only) -> network lane, which also loads
+  `tools/lib/DevKit-WiFi.ps1` on first use because that library is not
+  part of `DevKit.Core`; everything else -> work lane. `Get-DevKitRpcLaneForMethod` in
   `core/Invoke-DevKitRpc.ps1` is the source of truth, with the measured
   reason for each split beside it. `ping`/`shutdown` are handled inline
   with no lane hop. It also **single-flights `tool.run`**: a fixed-key
@@ -665,7 +668,13 @@ has mounted needs a handoff like the command palette's
   window grows from 40 up to 400 commits until every open-PR head fits
   (`-ExtraTips` from the gh poll), so a busy trunk can't push PRs out of
   the chart),
-  GitHub (PRs/Issues), MCP status, Notes/On-Deck, Files, Quick Actions,
+  GitHub (PRs/Issues), MCP status, WiFi (`panels/WifiPanel.tsx`: a
+  status line polled only while its tray is open, Measure and Nearby
+  networks on demand - all three read-only `wifi.*` methods - and fix
+  buttons that run the catalog's own WiFi tools through the shared
+  tool-run channel behind the caution confirm; which script and arguments
+  each button runs comes from the catalog, see `wifiActionsFromCatalog` in
+  `panels/wifiModel.ts`), Notes/On-Deck, Files, Quick Actions,
   and a collapsed-by-default embedded terminal (see below). Single-
   instance via `tauri-plugin-single-instance` (a second launch surfaces
   the existing window instead of spawning a duplicate) and a system tray

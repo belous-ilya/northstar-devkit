@@ -1,0 +1,229 @@
+/* The WiFi tray. Same tokens and the same compact scale as the other tray
+   panels (McpPanel, QuickActionsPanel); nothing here is sized in px beyond
+   hairlines, so the tray follows the UI scale setting. */
+
+.wifi-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.wifi-panel__stale {
+  color: var(--text-tertiary);
+}
+
+.wifi-panel__headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.wifi-panel__ssid {
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wifi-panel__ssid--off {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.wifi-panel__note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.wifi-panel__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: var(--space-2) 0 0;
+}
+
+.wifi-panel__fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-2xs);
+}
+
+.wifi-panel__fact dt {
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.wifi-panel__fact dd {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.wifi-panel__fact-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wifi-panel__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.wifi-panel__subhead {
+  margin: 0;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.wifi-panel__result,
+.wifi-panel__fixes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle, color-mix(in srgb, currentColor 12%, transparent));
+}
+
+.wifi-panel__result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.wifi-panel__ago {
+  margin-left: auto;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+
+.wifi-panel__findings,
+.wifi-panel__networks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wifi-panel__finding {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.wifi-panel__finding > .devkit-badge {
+  flex: none;
+}
+
+.wifi-panel__plan {
+  margin: 0;
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.wifi-panel__network {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "name signal"
+    "meta signal";
+  align-items: center;
+  column-gap: var(--space-2);
+  row-gap: 1px;
+}
+
+.wifi-panel__network > .devkit-badge {
+  grid-area: signal;
+}
+
+.wifi-panel__network-name {
+  grid-area: name;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.wifi-panel__network-name > span:first-child {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wifi-panel__network--current .wifi-panel__network-name {
+  font-weight: 600;
+}
+
+.wifi-panel__hidden {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.wifi-panel__network-meta {
+  grid-area: meta;
+  min-width: 0;
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wifi-panel__console {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.wifi-panel__console-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.wifi-panel__console-footer:empty {
+  display: none;
+}
+
+.wifi-panel__exit-ok,
+.wifi-panel__exit-err {
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.wifi-panel__exit-ok {
+  color: var(--signal-green);
+}
+
+.wifi-panel__exit-err {
+  color: var(--ember-400);
+}
