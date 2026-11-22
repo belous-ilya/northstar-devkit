@@ -2,7 +2,7 @@
 
 All notable changes to Northstar DevKit are documented here.
 
-## [Unreleased]
+## [4.10.0] - 2026-11-21
 
 ### Added
 
