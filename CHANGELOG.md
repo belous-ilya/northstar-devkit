@@ -2,6 +2,31 @@
 
 All notable changes to Northstar DevKit are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **A WiFi tray on the widget's rail.** It shows what this PC is connected
+  to (network, signal, band and channel, link rate, address, DNS), and has
+  two checks that change nothing: **Measure** runs the full check the WiFi
+  Check tool runs - the router, the internet, DNS - and reports what it
+  finds in plain words, including what WiFi Fix would do about it; **Nearby
+  networks** asks the adapter for a fresh scan and lists what is in range,
+  with advice. Below them are the four fix tools (Fix, Fix fast, Deep
+  reset, Undo DNS change), each behind the same confirmation as in the
+  Control Center, with their output in the tray. Nothing is read while the
+  tray is shut, and the sidecar does not start the part that serves it
+  until the tray is first opened.
+
+### Fixed
+
+- **WiFi Check's upload measurement no longer fails on a stalled upload.**
+  One upload request that got no answer used to fail the whole measurement
+  30 seconds later with nothing to show. Each request now has 8 seconds;
+  when one stalls, the tool reports what got through before it and says
+  that the upload stalled - which, with downloads and pings fine, is itself
+  the finding.
+
 ## [4.9.0] - 2026-11-21
 
 The rest of the 4.8.0 sweep: the lower-severity findings, again with the
