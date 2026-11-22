@@ -357,23 +357,64 @@ function Invoke-DevKitWifiSpeedTest {
         Write-DevKitStep "Measuring upload speed"
         try {
             $window = 6
-            $chunk = New-Object byte[] (1024 * 1024)
+            # How long one upload request may go unanswered. An upload that
+            # stalls is a result, not an error: seen on a real connection
+            # where downloads and pings were fine and about one upload
+            # request in five got no answer for ten seconds or more. Left to
+            # the client's own 30-second timeout, one such request used to
+            # fail the whole measurement half a minute later with nothing to
+            # show for it.
+            $stallSeconds = 8
+            # 256 KB a request (it was 1 MB): on a slow uplink more requests
+            # finish inside the window, so there is something to report.
+            $chunk = New-Object byte[] (256 * 1024)
             (New-Object System.Random).NextBytes($chunk)
             [long]$sent = 0
+            $stalled = $false
             $watch = [System.Diagnostics.Stopwatch]::StartNew()
             while ($watch.Elapsed.TotalSeconds -lt $window) {
                 $content = New-Object System.Net.Http.ByteArrayContent(, $chunk)
-                $reply = $client.PostAsync("https://speed.cloudflare.com/__up", $content).GetAwaiter().GetResult()
-                $content.Dispose()
-                if (-not $reply.IsSuccessStatusCode) { throw "the test server answered HTTP $([int]$reply.StatusCode)" }
-                $sent += $chunk.Length
+                $limit = New-Object System.Threading.CancellationTokenSource
+                $reply = $null
+                try {
+                    $pending = $client.PostAsync("https://speed.cloudflare.com/__up", $content, $limit.Token)
+                    if (-not $pending.Wait($stallSeconds * 1000)) {
+                        # Give the request up so its connection is released,
+                        # and stop: what got through before this is the
+                        # measurement.
+                        $limit.Cancel()
+                        $stalled = $true
+                        break
+                    }
+                    $reply = $pending.Result
+                    if (-not $reply.IsSuccessStatusCode) { throw "the test server answered HTTP $([int]$reply.StatusCode)" }
+                    $sent += $chunk.Length
+                } finally {
+                    if ($reply) { $reply.Dispose() }
+                    $content.Dispose()
+                    $limit.Dispose()
+                }
             }
             $watch.Stop()
+            if ($sent -le 0) {
+                if ($stalled) { throw "the first upload request got no answer in $stallSeconds seconds" }
+                throw "nothing was uploaded"
+            }
+            # Over the whole time spent, the stall included: that is the
+            # throughput this connection actually delivered.
             $mbps = [math]::Round(($sent * 8) / $watch.Elapsed.TotalSeconds / 1000000, 1)
             Write-DevKitDone
-            Write-Host "  Upload:   $mbps Mbps" -ForegroundColor $(if ($mbps -gt 20) { "Green" } elseif ($mbps -gt 5) { "Yellow" } else { "Red" })
+            Write-Host "  Upload:   $mbps Mbps" -ForegroundColor $(if ($stalled) { "Yellow" } elseif ($mbps -gt 20) { "Green" } elseif ($mbps -gt 5) { "Yellow" } else { "Red" })
+            if ($stalled) {
+                Write-DevKitInfo "The upload stalled part-way: one request got no answer for $stallSeconds seconds, and that wait is counted in the figure above."
+                Write-DevKitInfo "Uploads that stall while downloads and pings are fine point past this PC, at the router or the provider."
+            }
         } catch {
-            Write-DevKitFail "Could not measure upload speed: $($_.Exception.Message)"
+            # A failed .NET task arrives wrapped; the inner message is the one
+            # worth reading.
+            $reason = $_.Exception
+            while ($reason.InnerException) { $reason = $reason.InnerException }
+            Write-DevKitFail "Could not measure upload speed: $($reason.Message)"
         }
     } finally {
         if ($stream) { $stream.Dispose() }
