@@ -185,6 +185,31 @@ export function wifiActionsFromCatalog(catalog: Catalog | undefined): WifiAction
   return actions;
 }
 
+/**
+ * Names the connection a measurement or a scan was taken on. When this
+ * changes - another network, another access point of the same one, a
+ * different router - what was measured before is about somewhere else.
+ * "" while not connected.
+ */
+export function connectionKey(status: WifiStatus | undefined): string {
+  if (!status || !status.AdapterPresent || !status.Connected) return "";
+  return [status.InterfaceAlias, status.Ssid, status.Bssid, status.Gateway].join("|");
+}
+
+/**
+ * What the confirmation for a fix can say about what it will do, from the
+ * last measurement of this connection - or null when there is nothing honest
+ * to say (no measurement, or a tool whose steps do not follow from one).
+ * The tool measures again before it changes anything, and the sentence says
+ * so: this is a forecast, not a promise.
+ */
+export function fixPreview(actionId: WifiActionId, report: WifiMeasureReport | null, now: number): string | null {
+  if (!report || (actionId !== "fix" && actionId !== "fast")) return null;
+  const ago = measuredAgo(report.MeasuredAt, now);
+  const when = ago ? `the measurement ${ago === "just now" ? "just now" : `from ${ago}`}` : "the last measurement";
+  return `Going by ${when}: ${describeFixPlan(report)} It measures again first, so that can differ.`;
+}
+
 /** "3 min ago" for a measurement's timestamp; "" when it cannot be read. */
 export function measuredAgo(iso: string, now: number): string {
   const at = Date.parse(iso);

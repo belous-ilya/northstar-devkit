@@ -15,8 +15,10 @@ import type { Catalog, WifiMeasureReport, WifiScanReport, WifiStatus } from "../
 import { useOnScreen } from "./git/paneVisibility";
 import { startWidgetToolRun, stopWatchingWidgetRun, useWidgetToolRun } from "./widgetToolRun";
 import {
+  connectionKey,
   describeConnection,
   describeFixPlan,
+  fixPreview,
   findingTone,
   formatBand,
   formatMbps,
@@ -109,6 +111,26 @@ export function WifiPanel({ active = true }: { active?: boolean } = {}) {
   const blockedBy = run.label && !mine ? run.label : null;
   const anythingRunning = !!run.runId;
 
+  // A measurement and a scan are about ONE connection. When the PC moves to
+  // another network, another access point or another router, what is on
+  // screen describes somewhere else - and "WiFi Fix would ..." under the new
+  // network's name would be a claim nobody measured. Drop them. A check that
+  // was still running when the connection changed is dropped on arrival,
+  // for the same reason (see `measuredOn` in the two run functions).
+  const currentKey = connectionKey(status.data);
+  const knownKey = useRef<string | null>(null);
+  const hasStatus = status.data !== undefined;
+  useEffect(() => {
+    if (!hasStatus) return; // no answer yet says nothing about the connection
+    if (knownKey.current !== null && knownKey.current !== currentKey) {
+      setMeasure(null);
+      setMeasureError(null);
+      setScan(null);
+      setScanError(null);
+    }
+    knownKey.current = currentKey;
+  }, [currentKey, hasStatus]);
+
   // A fix that has just finished changed something: read the status again
   // now rather than at the next tick.
   const { refetch: refetchStatus } = status;
@@ -126,9 +148,10 @@ export function WifiPanel({ active = true }: { active?: boolean } = {}) {
     playSound("click");
     setMeasuring(true);
     setMeasureError(null);
+    const measuredOn = knownKey.current;
     try {
       const report = await rpcCall<WifiMeasureReport>("wifi.measure");
-      if (!mounted.current) return;
+      if (!mounted.current || knownKey.current !== measuredOn) return;
       setMeasure(report);
       setNow(Date.now());
     } catch (err) {
@@ -143,9 +166,10 @@ export function WifiPanel({ active = true }: { active?: boolean } = {}) {
     playSound("click");
     setScanning(true);
     setScanError(null);
+    const scannedOn = knownKey.current;
     try {
       const report = await rpcCall<WifiScanReport>("wifi.scan", { rescan: true });
-      if (mounted.current) setScan(report);
+      if (mounted.current && knownKey.current === scannedOn) setScan(report);
     } catch (err) {
       if (mounted.current) setScanError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -173,15 +197,26 @@ export function WifiPanel({ active = true }: { active?: boolean } = {}) {
       start();
       return;
     }
+    const preview = fixPreview(action.id, measure, Date.now());
     confirmDestructive(
       {
         title: `${action.label}?`,
         description: (
           <>
             {action.help}
+            {preview && (
+              <>
+                <br />
+                {preview}
+              </>
+            )}
             <br />
-            Runs <code>{`wifi/${action.script}${action.args.length > 0 ? ` ${action.args.join(" ")}` : ""}`}</code>. Its
-            output appears in this tray.
+            {/* The tool's own description above mentions a y/n question: that
+                is the terminal's. Started from here it is told the answer
+                was yes, so this dialog is the only one. */}
+            This is the only confirmation: started from here, the tool does not ask again. Runs{" "}
+            <code>{`wifi/${action.script}${action.args.length > 0 ? ` ${action.args.join(" ")}` : ""}`}</code>; its output
+            appears in this tray.
           </>
         ),
         confirmLabel: action.button,

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Catalog, CatalogItem, WifiMeasureReport, WifiStatus } from "../../../lib/types";
 import {
+  connectionKey,
   describeConnection,
   describeFixPlan,
   findingTone,
+  fixPreview,
   formatBand,
   formatMbps,
   formatMs,
@@ -275,5 +277,62 @@ describe("measuredAgo", () => {
   it("is empty for a timestamp it cannot read, and never negative", () => {
     expect(measuredAgo("not a date", at)).toBe("");
     expect(measuredAgo("2026-11-21T18:30:00.0000000Z", at - 60_000)).toBe("just now");
+  });
+});
+
+describe("connectionKey", () => {
+  it("is the same for the same connection, whatever the signal does", () => {
+    expect(connectionKey(status({ SignalPercent: 40, RxMbps: 86 }))).toBe(connectionKey(status()));
+  });
+
+  it("changes with the network, the access point and the router", () => {
+    const base = connectionKey(status());
+    expect(connectionKey(status({ Ssid: "Office" }))).not.toBe(base);
+    expect(connectionKey(status({ Bssid: "aa:bb:cc:dd:ee:02" }))).not.toBe(base);
+    expect(connectionKey(status({ Gateway: "10.0.0.1" }))).not.toBe(base);
+  });
+
+  it("is empty while there is no connection to speak of", () => {
+    expect(connectionKey(undefined)).toBe("");
+    expect(connectionKey(status({ Connected: false }))).toBe("");
+    expect(connectionKey(status({ AdapterPresent: false }))).toBe("");
+  });
+});
+
+describe("fixPreview", () => {
+  const at = Date.parse("2026-11-21T18:30:00.000Z");
+  const measured = (over: Partial<WifiMeasureReport> = {}): WifiMeasureReport => ({
+    MeasuredAt: "2026-11-21T18:30:00.0000000Z",
+    Healthy: false,
+    Portal: "open",
+    Router: null,
+    Internet: null,
+    DnsCurrent: null,
+    DnsCandidates: [],
+    BestDns: null,
+    Findings: [],
+    Actions: ["FlushDns"],
+    ...over,
+  });
+
+  it("says what Fix would do going by the last measurement, and that it measures again", () => {
+    expect(fixPreview("fix", measured(), at + 4 * 60_000)).toBe(
+      "Going by the measurement from 4 min ago: WiFi Fix would clear the DNS cache. It measures again first, so that can differ.",
+    );
+    expect(fixPreview("fast", measured(), at + 2_000)).toContain("Going by the measurement just now:");
+  });
+
+  it("says so when the last measurement found nothing a setting can fix", () => {
+    expect(fixPreview("fix", measured({ Actions: [] }), at)).toContain("Nothing here can be fixed by a setting on this PC.");
+    expect(fixPreview("fix", measured({ Actions: [], Healthy: true }), at)).toContain("Nothing to fix.");
+  });
+
+  it("promises nothing without a measurement", () => {
+    expect(fixPreview("fix", null, at)).toBeNull();
+  });
+
+  it("does not forecast the tools whose steps do not follow from a measurement", () => {
+    expect(fixPreview("deep", measured(), at)).toBeNull();
+    expect(fixPreview("undoDns", measured(), at)).toBeNull();
   });
 });
